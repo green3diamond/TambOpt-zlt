@@ -13,7 +13,7 @@ fields = [
     "x", "y", "z", "nx", "ny", "nz", "time"
 ]
 
-output_dir = "processed_events"
+output_dir = "../ml/processed_events"
 os.makedirs(output_dir, exist_ok=True)
 
 # List all event directories
