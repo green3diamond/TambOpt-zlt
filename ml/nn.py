@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, Subset
@@ -5,6 +6,9 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+from visdom import Visdom
+import matplotlib.pyplot as plt
+
 
 # ============================================================
 # Dataset
@@ -26,7 +30,7 @@ class ShowerDataset(Dataset):
         self.feature_cols = [
             "kinetic_energy", "primary_kinetic_energy",
             "X_transformed", "Y_transformed", "Z_transformed",
-            "distance", "time_transformed",
+            "distance", # "time_transformed",
             "sin_azimuth", "cos_azimuth", "sin_zenith", "cos_zenith"
         ]
 
@@ -151,6 +155,10 @@ def train_multitask(train_dataset, val_dataset, input_dim, n_classes, n_event_ou
                     hidden_dim=128, epochs=10, batch_size=16, lr=1e-3, device="cuda",
                     lambda_event=1.0, n_planes=24):
 
+    # !!!!!! use python -m visdom.server to start server
+    viz = Visdom()
+    win = None
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                               collate_fn=lambda x: list(zip(*x)))
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
@@ -160,6 +168,9 @@ def train_multitask(train_dataset, val_dataset, input_dim, n_classes, n_event_ou
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_pdg = nn.CrossEntropyLoss()
     loss_event = nn.MSELoss()
+
+    train_losses = []
+    val_losses = []
 
     for epoch in range(epochs):
         model.train()
@@ -184,6 +195,9 @@ def train_multitask(train_dataset, val_dataset, input_dim, n_classes, n_event_ou
             optimizer.step()
             total_loss += L_total.item()
 
+        avg_train_loss = total_loss / len(train_loader)
+        train_losses.append(avg_train_loss)
+
         # Validation
         model.eval()
         val_loss = 0.0
@@ -202,7 +216,32 @@ def train_multitask(train_dataset, val_dataset, input_dim, n_classes, n_event_ou
                 L_total = L_pdg + lambda_event * L_event
                 val_loss += L_total.item()
 
-        print(f"Epoch {epoch+1}/{epochs} | Train Loss={total_loss/len(train_loader):.4f} | Val Loss={val_loss/len(val_loader):.4f}")
+        avg_val_loss = val_loss / len(val_loader)
+        val_losses.append(avg_val_loss)
+
+        print(f"Epoch {epoch+1}/{epochs} | Train Loss={avg_train_loss:.4f} | Val Loss={avg_val_loss:.4f}")
+
+        # Visdom live plot update
+        X = np.arange(1, epoch+2)
+        Y = np.column_stack((train_losses, val_losses))
+        if win is None:
+            win = viz.line(
+                Y=Y,
+                X=X,
+                opts=dict(
+                    xlabel='Epoch',
+                    ylabel='Loss',
+                    title='Training and Validation Loss',
+                    legend=['Train Loss', 'Val Loss']
+                )
+            )
+        else:
+            viz.line(
+                Y=Y,
+                X=X,
+                win=win,
+                update='replace'
+            )
 
     return model
 
@@ -262,7 +301,7 @@ def evaluate_multitask(model, dataset, n_planes, n_event_outputs, device="cuda")
 
 if __name__ == "__main__":
     pdg_classes = [11, 13, 22]
-    hit_file = "processed_events/normalized_features.parquet"
+    hit_file = "../ml/processed_events/normalized_features_z_3.parquet"
     n_planes = 24
 
     full_dataset = ShowerDataset(hit_file, pdg_classes, n_planes=n_planes, normalize_events=True)
@@ -286,11 +325,25 @@ if __name__ == "__main__":
     n_event_outputs = len(pdg_classes)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
+    
+    
+    # model = torch.load("shower_net_multitask.pth", map_location=device) if False else None
+    model = None
+    if os.path.exists("../training_checkpoints/shower_net_multitask.pth"):
+        model = ShowerNetMultiTask(input_dim, 256, n_classes, n_event_outputs, n_planes=n_planes).to(device)
+        model.load_state_dict(torch.load("../training_checkpoints/shower_net_multitask.pth", map_location=device))
+        model.eval()
+        print("Loaded existing model from ../training_checkpoints/shower_net_multitask.pth")
 
-    model = train_multitask(train_dataset, val_dataset,
-                            input_dim, n_classes, n_event_outputs,
-                            hidden_dim=256, epochs=100, batch_size=500,
-                            lr=1e-3, device=device, lambda_event=1.0, n_planes=n_planes)
+    if model is None:
+        print("Training Multi-Task Model...")
+
+        model = train_multitask(train_dataset, val_dataset,
+                                input_dim, n_classes, n_event_outputs,
+                                hidden_dim=256, epochs=100, batch_size=500,
+                                lr=1e-3, device=device, lambda_event=1.0, n_planes=n_planes)
+
+        torch.save(model.state_dict(), "../training_checkpoints/shower_net_multitask.pth")
 
     print("\nEvaluating on Held-out Event...")
     test_metrics = evaluate_multitask(

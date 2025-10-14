@@ -3,15 +3,22 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler, FunctionTransfor
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 import numpy as np
+from scipy import stats
 
 # --- Step 1: Load parquet file ---
-df = pd.read_parquet("processed_events/all_showers.parquet")
+df = pd.read_parquet("../ml/processed_events/all_showers.parquet")
 
 # --- Step 2: Define feature groups ---
 energy_features = ["kinetic_energy", "primary_kinetic_energy"]
 trig_features = ["sin_azimuth", "cos_azimuth", "sin_zenith", "cos_zenith"]
 spatial_features = ["X_transformed", "Y_transformed", "Z_transformed", "distance"]
 time_features = ["time_transformed"]
+
+# Select only numeric columns for outlier detection
+numeric_cols = energy_features + spatial_features + time_features
+z_scores = np.abs(stats.zscore(df[numeric_cols]))
+# remove data beyond 3 standard deviations
+df = df[(z_scores < 3).all(axis=1)].reset_index(drop=True)
 
 # --- Step 3: Define transformations ---
 log_scaler = Pipeline([
@@ -44,7 +51,7 @@ normalized_df["pdg"]=abs(df["pdg"])
 normalized_df["plane"]=df["plane"]
 
 # --- Step 6: Save result ---
-normalized_df.to_parquet("processed_events/normalized_features.parquet", index=False)
+normalized_df.to_parquet("../ml/processed_events/normalized_features.parquet", index=False)
 
 
 print("Columns:", normalized_df.columns.tolist())
