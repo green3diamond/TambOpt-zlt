@@ -4,3 +4,5 @@ fort*
 
 **/.ipynb_checkpoints/*
 **/Untitled*.ipynb
+ml/processed_events/*
+ml/training_checkpoints/*
