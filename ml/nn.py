@@ -27,6 +27,7 @@ class ShowerDataset(Dataset):
         if "plane" not in self.hits.columns:
             raise ValueError("Input parquet must contain a 'plane' column for 24-plane output.")
 
+        # Select relevant features
         self.feature_cols = [
             "kinetic_energy", "primary_kinetic_energy",
             "X_transformed", "Y_transformed", "Z_transformed",
@@ -34,22 +35,30 @@ class ShowerDataset(Dataset):
             "sin_azimuth", "cos_azimuth", "sin_zenith", "cos_zenith"
         ]
 
-        # PDG mapping
+        # PDG mapping - create map PDG number to single digit classes (0, 1, 2)
         self.pdg_map = {pdg: i for i, pdg in enumerate(pdg_classes)}
         self.inv_pdg_map = {i: pdg for pdg, i in self.pdg_map.items()}
 
+        # Map PDG to indices
         self.hits["pdg_idx"] = self.hits["pdg"].map(self.pdg_map)
 
         # ------------------------------------------------------------
         # Compute per-event, per-plane PDG counts
         # ------------------------------------------------------------
         event_plane_counts = (
+            # group data by event and plane
             self.hits.groupby(["event_id", "plane"])["pdg_idx"]
+            # count pdg indices
             .value_counts()
+            # unstack pdg indices to columns
             .unstack(fill_value=0)
+            # reindex to ensure all pdg classes are present
             .reindex(columns=range(len(pdg_classes)), fill_value=0)
         )
+        # output is events x planes x pdg_classes and number of hits
 
+        # convert to a dataframe with columns event_id, plane, count_pdg for each class
+        # rows are number of hits
         event_plane_counts.columns = [
             f"count_{self.inv_pdg_map[c]}" for c in event_plane_counts.columns
         ]
@@ -58,16 +67,24 @@ class ShowerDataset(Dataset):
         # pivot to get a flat per-event structure
         event_counts_pivot = []
         for pdg in pdg_classes:
+            # create a new column for each pdg class
             colname = f"count_{pdg}"
+            # pivot the event_plane_counts dataframe using event_id as index, plane as columns, and count_pdg as values
             pivot = event_plane_counts.pivot(
                 index="event_id", columns="plane", values=colname
             ).reindex(columns=range(n_planes), fill_value=0)
+            # rename columns to indicate plane
             pivot.columns = [f"{colname}_plane{p}" for p in pivot.columns]
+            # append to list
             event_counts_pivot.append(pivot)
 
+        # reshape to get 
+        # one column for each particle class and plane combination
+        # one row for each event
+        # one value is the count of hits
         self.event_data = pd.concat(event_counts_pivot, axis=1).fillna(0)
 
-        # Normalize event-level targets
+        # Normalize event-level targets such that the total counts per event are 1
         self.normalize_events = normalize_events
         if normalize_events:
             self.scaler = StandardScaler()
@@ -76,19 +93,27 @@ class ShowerDataset(Dataset):
         else:
             self.scaler = None
 
+        # save event ids
         self.event_ids = self.hits["event_id"].unique().tolist()
+        # save event-level columns representing <particle classes> x <planes> ids
         self.event_cols = list(self.event_data.columns)
+        # save number of planes
         self.n_planes = n_planes
 
     def __len__(self):
         return len(self.event_ids)
 
     def __getitem__(self, idx):
+        # get event id for particular index
         eid = self.event_ids[idx]
+        # filter hits for this event, this will be one row per hit
         df = self.hits[self.hits["event_id"] == eid]
 
+        # extract features from initial dataframe
         X_event = df[self.feature_cols].values.astype(float)
+        # extract per-hit PDG indices for each row
         y_pdg = df["pdg_idx"].values.astype(int)
+        # extract event-level normalized counts; <particle classes> x <planes>
         y_event = self.event_data.loc[eid].values.astype(float)
 
         return (
