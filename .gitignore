@@ -6,3 +6,6 @@ fort*
 **/Untitled*.ipynb
 ml/processed_events/*
 ml/training_checkpoints/*
+ml/processed_events_small/*.parquet
+training_checkpoints/*.pth
+ml/__pycache__/*
