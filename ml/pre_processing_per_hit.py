@@ -6,7 +6,8 @@ import os
 import shlex
 from tqdm import tqdm
 
-base_dir = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jlazar/tambo_optimization/hamza_test_set"
+base_dir = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jlazar/tambo_optimization/hamza_test_set/monoenergetic/"
+
 
 fields = [
     "pdg", "name", "total_energy", "kinetic_energy",
