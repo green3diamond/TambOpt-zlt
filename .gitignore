@@ -9,3 +9,4 @@ ml/training_checkpoints/*
 ml/processed_events_small/*.parquet
 training_checkpoints/*.pth
 ml/__pycache__/*
+notebooks/runs/experiment_1/*
