@@ -17,8 +17,8 @@ time_features = ["time_transformed"]
 # Select only numeric columns for outlier detection
 numeric_cols = energy_features + spatial_features + time_features
 z_scores = np.abs(stats.zscore(df[numeric_cols]))
-# remove data beyond 3 standard deviations
-df = df[(z_scores < 3).all(axis=1)].reset_index(drop=True)
+# remove data beyond 2 standard deviations
+df = df[(z_scores < 2).all(axis=1)].reset_index(drop=True)
 
 # --- Step 3: Define transformations ---
 log_scaler = Pipeline([
@@ -34,7 +34,7 @@ log_scaler = Pipeline([
 preprocessor = ColumnTransformer(
     transformers=[
         ("energy", log_scaler, energy_features),
-        ("spatial", StandardScaler(), spatial_features),
+        ("spatial", "passthrough", spatial_features),
         ("time", MinMaxScaler(), time_features),
         ("trig", "passthrough", trig_features)  # keep as is
     ]
