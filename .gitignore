@@ -13,3 +13,5 @@ notebooks/runs/experiment_1/*
 ml/processed_events_small_all_pdg/*
 notebooks/cone_frames/*
 notebooks/lightning_logs/*
+.idea/*
+notebooks/src/__pycache__/*
