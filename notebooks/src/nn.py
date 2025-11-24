@@ -3,6 +3,7 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from torch import nn
+from pina.model import MultiFeedForward
 
 warnings.filterwarnings("ignore")
 
@@ -50,3 +51,57 @@ class Model(torch.nn.Module):
 
     def forward(self, x):
         return self.model(x)
+    
+    
+class Discriminator(nn.Module):
+    """
+    Autoencoder-style discriminator.
+    Encodes inputs to a latent vector, optionally concatenates a conditioning
+    representation to the latent, and decodes back to input space.
+    forward(x, cond=None) -> (reconstruction, latent)
+    """
+    def __init__(self, input_dim, latent_dim, hidden_layers=[20], activation=nn.ReLU, cond_dim=0):
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+        self.cond_dim = cond_dim
+
+        # build encoder sizes: input -> ... -> latent
+        enc_sizes = [input_dim] + hidden_layers + [latent_dim]
+        enc_modules = []
+        for i in range(len(enc_sizes) - 1):
+            enc_modules.append(nn.Linear(enc_sizes[i], enc_sizes[i + 1]))
+            if i < len(enc_sizes) - 2:
+                enc_modules.append(activation())
+        self.encoder = nn.Sequential(*enc_modules)
+
+        # build decoder sizes: (latent + cond) -> ... -> input
+        dec_input = latent_dim + cond_dim
+        dec_sizes = [dec_input] + list(reversed(hidden_layers)) + [input_dim]
+        dec_modules = []
+        for i in range(len(dec_sizes) - 1):
+            dec_modules.append(nn.Linear(dec_sizes[i], dec_sizes[i + 1]))
+            if i < len(dec_sizes) - 2:
+                dec_modules.append(activation())
+        self.decoder = nn.Sequential(*dec_modules)
+
+    def encode(self, x):
+        return self.encoder(x)
+
+    def decode(self, latent, cond=None):
+        # print(cond)
+        if self.cond_dim and cond is not None:
+            latent = torch.cat([latent, cond], dim=1)
+        return self.decoder(latent)
+
+    def forward(self, x):
+        """
+        x: (B, input_dim)
+        returns: reconstruction (B, input_dim), latent (B, latent_dim)
+        """
+        data = x[0]
+        cond = x[1]
+        z = self.encode(data)
+        recon = self.decode(z, cond)
+        return recon
