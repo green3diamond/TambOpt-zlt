@@ -1,14 +1,12 @@
 import numpy as np
-import pandas as pd
-from sklearn.preprocessing import StandardScaler
 from pina import Trainer, Condition, LabelTensor
-from pina.problem import AbstractProblem
 from pina.solver import GAROM
 from pina.callback import MetricTracker
 from pina.model import FeedForward
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+from pina.problem.zoo import SupervisedProblem
 
 
 class Generator(nn.Module):
@@ -26,6 +24,7 @@ class Generator(nn.Module):
         self._activation = activation
         self.model = FeedForward(6 * noise_dimension, input_dimension)
         self.condition = FeedForward(parameters_dimension, 5 * noise_dimension)
+        self.parameters_dimension = parameters_dimension
 
     def forward(self, param):
         # uniform sampling in [-1, 1]
@@ -39,7 +38,7 @@ class Generator(nn.Module):
             )
             - 1
         )
-        return self.model(torch.cat((z, self.condition(param)), dim=-1))
+        return self.model(torch.cat((z, self.condition(param.reshape(-1, self.parameters_dimension))), dim=-1))
 
 
 # Simple Discriminator Network
@@ -58,52 +57,53 @@ class Discriminator(nn.Module):
 
         self._activation = activation
         self.encoding = FeedForward(input_dimension, hidden_dimension)
-        self.decoding = FeedForward(2 * hidden_dimension, input_dimension)
+        self.decoding = FeedForward(2 * hidden_dimension, 1)
         self.condition = FeedForward(parameter_dimension, hidden_dimension)
+        self.parameter_dimension = parameter_dimension
 
     def forward(self, data):
         x, condition = data
         encoding = self.encoding(x)
-        conditioning = torch.cat((encoding, self.condition(condition)), dim=-1)
+        conditioning = torch.cat((encoding, self.condition(condition.reshape(-1,self.parameter_dimension))), dim=-1)
         decoding = self.decoding(conditioning)
         return decoding
 
 
+# Generate 10 noisy sine wave data of dimension 100
+DIM = 100
+SAMPLES = 10
+
+x = np.linspace(0, 2 * np.pi, DIM)
+param = np.linspace(0, 20, SAMPLES)
+
+# Generate y for each frequency with noise
+# x_array = []
+y_array = []
+for freq in param:
+    noise = 0.1 * np.random.normal(size=x.shape)
+    y = np.sin(freq * x) + noise
+    y_array.append(y)
+    # x_array.append(x)
+
+# x_array = np.array(x_array)
+y_array = np.array(y_array)  # Shape: (len(param), dim)
 
 
-# Generate noisy sine wave data
-x = np.linspace(0, 2*np.pi, 1000)
-noise = 0.1 * np.random.normal(size=x.shape)
-y = np.sin(x) + noise
-data = pd.DataFrame({'x': x, 'noisy_sin': y})
+# predict clean signal given noise signal (denoise)
+problem = SupervisedProblem(
+    torch.tensor(param, dtype=torch.float32),
+    torch.tensor(y_array, dtype=torch.float32),
+)
 
-input_columns = ['x']
-output_columns = ['noisy_sin']
 
-# Normalize outputs
-y_scaler = StandardScaler()
-y_normalized = y_scaler.fit_transform(data[output_columns])
-
-# Wrap inputs and outputs
-x_pina = LabelTensor(data[input_columns].values, input_columns)
-y_pina = LabelTensor(y_normalized, output_columns)
-
-class SineWaveProblem(AbstractProblem):
-    input_variables = input_columns
-    output_variables = output_columns
-    conditions = {"data": Condition(input=x_pina, target=y_pina)}
-
-problem = SineWaveProblem()
-
-# Create generator and discriminator with input/output dimension 1
-generator = Generator()
-discriminator = Discriminator()
+generator = Generator(input_dimension=DIM, parameters_dimension=1)
+discriminator = Discriminator(input_dimension=DIM, parameter_dimension=1)
 
 solver = GAROM(problem, generator, discriminator)
 
 trainer = Trainer(
     solver=solver,
-    max_epochs=500,
+    max_epochs=150,
     logger=True,
     callbacks=[MetricTracker()],
     accelerator="cpu",
@@ -118,15 +118,16 @@ trainer.train()
 trainer_metrics = trainer.callbacks[0].metrics
 loss = trainer_metrics["train_loss"]
 epochs = range(len(loss))
+
+plt.subplot(1, 2, 1)
 plt.plot(epochs, loss.cpu())
 # plotting
 plt.xlabel("epoch")
 plt.ylabel("loss")
 plt.yscale("log")
-plt.show()
 
-all_outputs = None
-all_targets = None
+all_outputs = []
+all_targets = []
 
 trainer.data_module.setup("test")
 with torch.no_grad():
@@ -134,28 +135,25 @@ with torch.no_grad():
         # for data in trainer.data_module.train_dataloader():
         inputs, target = data[0][1]["input"], data[0][1]["target"]
         outputs = solver(inputs)
-
-        if all_outputs is None:
-            all_outputs = LabelTensor(outputs, labels=output_columns)
-            all_targets = target
-        else:
-            all_outputs.append(LabelTensor(outputs, labels=output_columns))
-            all_targets.append(target)
+        all_outputs.append(outputs)
+        all_targets.append(target)
         break
 
 # plot targets vs predictions for validation set
-y_mean = all_outputs.detach()
-true_output = all_targets.detach()
+y_mean = torch.stack(all_outputs, dim=0).detach()
+true_output = torch.stack(all_targets, dim=0).detach()
 
-plt.figure(figsize=(18, 10))
+plt.subplot(1,2,2)
 # use 3 columns per row
 for i, col in enumerate(output_columns):
-    plt.subplot(len(output_columns)//4+1, 4, i+1)
+    plt.subplot(len(output_columns) // 4 + 1, 4, i + 1)
     plt.scatter(true_output[:, i], y_mean[:, i], alpha=0.5)
-    plt.plot([true_output[:, i].min(), true_output[:, i].max()],
-             [true_output[:, i].min(), true_output[:, i].max()], 'r--')
+    plt.plot(
+        [true_output[:, i].min(), true_output[:, i].max()],
+        [true_output[:, i].min(), true_output[:, i].max()],
+        "r--",
+    )
     plt.xlabel("True Values")
     plt.ylabel("Predicted Values")
-    plt.title(col)
 plt.tight_layout(pad=1.0)
 plt.show()
