@@ -3,7 +3,7 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from torch import nn
-from pina.model import MultiFeedForward
+from pina.model import FeedForward
 
 warnings.filterwarnings("ignore")
 
@@ -52,56 +52,59 @@ class Model(torch.nn.Module):
     def forward(self, x):
         return self.model(x)
     
-    
-class Discriminator(nn.Module):
-    """
-    Autoencoder-style discriminator.
-    Encodes inputs to a latent vector, optionally concatenates a conditioning
-    representation to the latent, and decodes back to input space.
-    forward(x, cond=None) -> (reconstruction, latent)
-    """
-    def __init__(self, input_dim, latent_dim, hidden_layers=[20], activation=nn.ReLU, cond_dim=0):
+class Generator(nn.Module):
+
+    def __init__(
+        self,
+        input_dimension=1,
+        parameters_dimension=1,
+        noise_dimension=1,
+        activation=torch.nn.SiLU,
+    ):
         super().__init__()
 
-        self.input_dim = input_dim
-        self.latent_dim = latent_dim
-        self.cond_dim = cond_dim
+        self._noise_dimension = noise_dimension
+        self._activation = activation
+        self.model = FeedForward(6 * noise_dimension, input_dimension)
+        self.condition = FeedForward(parameters_dimension, 6 * noise_dimension)
+        self.parameters_dimension = parameters_dimension
 
-        # build encoder sizes: input -> ... -> latent
-        enc_sizes = [input_dim] + hidden_layers + [latent_dim]
-        enc_modules = []
-        for i in range(len(enc_sizes) - 1):
-            enc_modules.append(nn.Linear(enc_sizes[i], enc_sizes[i + 1]))
-            if i < len(enc_sizes) - 2:
-                enc_modules.append(activation())
-        self.encoder = nn.Sequential(*enc_modules)
+    def forward(self, param):
+        # activate to enable noise
+        # # uniform sampling in [-1, 1]
+        # z = (
+        #     2
+        #     * torch.rand(
+        #         size=(param.shape[0], self._noise_dimension),
+        #         device=param.device,
+        #         dtype=param.dtype,
+        #         requires_grad=True,
+        #     )
+        #     - 1
+        # )
+        # return self.model(torch.cat((z, self.condition(param.reshape(-1, self.parameters_dimension))), dim=-1))
+        return self.model(self.condition(param.reshape(-1, self.parameters_dimension)))
 
-        # build decoder sizes: (latent + cond) -> ... -> input
-        dec_input = latent_dim + cond_dim
-        dec_sizes = [dec_input] + list(reversed(hidden_layers)) + [input_dim]
-        dec_modules = []
-        for i in range(len(dec_sizes) - 1):
-            dec_modules.append(nn.Linear(dec_sizes[i], dec_sizes[i + 1]))
-            if i < len(dec_sizes) - 2:
-                dec_modules.append(activation())
-        self.decoder = nn.Sequential(*dec_modules)
+class Discriminator(nn.Module):
 
-    def encode(self, x):
-        return self.encoder(x)
+    def __init__(
+        self,
+        input_dimension=1,
+        parameter_dimension=1,
+        hidden_dimension=2,
+        activation=torch.nn.ReLU,
+    ):
+        super().__init__()
 
-    def decode(self, latent, cond=None):
-        # print(cond)
-        if self.cond_dim and cond is not None:
-            latent = torch.cat([latent, cond], dim=1)
-        return self.decoder(latent)
+        self._activation = activation
+        self.encoding = FeedForward(input_dimension, hidden_dimension)
+        self.decoding = FeedForward(2 * hidden_dimension, input_dimension)
+        self.condition = FeedForward(parameter_dimension, hidden_dimension)
+        self.parameter_dimension = parameter_dimension
 
-    def forward(self, x):
-        """
-        x: (B, input_dim)
-        returns: reconstruction (B, input_dim), latent (B, latent_dim)
-        """
-        data = x[0]
-        cond = x[1]
-        z = self.encode(data)
-        recon = self.decode(z, cond)
-        return recon
+    def forward(self, data):
+        x, condition = data
+        encoding = self.encoding(x)
+        conditioning = torch.cat((encoding, self.condition(condition.reshape(-1,self.parameter_dimension))), dim=-1)
+        decoding = self.decoding(conditioning)
+        return decoding
