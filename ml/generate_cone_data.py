@@ -13,7 +13,7 @@ from scipy import stats
 
 # ---------- Logging ----------
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format='%(asctime)s - %(levelname)s - %(processName)s - %(message)s',
     handlers=[
         logging.FileHandler("process_cone_params.log"),
@@ -27,16 +27,16 @@ input_dir = "../ml/processed_events_50k"
 output_file = "../ml/processed_events_50k/event_cone_parameters.parquet"
 os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
-def calculate_cone_parameters(group_key, group_data: pd.DataFrame) -> pd.Series:
-    """Calculate cone parameters for a single event (fixed groupby apply)."""
+def calculate_cone_parameters(event_data):
+    """Calculate cone parameters for a single event (takes group as input)."""
     try:
-        event_id = group_key[0] if isinstance(group_key, tuple) else group_key
+        event_id = event_data.name  # group key from groupby
         
         # Get primary energy (take first value, assuming it's constant per event)
-        primary_energy = group_data['primary_kinetic_energy'].iloc[0] if 'primary_kinetic_energy' in group_data.columns else 0
+        primary_energy = event_data['primary_kinetic_energy'].iloc[0] if 'primary_kinetic_energy' in event_data.columns else 0
         
         # Filter for planes > 0 to find min_plane
-        valid_planes = group_data[group_data['plane'] > 0]
+        valid_planes = event_data[event_data['plane'] > 0]
         if valid_planes.empty:
             return pd.Series({
                 'event_id': event_id,
@@ -52,17 +52,17 @@ def calculate_cone_parameters(group_key, group_data: pd.DataFrame) -> pd.Series:
         max_plane = 0  # Assuming plane 0 is the max plane (ground/detector)
         
         # get average x,y,z from min plane
-        X_mean_min = group_data[group_data['plane'] == min_plane]['X_transformed'].mean()
-        Y_mean_min = group_data[group_data['plane'] == min_plane]['Y_transformed'].mean()
-        Z_mean_min = group_data[group_data['plane'] == min_plane]['Z_transformed'].mean()
+        X_mean_min = event_data[event_data['plane'] == min_plane]['X_transformed'].mean()
+        Y_mean_min = event_data[event_data['plane'] == min_plane]['Y_transformed'].mean()
+        Z_mean_min = event_data[event_data['plane'] == min_plane]['Z_transformed'].mean()
         
         # get average x, y, z from max plane (plane 0)
-        X_mean_max = group_data[group_data['plane'] == max_plane]['X_transformed'].mean()
-        Y_mean_max = group_data[group_data['plane'] == max_plane]['Y_transformed'].mean()
-        Z_mean_max = group_data[group_data['plane'] == max_plane]['Z_transformed'].mean()
+        X_mean_max = event_data[event_data['plane'] == max_plane]['X_transformed'].mean()
+        Y_mean_max = event_data[event_data['plane'] == max_plane]['Y_transformed'].mean()
+        Z_mean_max = event_data[event_data['plane'] == max_plane]['Z_transformed'].mean()
         
         # radius is 3* l2 norm of std (x,y,z) at max plane
-        max_plane_data = group_data[group_data['plane'] == max_plane]
+        max_plane_data = event_data[event_data['plane'] == max_plane]
         if len(max_plane_data) > 0:
             stds = [
                 max_plane_data['X_transformed'].std(),
@@ -87,8 +87,8 @@ def calculate_cone_parameters(group_key, group_data: pd.DataFrame) -> pd.Series:
             'radius': radius
         })
     except Exception as e:
-        logger.error(f"Error calculating cone params for {event_id}: {e}")
-        return pd.Series({'event_id': event_id})
+        logger.error(f"Error calculating cone params for {event_data.name if hasattr(event_data, 'name') else 'unknown'}: {e}")
+        return pd.Series({'event_id': event_data.name if hasattr(event_data, 'name') else 'unknown'})
 
 
 def normalize_cone_features(final_df: pd.DataFrame) -> pd.DataFrame:
@@ -162,8 +162,9 @@ def process_one_parquet(parquet_file: str) -> pd.DataFrame:
             logger.warning(f"{parquet_file}: empty dataframe")
             return pd.DataFrame()
         
-        # FIXED: Use groupby.apply with proper function signature to avoid FutureWarning
-        event_cone_params = df.groupby('event_id', group_keys=False).apply(calculate_cone_parameters).reset_index(drop=True)
+        # EXACTLY like your example: groupby().apply().reset_index()
+        batch_identifier = "event_id"
+        event_cone_params = df.groupby(by=[batch_identifier]).apply(calculate_cone_parameters).reset_index()
         
         if event_cone_params.empty:
             logger.warning(f"{parquet_file}: no cone parameters computed")
