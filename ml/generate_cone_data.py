@@ -27,19 +27,19 @@ input_dir = "../ml/processed_events_50k"
 output_file = "../ml/processed_events_50k/event_cone_parameters.parquet"
 os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
-def calculate_cone_parameters(event_data: pd.DataFrame) -> pd.Series:
-    """Calculate cone parameters for a single event."""
+def calculate_cone_parameters(group_key, group_data: pd.DataFrame) -> pd.Series:
+    """Calculate cone parameters for a single event (fixed groupby apply)."""
     try:
-        batch_identifier = "event_id"
+        event_id = group_key[0] if isinstance(group_key, tuple) else group_key
         
         # Get primary energy (take first value, assuming it's constant per event)
-        primary_energy = event_data['primary_kinetic_energy'].iloc[0] if 'primary_kinetic_energy' in event_data.columns else 0
+        primary_energy = group_data['primary_kinetic_energy'].iloc[0] if 'primary_kinetic_energy' in group_data.columns else 0
         
         # Filter for planes > 0 to find min_plane
-        valid_planes = event_data[event_data['plane'] > 0]
+        valid_planes = group_data[group_data['plane'] > 0]
         if valid_planes.empty:
             return pd.Series({
-                'event_id': event_data['event_id'].iloc[0],
+                'event_id': event_id,
                 'primary_kinetic_energy': primary_energy,
                 'min_plane': 0, 'max_plane': 0,
                 'X_mean_min': 0, 'Y_mean_min': 0, 'Z_mean_min': 0,
@@ -52,17 +52,17 @@ def calculate_cone_parameters(event_data: pd.DataFrame) -> pd.Series:
         max_plane = 0  # Assuming plane 0 is the max plane (ground/detector)
         
         # get average x,y,z from min plane
-        X_mean_min = event_data[event_data['plane'] == min_plane]['X_transformed'].mean()
-        Y_mean_min = event_data[event_data['plane'] == min_plane]['Y_transformed'].mean()
-        Z_mean_min = event_data[event_data['plane'] == min_plane]['Z_transformed'].mean()
+        X_mean_min = group_data[group_data['plane'] == min_plane]['X_transformed'].mean()
+        Y_mean_min = group_data[group_data['plane'] == min_plane]['Y_transformed'].mean()
+        Z_mean_min = group_data[group_data['plane'] == min_plane]['Z_transformed'].mean()
         
         # get average x, y, z from max plane (plane 0)
-        X_mean_max = event_data[event_data['plane'] == max_plane]['X_transformed'].mean()
-        Y_mean_max = event_data[event_data['plane'] == max_plane]['Y_transformed'].mean()
-        Z_mean_max = event_data[event_data['plane'] == max_plane]['Z_transformed'].mean()
+        X_mean_max = group_data[group_data['plane'] == max_plane]['X_transformed'].mean()
+        Y_mean_max = group_data[group_data['plane'] == max_plane]['Y_transformed'].mean()
+        Z_mean_max = group_data[group_data['plane'] == max_plane]['Z_transformed'].mean()
         
         # radius is 3* l2 norm of std (x,y,z) at max plane
-        max_plane_data = event_data[event_data['plane'] == max_plane]
+        max_plane_data = group_data[group_data['plane'] == max_plane]
         if len(max_plane_data) > 0:
             stds = [
                 max_plane_data['X_transformed'].std(),
@@ -74,7 +74,7 @@ def calculate_cone_parameters(event_data: pd.DataFrame) -> pd.Series:
             radius = 0
         
         return pd.Series({
-            'event_id': event_data['event_id'].iloc[0],
+            'event_id': event_id,
             'primary_kinetic_energy': primary_energy,
             'min_plane': min_plane,
             'max_plane': max_plane,
@@ -87,24 +87,30 @@ def calculate_cone_parameters(event_data: pd.DataFrame) -> pd.Series:
             'radius': radius
         })
     except Exception as e:
-        logger.error(f"Error calculating cone params: {e}")
-        return pd.Series({'event_id': event_data['event_id'].iloc[0] if len(event_data)>0 else 'unknown'})
+        logger.error(f"Error calculating cone params for {event_id}: {e}")
+        return pd.Series({'event_id': event_id})
 
-def normalize_cone_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply normalization and standardization to cone parameters."""
+
+def normalize_cone_features(final_df: pd.DataFrame) -> pd.DataFrame:
+    """Apply normalization and standardization to ALL cone parameters at once (final step)."""
     try:
+        logger.info("Applying global normalization to all events...")
+        
         # Define feature groups for cone parameters
         energy_features = ["primary_kinetic_energy"]
         spatial_features = ["X_mean_min", "Y_mean_min", "Z_mean_min", 
                           "X_mean_max", "Y_mean_max", "Z_mean_max", "radius"]
         
-        # Outlier detection (z-score < 2) on energy + spatial features
+        # Outlier detection (z-score < 2) on energy + spatial features ACROSS ALL EVENTS
         numeric_cols = energy_features + spatial_features
-        if len(df) > 1:  # Need at least 2 points for z-score
-            z_scores = np.abs(stats.zscore(df[numeric_cols]))
-            df = df[(z_scores < 2).all(axis=1)].reset_index(drop=True)
+        initial_count = len(final_df)
         
-        # Define transformations
+        if len(final_df) > 1:  # Need at least 2 points for z-score
+            z_scores = np.abs(stats.zscore(final_df[numeric_cols]))
+            final_df = final_df[(z_scores < 2).all(axis=1)].reset_index(drop=True)
+            logger.info(f"Outlier removal: {initial_count} -> {len(final_df)} events")
+        
+        # Define transformations (GLOBAL fit across all events)
         log_scaler = Pipeline([
             ("log", FunctionTransformer(
                 func=np.log1p,
@@ -127,9 +133,9 @@ def normalize_cone_features(df: pd.DataFrame) -> pd.DataFrame:
             ]
         )
         
-        # Apply transformations
+        # Apply transformations (fit on ALL data)
         feature_cols = energy_features + spatial_features + metadata_cols
-        normalized_data = preprocessor.fit_transform(df[feature_cols])
+        normalized_data = preprocessor.fit_transform(final_df[feature_cols])
         
         # Reconstruct DataFrame with proper column names
         normalized_df = pd.DataFrame(
@@ -137,14 +143,15 @@ def normalize_cone_features(df: pd.DataFrame) -> pd.DataFrame:
             columns=energy_features + spatial_features + metadata_cols
         )
         
+        logger.info("Global normalization applied successfully")
         return normalized_df
         
     except Exception as e:
-        logger.error(f"Error in normalization: {e}")
-        return df  # Return original if normalization fails
+        logger.error(f"Error in global normalization: {e}")
+        return final_df  # Return raw data if normalization fails
 
 def process_one_parquet(parquet_file: str) -> pd.DataFrame:
-    """Process a single parquet file and extract normalized cone parameters."""
+    """Process a single parquet file and extract RAW cone parameters (no normalization)."""
     try:
         logger.info(f"Processing {parquet_file}")
         
@@ -155,18 +162,15 @@ def process_one_parquet(parquet_file: str) -> pd.DataFrame:
             logger.warning(f"{parquet_file}: empty dataframe")
             return pd.DataFrame()
         
-        # Group by event_id and calculate cone parameters
-        event_cone_params = df.groupby('event_id').apply(calculate_cone_parameters).reset_index(drop=True)
+        # FIXED: Use groupby.apply with proper function signature to avoid FutureWarning
+        event_cone_params = df.groupby('event_id', group_keys=False).apply(calculate_cone_parameters).reset_index(drop=True)
         
         if event_cone_params.empty:
             logger.warning(f"{parquet_file}: no cone parameters computed")
             return pd.DataFrame()
         
-        # Apply normalization to cone parameters
-        normalized_cone_params = normalize_cone_features(event_cone_params)
-        
-        logger.info(f"{parquet_file}: processed {len(normalized_cone_params)} normalized events")
-        return normalized_cone_params
+        logger.info(f"{parquet_file}: processed {len(event_cone_params)} raw events")
+        return event_cone_params
         
     except Exception as e:
         logger.error(f"Error processing {parquet_file}: {e}")
@@ -216,7 +220,7 @@ if __name__ == "__main__":
     for _ in processes:
         file_queue.put(None)
     
-    # Collect results with progress bar
+    # Collect RAW results with progress bar
     all_cone_params = []
     with tqdm(total=len(parquet_files), desc="Processing files") as pbar:
         for _ in range(len(parquet_files)):
@@ -229,16 +233,20 @@ if __name__ == "__main__":
     for p in processes:
         p.join()
     
-    # Combine all results, deduplicate, and save
+    # Combine all RAW results and deduplicate
     if all_cone_params:
-        final_df = pd.concat(all_cone_params, ignore_index=True)
-        final_df.drop_duplicates(subset=['event_id'], keep='first', inplace=True)
-        final_df.to_parquet(output_file, index=False)
+        final_raw_df = pd.concat(all_cone_params, ignore_index=True)
+        final_raw_df.drop_duplicates(subset=['event_id'], keep='first', inplace=True)
         
-        logger.info(f"Saved {len(final_df)} unique normalized cone parameters to {output_file}")
-        logger.info(f"Final columns: {final_df.columns.tolist()}")
-        logger.info(f"Shape: {final_df.shape}")
-        logger.info(f"Primary energy range: [{final_df['primary_kinetic_energy'].min():.2e}, {final_df['primary_kinetic_energy'].max():.2e}]")
+        # GLOBAL NORMALIZATION (fit on all events together)
+        final_normalized_df = normalize_cone_features(final_raw_df)
+        final_normalized_df.to_parquet(output_file, index=False)
+        
+        logger.info(f"Saved {len(final_normalized_df)} unique normalized cone parameters to {output_file}")
+        logger.info(f"Final columns: {final_normalized_df.columns.tolist()}")
+        logger.info(f"Shape: {final_normalized_df.shape}")
+        logger.info(f"Primary energy stats (normalized): mean={final_normalized_df['primary_kinetic_energy'].mean():.3f}, std={final_normalized_df['primary_kinetic_energy'].std():.3f}")
+        logger.info(f"Spatial features stats (normalized): std={final_normalized_df[['X_mean_min','radius']].std().mean():.3f}")
     else:
         logger.error("No cone parameters computed!")
     
