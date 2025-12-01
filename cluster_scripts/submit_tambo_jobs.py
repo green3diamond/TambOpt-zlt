@@ -18,7 +18,6 @@ NUM_BINS = 100
 
 # Base paths
 BASE_OUTPUT_DIR = "/n/netscratch/arguelles_delgado_lab/Everyone/hhanif/tambo_simulation_nov_25"
-# Updated: args and logs are now inside BASE_OUTPUT_DIR
 ARGS_DIR_DEFAULT = os.path.join(BASE_OUTPUT_DIR, "args_batches")
 LOGS_DIR_DEFAULT = os.path.join(BASE_OUTPUT_DIR, "logs")
 SCRIPT_OUT_DEFAULT = os.path.join(BASE_OUTPUT_DIR, "scripts", "run_tambo_batch.sh")
@@ -29,7 +28,7 @@ def loguniform(a, b):
     return 10 ** random.uniform(math.log10(a), math.log10(b))
 
 def fmt_float(x):
-    return f"{x:.4e}"  # Scientific notation for cleaner folder names
+    return f"{x:.4e}"
 
 def random_seed_5digits():
     return random.randint(10000, 99999)
@@ -44,26 +43,18 @@ def get_pdg_flags(pdg_id):
     elif pdg_id in electrons:
         return "--force-interaction"
     else:
-        # Should be caught by argparse choices, but just in case
         raise ValueError(f"PDG {pdg_id} logic not defined.")
 
 def get_energy_folder_name(energy):
-    """
-    Calculates which 'bin' the energy falls into to create consistent 
-    folder names (100 bins total).
-    """
+    """Calculates which 'bin' the energy falls into."""
     log_min = math.log10(E_MIN)
     log_max = math.log10(E_MAX)
     log_step = (log_max - log_min) / NUM_BINS
     
-    # Calculate bin index
     log_e = math.log10(energy)
     bin_idx = int((log_e - log_min) / log_step)
-    
-    # Clamp index to handle floating point edge cases at max energy
     bin_idx = min(bin_idx, NUM_BINS - 1)
     
-    # Calculate bin edges for the folder name
     bin_lower = 10 ** (log_min + bin_idx * log_step)
     bin_upper = 10 ** (log_min + (bin_idx + 1) * log_step)
     
@@ -75,17 +66,12 @@ def build_command(idx_within_job, pdg_id, pdg_flag):
     zenith  = random.uniform(0.0, 3.14)
     seed    = random_seed_5digits()
 
-    # Determine folder structure
-    # Structure: /base/pdg_XXX/energy_A_to_B/filename
     energy_folder = get_energy_folder_name(energy)
     full_output_dir = Path(BASE_OUTPUT_DIR) / f"pdg_{pdg_id}" / energy_folder
     
-    # Ensure filename is unique
     tag = "${SLURM_JOB_ID}_" + str(idx_within_job)
     output_filename = full_output_dir / tag
 
-    # We add a mkdir command to the line to ensure the folder exists 
-    # before the C++ simulation tries to write to it.
     cmd = (
         f"mkdir -p {full_output_dir} && "
         "./c8_air_shower "
@@ -112,17 +98,18 @@ def write_args_file(path: Path, n_lines: int, pdg_id: int):
             f.write(line + "\n")
     return len(lines)
 
-def render_bash_template(log_dir):
-    # Added 'timeout 30m' and logic to catch exit code 124 (timeout)
-    # Replaced hardcoded log paths with __LOG_DIR__ placeholder
+def render_bash_template(log_dir, partition, time_limit, memory):
+    """
+    Renders the bash script with dynamic SLURM headers.
+    """
     template = textwrap.dedent("""\
         #!/bin/bash
         #SBATCH --job-name=tambo_simulation
-        #SBATCH --mem=32G
-        #SBATCH --time=7-00:00
+        #SBATCH --mem=__MEM__
+        #SBATCH --time=__TIME__
         #SBATCH --output=__LOG_DIR__/%j.out
         #SBATCH --error=__LOG_DIR__/%j.err
-        #SBATCH -p arguelles_delgado
+        #SBATCH -p __PARTITION__
 
         # Record overall start time
         total_start=$(date +%s)
@@ -154,16 +141,14 @@ def render_bash_template(log_dir):
                 
                 start_time=$(date +%s)
                 
-                # RUN COMMAND WITH 30 MINUTE TIMEOUT
-                # 'eval' is used to handle the 'mkdir && ./command' structure
-                timeout 30m bash -c "$line"
+                # RUN COMMAND WITH 35 MINUTE TIMEOUT
+                timeout 35m bash -c "$line"
                 exit_code=$?
                 
                 end_time=$(date +%s)
                 duration=$((end_time - start_time))
                 
                 if [ $exit_code -eq 124 ]; then
-                    # 124 is the standard exit code for GNU timeout
                     echo "!!! Simulation taking so much time or stuck moving to another simulation !!!"
                 elif [ $exit_code -ne 0 ]; then
                     echo "Simulation failed with exit code $exit_code"
@@ -185,15 +170,25 @@ def render_bash_template(log_dir):
         printf "Total runtime for all simulations: %02d:%02d (mm:ss)\\n" $((total_runtime/60)) $((total_runtime%60))
         echo "==========================================="
         """)
-    return template.replace("__LOG_DIR__", str(log_dir))
+    
+    # Replace placeholders
+    script = template.replace("__LOG_DIR__", str(log_dir))
+    script = script.replace("__PARTITION__", partition)
+    script = script.replace("__TIME__", time_limit)
+    script = script.replace("__MEM__", memory)
+    
+    return script
 
-def write_bash_script(script_path: Path, overwrite: bool):
+def write_bash_script(script_path: Path, overwrite: bool, partition: str, time_limit: str, memory: str):
     if script_path.exists() and not overwrite:
         return False
+    
     script_path.parent.mkdir(parents=True, exist_ok=True)
     with open(script_path, "w") as f:
-        # Pass the global LOGS_DIR_DEFAULT to the template
-        f.write(render_bash_template(LOGS_DIR_DEFAULT))
+        # Generate the content dynamically
+        content = render_bash_template(LOGS_DIR_DEFAULT, partition, time_limit, memory)
+        f.write(content)
+        
     os.chmod(script_path, 0o755)
     return True
 
@@ -222,24 +217,28 @@ def submit_job(script_path: Path, args_file: Path, extra_sbatch=None, dry_run=Fa
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate random TAMBO args with structured output, 30min timeout, and auto-submission."
+        description="Generate random TAMBO args with structured output, timeout, and auto-submission."
     )
-    # New PDG Argument
+    # Required PDG
     parser.add_argument("--pdg", type=int, required=True, choices=[211, -211, 111, 11, -11],
-                        help="Particle ID. Mesons (211, -211, 111). Electrons (11, -11) use --force-interaction.")
+                        help="Particle ID. Mesons (211, -211, 111). Electrons (11, -11).")
     
+    # SLURM Configs
+    parser.add_argument("--partition", "-p", default="shared", 
+                        choices=["shared", "arguelles_delgado", "serial_requeue"],
+                        help="SLURM partition to use. Affects time limit.")
+    
+    parser.add_argument("--mem", default="8G",
+                        help="Memory allocation per job (e.g., 8G, 16G, 32G). Default: 16G")
+
+    # Job Control
     parser.add_argument("--jobs", type=int, default=1, help="Number of Slurm jobs to submit.")
     parser.add_argument("--sims-per-job", type=int, default=10, help="Simulations per job.")
-    parser.add_argument("--args-dir", default=ARGS_DIR_DEFAULT,
-                        help="Directory for generated per-job args files.")
-    parser.add_argument("--script-out", default=SCRIPT_OUT_DEFAULT,
-                        help="Where to write the generated SBATCH script.")
-    parser.add_argument("--overwrite-script", action="store_true",
-                        help="Overwrite the generated script if it already exists.")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="RNG seed for reproducibility (optional).")
-    parser.add_argument("--sbatch-flags", nargs=argparse.REMAINDER,
-                        help="Extra sbatch flags. Example: --sbatch-flags --qos high")
+    parser.add_argument("--args-dir", default=ARGS_DIR_DEFAULT, help="Directory for args files.")
+    parser.add_argument("--script-out", default=SCRIPT_OUT_DEFAULT, help="Output path for SBATCH script.")
+    parser.add_argument("--overwrite-script", action="store_true", help="Overwrite generated script.")
+    parser.add_argument("--seed", type=int, default=None, help="RNG seed.")
+    parser.add_argument("--sbatch-flags", nargs=argparse.REMAINDER, help="Extra sbatch flags.")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without submitting.")
     
     args = parser.parse_args()
@@ -249,12 +248,10 @@ def main():
 
     args_dir = Path(args.args_dir)
     script_path = Path(args.script_out)
-    
-    # Updated: Use the BASE_OUTPUT_DIR subfolder for logs
     logs_dir = Path(LOGS_DIR_DEFAULT)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Validate PDG Logic (Double check logic is available, though choices handles validity)
+    # Validate PDG
     try:
         flag_used = get_pdg_flags(args.pdg)
         print(f"PDG: {args.pdg} selected. Using flag: {flag_used}")
@@ -262,12 +259,29 @@ def main():
         print(f"Error: {e}")
         sys.exit(1)
 
-    # Write or reuse the autogen bash script
-    created = write_bash_script(script_path, overwrite=args.overwrite_script)
+    # Determine Time Limit based on Partition
+    if args.partition == "arguelles_delgado":
+        time_limit = "7-00:00"
+    else:
+        # shared or serial_requeue
+        time_limit = "3-00:00"
+
+    print(f"Config: Partition={args.partition}, Time={time_limit}, Mem={args.mem}")
+
+    # Write SBATCH script
+    created = write_bash_script(
+        script_path, 
+        overwrite=args.overwrite_script,
+        partition=args.partition,
+        time_limit=time_limit,
+        memory=args.mem
+    )
+
     if created:
         print(f"Wrote SBATCH script -> {script_path}")
     else:
         print(f"Using existing SBATCH script -> {script_path}")
+        print("  (Note: Use --overwrite-script if you changed partition/mem args)")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     total = args.jobs * args.sims_per_job
@@ -277,7 +291,6 @@ def main():
     for j in range(1, args.jobs + 1):
         args_file = args_dir / f"args_{args.pdg}_{ts}_job{j}.txt"
         
-        # Pass PDG ID to the writer
         n = write_args_file(args_file, args.sims_per_job, args.pdg)
         
         print(f"  • Wrote {n} commands -> {args_file}")
