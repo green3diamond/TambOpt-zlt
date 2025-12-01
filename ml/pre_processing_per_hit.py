@@ -7,14 +7,13 @@ import shlex
 from tqdm import tqdm
 import logging
 import gc
-from multiprocessing import Pool, cpu_count
-from functools import partial
+import multiprocessing as mp
 import time
 
-# Set up logging
+# ---------- Logging ----------
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(processName)s - %(message)s',
     handlers=[
         logging.FileHandler("process_events.log"),
         logging.StreamHandler()
@@ -23,16 +22,18 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 base_dir = "/n/netscratch/arguelles_delgado_lab/Everyone/hhanif/tambo_simulation"
-output_dir = "../ml/processed_events_50k"
-os.makedirs(output_dir, exist_ok=True)
 
 fields = [
     "pdg", "name", "total_energy", "kinetic_energy",
     "x", "y", "z", "nx", "ny", "nz", "time"
 ]
 
-def process_single_event(event_id, base_dir, output_dir, fields):
-    """Process a single event - multiprocessing target function"""
+output_dir = "../ml/processed_events_50k"
+os.makedirs(output_dir, exist_ok=True)
+
+
+def process_one_event(event_id: str):
+    """Exactly your single-event logic, but wrapped in a function."""
     try:
         event_path = os.path.join(base_dir, event_id)
         config_path = os.path.join(event_path, "config.yaml")
@@ -40,13 +41,19 @@ def process_single_event(event_id, base_dir, output_dir, fields):
         particles_path = os.path.join(event_path, "particles/particles.parquet")
 
         if not (os.path.exists(config_path) and os.path.exists(primary_path) and os.path.exists(particles_path)):
-            return event_id, False, "missing required files"
+            return False, f"{event_id}: missing required files"
 
-        # Load config
+        # ---- load config ----
         with open(config_path) as f:
             config = yaml.safe_load(f)
+
         args = config.get("args", "")
-        tokens = shlex.split(args)
+        try:
+            tokens = shlex.split(args)
+        except Exception as e:
+            logger.error(f"{event_id}: Failed parsing args string: {e}")
+            tokens = []
+
         arg_dict = {}
         for i, token in enumerate(tokens):
             if token.startswith("--"):
@@ -55,38 +62,56 @@ def process_single_event(event_id, base_dir, output_dir, fields):
                     arg_dict[key] = tokens[i + 1]
                 else:
                     arg_dict[key] = True
-        injection_height = float(arg_dict.get("injection-height", "0"))
-        zenith = float(arg_dict.get("zenith", "0"))
-        azimuth = float(arg_dict.get("azimuth", "0"))
 
-        # Load primary
+        try:
+            injection_height = float(arg_dict.get("injection-height", "0"))
+            zenith = float(arg_dict.get("zenith", "0"))
+            azimuth = float(arg_dict.get("azimuth", "0"))
+        except ValueError as e:
+            logger.error(f"{event_id}: Error converting injection args to float: {e}")
+            injection_height = 0.0
+            zenith = 0.0
+            azimuth = 0.0
+
+        # ---- load primary ----
         with open(primary_path) as f:
             primary = yaml.safe_load(f)
-        if isinstance(primary, dict) and len(primary) == 1:
+
+        if isinstance(primary, dict) and len(primary) == 1 and isinstance(next(iter(primary.values())), dict):
             primary = next(iter(primary.values()))
 
-        # Find time bounds
+        # ---- first pass: time bounds ----
         tmin, tmax = np.inf, -np.inf
-        for i in range(24):
+        for i in range(0, 24):
             folder_name = "particles" if i == 0 else f"particles{i}"
-            parquet_file = os.path.join(event_path, folder_name, "particles.parquet")
+            particledir = os.path.join(event_path, folder_name)
+            parquet_file = os.path.join(particledir, "particles.parquet")
+
             if not os.path.exists(parquet_file):
                 continue
+
             try:
                 akf = ak.from_parquet(parquet_file)
-                if "time" in ak.fields(akf) and len(akf["time"]) > 0:
-                    times = akf["time"]
-                    tmin = min(tmin, np.min(times))
-                    tmax = max(tmax, np.max(times))
-                del akf
-            except:
+            except Exception as e:
+                logger.error(f"{event_id}: Failed to read parquet {parquet_file}: {e}")
                 continue
+
+            if "time" not in ak.fields(akf) or len(akf["time"]) == 0:
+                del akf
+                continue
+
+            times = akf["time"]
+            tmin = min(tmin, np.min(times))
+            tmax = max(tmax, np.max(times))
+            del akf, times
+
         if tmin == np.inf or tmax == -np.inf:
+            logger.warning(f"{event_id}: No time data, using defaults")
             tmin, tmax = 0.0, 1.0
 
-        # Process planes
+        # ---- planes ----
         all_planes = []
-        for i in range(24):
+        for i in range(0, 24):
             folder_name = "particles" if i == 0 else f"particles{i}"
             particledir = os.path.join(event_path, folder_name)
             parquet_file = os.path.join(particledir, "particles.parquet")
@@ -97,31 +122,42 @@ def process_single_event(event_id, base_dir, output_dir, fields):
 
             try:
                 akf = ak.from_parquet(parquet_file)
+            except Exception as e:
+                logger.error(f"{event_id}: Failed to load parquet {parquet_file}: {e}")
+                continue
+
+            try:
                 with open(plane_config) as f:
                     pconfig = yaml.safe_load(f)
+            except Exception as e:
+                logger.error(f"{event_id}: Failed loading plane config {plane_config}: {e}")
+                del akf
+                continue
 
+            try:
                 center = np.array(pconfig["plane"]["center"])
                 zhat = np.array(pconfig["plane"]["normal"])
                 xhat = np.array(pconfig["x-axis"])
                 yhat = np.array(pconfig["y-axis"])
                 mat = np.array([xhat, yhat, zhat])
 
-                # FILTER + DOWNSAMPLE AWKWARD ARRAY
+                # filter + downsample in awkward
                 mask = (akf["pdg"] == 11) | (akf["pdg"] == 13) | (akf["pdg"] == 22)
                 akf_filtered = akf[mask]
+
                 if len(akf_filtered) == 0:
                     del akf, pconfig
                     continue
 
                 max_per_plane = 1000
                 if len(akf_filtered) > max_per_plane:
-                    sample_idx = np.random.choice(len(akf_filtered), size=max_per_plane, replace=False)
-                    akf = akf_filtered[ak.Array(sample_idx)]
+                    idx = np.random.choice(len(akf_filtered), size=max_per_plane, replace=False)
+                    akf_plane = akf_filtered[ak.Array(idx)]
                 else:
-                    akf = akf_filtered
-    
-                x = ak.to_numpy(akf["x"])
-                y = ak.to_numpy(akf["y"])
+                    akf_plane = akf_filtered
+
+                x = ak.to_numpy(akf_plane["x"])
+                y = ak.to_numpy(akf_plane["y"])
                 zeros = np.zeros(len(x), dtype=float)
 
                 coords = np.matmul(
@@ -129,8 +165,9 @@ def process_single_event(event_id, base_dir, output_dir, fields):
                     np.vstack([x, y, zeros])
                 ) + center[:, None]
 
-                df = ak.to_dataframe(akf)
-                df["time_transformed"] = (akf["time"] - tmin) / (tmax - tmin)
+                df = ak.to_dataframe(akf_plane)
+
+                df["time_transformed"] = (akf_plane["time"] - tmin) / (tmax - tmin)
                 df["X_transformed"] = coords[0, :]
                 df["Y_transformed"] = coords[1, :]
                 df["Z_transformed"] = coords[2, :]
@@ -138,89 +175,110 @@ def process_single_event(event_id, base_dir, output_dir, fields):
                 df["injection_height"] = injection_height
                 df["zenith"] = zenith
                 df["azimuth"] = azimuth
+
                 df["sin_azimuth"] = np.sin(np.deg2rad(azimuth))
                 df["cos_azimuth"] = np.cos(np.deg2rad(azimuth))
+
                 df["sin_zenith"] = np.sin(np.deg2rad(zenith))
                 df["cos_zenith"] = np.cos(np.deg2rad(zenith))
+
                 df["distance"] = 12000.0 if i == 0 else 500.0 * i
 
                 for key in fields:
                     df[f"primary_{key}"] = primary.get(key, 0)
+
                 df["plane"] = float(i)
                 df["event_id"] = event_id
 
                 all_planes.append(df)
-                del akf, x, y, coords, pconfig
+
+                del akf, akf_filtered, akf_plane, x, y, zeros, coords, pconfig
+
             except Exception as e:
+                logger.error(f"{event_id}: Error processing plane {i}: {e}")
                 continue
 
-        if all_planes:
-            event_df = pd.concat(all_planes, ignore_index=True)
-            for col in event_df.columns:
-                if col != "name":
-                    try:
-                        event_df[col] = pd.to_numeric(event_df[col])
-                    except:
-                        pass
-            if len(event_df) > 10_000:
-                event_df = event_df.sample(n=10_000, random_state=42)
+        if not all_planes:
+            return False, f"{event_id}: no planes processed"
 
-            out_file = os.path.join(output_dir, f"{event_id}.parquet")
-            event_df.to_parquet(out_file, index=False)
-            del event_df, all_planes
-            gc.collect()
-            return event_id, True, "success"
-        else:
-            return event_id, False, "no planes processed"
+        event_df = pd.concat(all_planes, ignore_index=True)
+
+        for col in event_df.columns:
+            if col != "name":
+                try:
+                    event_df[col] = pd.to_numeric(event_df[col])
+                except Exception:
+                    pass
+
+        if len(event_df) > 10_000:
+            event_df = event_df.sample(n=10_000, random_state=42)
+
+        out_file = os.path.join(output_dir, f"{event_id}.parquet")
+        event_df.to_parquet(out_file, index=False)
+
+        del event_df, all_planes
+        gc.collect()
+        return True, f"{event_id}: success"
 
     except Exception as e:
-        return event_id, False, str(e)
+        return False, f"{event_id}: {e}"
 
-# Main execution
-try:
-    event_dirs = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
-except Exception as e:
-    logger.error(f"Error listing base directory {base_dir}: {e}")
-    event_dirs = []
 
-logger.info(f"Found {len(event_dirs)} events")
+def worker(event_queue: mp.Queue, result_queue: mp.Queue):
+    """Process loop for each CPU."""
+    while True:
+        event_id = event_queue.get()
+        if event_id is None:
+            break
+        ok, msg = process_one_event(event_id)
+        result_queue.put((ok, msg))
 
-# Use 75% of available CPUs (leave some for system)
-num_workers = max(1, cpu_count())
-logger.info(f"Using {num_workers} parallel workers (total CPUs: {cpu_count()})")
 
-# Process in chunks to avoid memory explosion
-chunk_size = 100
-total_processed = 0
-results = []
+if __name__ == "__main__":
+    n_cpus = len(os.sched_getaffinity(0))
+    print(f"Number of CPUs allocated: {n_cpus}")
 
-with tqdm(total=len(event_dirs), desc="Processing events") as pbar:
-    for i in range(0, len(event_dirs), chunk_size):
-        chunk = event_dirs[i:i + chunk_size]
-        
-        # Partial function with fixed args
-        process_func = partial(process_single_event, base_dir=base_dir, 
-                             output_dir=output_dir, fields=fields)
-        
-        with Pool(num_workers) as pool:
-            chunk_results = pool.starmap(process_func, [(event_id,) for event_id in chunk])
-        
-        # Count successes and log
-        successes = [r[1] for r in chunk_results]
-        total_processed += sum(successes)
-        results.extend(chunk_results)
-        
-        logger.info(f"Chunk {i//chunk_size + 1}: {sum(successes)}/{len(chunk)} successful")
-        pbar.update(len(chunk))
-        
-        # Clean up
-        gc.collect()
+    try:
+        event_dirs = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
+    except Exception as e:
+        logger.error(f"Error listing base directory {base_dir}: {e}")
+        event_dirs = []
 
-# Summary
-successful = sum(1 for r in results if r[1])
-errors = [r for r in results if not r[1]]
-logger.info(f"✅ COMPLETE: {successful}/{len(event_dirs)} successful ({successful/len(event_dirs)*100:.1f}%)")
-logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Found {len(event_dirs)} events")
 
-if errors:
-    logger.info(f"Failed events ({len(errors)}): {len(set([r[2] for r in errors if r[2] != 'no planes processed']))} unique errors")
+    event_queue = mp.Queue()
+    result_queue = mp.Queue()
+
+    # Spawn one worker per available CPU
+    processes = [
+        mp.Process(target=worker, args=(event_queue, result_queue))
+        for _ in range(n_cpus)
+    ]
+
+    for p in processes:
+        p.start()
+
+    # Enqueue all events
+    for ev in event_dirs:
+        event_queue.put(ev)
+
+    # Send stop signals
+    for _ in processes:
+        event_queue.put(None)
+
+    # Progress + collect results
+    successes = 0
+    with tqdm(total=len(event_dirs), desc="Processing events") as pbar:
+        for _ in range(len(event_dirs)):
+            ok, msg = result_queue.get()
+            if ok:
+                successes += 1
+            else:
+                logger.warning(msg)
+            pbar.update(1)
+
+    for p in processes:
+        p.join()
+
+    logger.info(f"✅ All events processed: {successes}/{len(event_dirs)} successful")
+    logger.info(f"Output directory: {output_dir}")
