@@ -16,3 +16,4 @@ notebooks/lightning_logs/*
 .idea/*
 notebooks/src/__pycache__/*
 /lightning_logs/*
+tambo_pre_processed_files_500000_simulations/*
