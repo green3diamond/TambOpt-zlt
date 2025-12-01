@@ -10,6 +10,8 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler, FunctionTransfor
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from scipy import stats
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 # ---------- Logging ----------
 logging.basicConfig(
@@ -24,7 +26,7 @@ logger = logging.getLogger()
 
 # Input and output directories
 input_dir = "../ml/processed_events_50k"
-output_file = "../ml/processed_events_50k/event_cone_parameters.parquet"
+output_file = "../ml/processed_events_50k/event_cone_parameters_normalized.parquet"
 os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
 def calculate_cone_parameters(event_data):
@@ -39,7 +41,6 @@ def calculate_cone_parameters(event_data):
         valid_planes = event_data[event_data['plane'] > 0]
         if valid_planes.empty:
             return pd.Series({
-                'event_id': event_id,
                 'primary_kinetic_energy': primary_energy,
                 'min_plane': 0, 'max_plane': 0,
                 'X_mean_min': 0, 'Y_mean_min': 0, 'Z_mean_min': 0,
@@ -74,7 +75,6 @@ def calculate_cone_parameters(event_data):
             radius = 0
         
         return pd.Series({
-            'event_id': event_id,
             'primary_kinetic_energy': primary_energy,
             'min_plane': min_plane,
             'max_plane': max_plane,
@@ -88,8 +88,37 @@ def calculate_cone_parameters(event_data):
         })
     except Exception as e:
         logger.error(f"Error calculating cone params for {event_data.name if hasattr(event_data, 'name') else 'unknown'}: {e}")
-        return pd.Series({'event_id': event_data.name if hasattr(event_data, 'name') else 'unknown'})
+        return pd.Series({'primary_kinetic_energy': 0})
 
+def process_one_parquet(parquet_file: str) -> pd.DataFrame:
+    """Process a single parquet file and extract RAW cone parameters (no normalization)."""
+    try:
+        logger.info(f"Processing {parquet_file}")
+        
+        # Load the parquet file
+        df = pd.read_parquet(parquet_file)
+        
+        if df.empty:
+            logger.warning(f"{parquet_file}: empty dataframe")
+            return pd.DataFrame()
+        
+        # EXACTLY like your example: groupby().apply().reset_index()
+        batch_identifier = "event_id"
+        event_cone_params = df.groupby(by=[batch_identifier]).apply(calculate_cone_parameters).reset_index()
+        
+        # Add event_id back after groupby.apply (no duplication)
+        event_cone_params['event_id'] = event_cone_params[batch_identifier]
+        
+        if event_cone_params.empty:
+            logger.warning(f"{parquet_file}: no cone parameters computed")
+            return pd.DataFrame()
+        
+        logger.info(f"{parquet_file}: processed {len(event_cone_params)} raw events")
+        return event_cone_params
+        
+    except Exception as e:
+        logger.error(f"Error processing {parquet_file}: {e}")
+        return pd.DataFrame()
 
 def normalize_cone_features(final_df: pd.DataFrame) -> pd.DataFrame:
     """Apply normalization and standardization to ALL cone parameters at once (final step)."""
@@ -107,7 +136,8 @@ def normalize_cone_features(final_df: pd.DataFrame) -> pd.DataFrame:
         
         if len(final_df) > 1:  # Need at least 2 points for z-score
             z_scores = np.abs(stats.zscore(final_df[numeric_cols]))
-            final_df = final_df[(z_scores < 2).all(axis=1)].reset_index(drop=True)
+            outlier_mask = (z_scores < 2).all(axis=1)
+            final_df = final_df[outlier_mask].reset_index(drop=True)
             logger.info(f"Outlier removal: {initial_count} -> {len(final_df)} events")
         
         # Define transformations (GLOBAL fit across all events)
@@ -149,33 +179,6 @@ def normalize_cone_features(final_df: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Error in global normalization: {e}")
         return final_df  # Return raw data if normalization fails
-
-def process_one_parquet(parquet_file: str) -> pd.DataFrame:
-    """Process a single parquet file and extract RAW cone parameters (no normalization)."""
-    try:
-        logger.info(f"Processing {parquet_file}")
-        
-        # Load the parquet file
-        df = pd.read_parquet(parquet_file)
-        
-        if df.empty:
-            logger.warning(f"{parquet_file}: empty dataframe")
-            return pd.DataFrame()
-        
-        # EXACTLY like your example: groupby().apply().reset_index()
-        batch_identifier = "event_id"
-        event_cone_params = df.groupby(by=[batch_identifier]).apply(calculate_cone_parameters).reset_index()
-        
-        if event_cone_params.empty:
-            logger.warning(f"{parquet_file}: no cone parameters computed")
-            return pd.DataFrame()
-        
-        logger.info(f"{parquet_file}: processed {len(event_cone_params)} raw events")
-        return event_cone_params
-        
-    except Exception as e:
-        logger.error(f"Error processing {parquet_file}: {e}")
-        return pd.DataFrame()
 
 def worker(file_queue: mp.Queue, result_queue: mp.Queue):
     """Worker process for multiprocessing."""
