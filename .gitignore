@@ -4,7 +4,8 @@ fort*
 
 **/.ipynb_checkpoints/*
 **/Untitled*.ipynb
-ml/processed_events/*
+ml/processed_events_1600/*
+ml/processed_events_50k/*
 ml/training_checkpoints/*
 ml/processed_events_small/*.parquet
 training_checkpoints/*.pth

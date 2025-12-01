@@ -6,7 +6,7 @@ import numpy as np
 from scipy import stats
 
 # --- Step 1: Load parquet file ---
-df = pd.read_parquet("../ml/processed_events/all_showers.parquet")
+df = pd.read_parquet("../ml/processed_events_50k/all_showers.parquet")
 
 # --- Step 2: Define feature groups ---
 energy_features = ["kinetic_energy", "primary_kinetic_energy"]
@@ -51,7 +51,7 @@ normalized_df["pdg"]=abs(df["pdg"])
 normalized_df["plane"]=df["plane"]
 
 # --- Step 6: Save result ---
-normalized_df.to_parquet("../ml/processed_events/normalized_features.parquet", index=False)
+normalized_df.to_parquet("../ml/processed_events_50k/normalized_features.parquet", index=False)
 
 
 print("Columns:", normalized_df.columns.tolist())
