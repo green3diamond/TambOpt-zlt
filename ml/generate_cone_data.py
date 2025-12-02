@@ -25,8 +25,8 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # Input and output directories
-input_dir = "../ml/processed_events_50k"
-output_file = "../ml/processed_events_50k/event_cone_parameters_normalized.parquet"
+input_dir = "ml/processed_events_50k"
+output_file = "ml/processed_events_50k/event_cone_parameters_normalized.parquet"
 os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
 def calculate_cone_parameters(event_data):
@@ -36,6 +36,10 @@ def calculate_cone_parameters(event_data):
         
         # Get primary energy (take first value, assuming it's constant per event)
         primary_energy = event_data['primary_kinetic_energy'].iloc[0] if 'primary_kinetic_energy' in event_data.columns else 0
+        sin_azimuth = event_data['sin_azimuth'].iloc[0]
+        cos_azimuth = event_data['cos_azimuth'].iloc[0]
+        sin_zenith = event_data['sin_zenith'].iloc[0]
+        cos_zenith = event_data['cos_zenith'].iloc[0]
         
         # Filter for planes > 0 to find min_plane
         valid_planes = event_data[event_data['plane'] > 0]
@@ -45,7 +49,9 @@ def calculate_cone_parameters(event_data):
                 'min_plane': 0, 'max_plane': 0,
                 'X_mean_min': 0, 'Y_mean_min': 0, 'Z_mean_min': 0,
                 'X_mean_max': 0, 'Y_mean_max': 0, 'Z_mean_max': 0,
-                'radius': 0
+                'radius': 0, 
+                'sin_azimuth': sin_azimuth, 'cos_azimuth': cos_azimuth,
+                'sin_zenith': sin_zenith, 'cos_zenith': cos_zenith
             })
         
         # min plane is the lowest non-zero plane
@@ -84,7 +90,11 @@ def calculate_cone_parameters(event_data):
             'X_mean_max': X_mean_max,
             'Y_mean_max': Y_mean_max,
             'Z_mean_max': Z_mean_max,
-            'radius': radius
+            'radius': radius,
+            'sin_azimuth':sin_azimuth,
+            'cos_azimuth':cos_azimuth,
+            'sin_zenith':sin_zenith,
+            'cos_zenith':cos_zenith
         })
     except Exception as e:
         logger.error(f"Error calculating cone params for {event_data.name if hasattr(event_data, 'name') else 'unknown'}: {e}")
@@ -129,6 +139,8 @@ def normalize_cone_features(final_df: pd.DataFrame) -> pd.DataFrame:
         energy_features = ["primary_kinetic_energy"]
         spatial_features = ["X_mean_min", "Y_mean_min", "Z_mean_min", 
                           "X_mean_max", "Y_mean_max", "Z_mean_max", "radius"]
+        trig_features = ["sin_azimuth", "cos_azimuth", "sin_zenith", "cos_zenith"]
+
         
         # Outlier detection (z-score < 2) on energy + spatial features ACROSS ALL EVENTS
         numeric_cols = energy_features + spatial_features
@@ -159,18 +171,20 @@ def normalize_cone_features(final_df: pd.DataFrame) -> pd.DataFrame:
             transformers=[
                 ("energy", log_scaler, energy_features),
                 ("spatial", spatial_scaler, spatial_features),
-                ("metadata", "passthrough", metadata_cols)
+                ("metadata", "passthrough", metadata_cols),
+                ("trig", "passthrough", trig_features)
+
             ]
         )
         
         # Apply transformations (fit on ALL data)
-        feature_cols = energy_features + spatial_features + metadata_cols
+        feature_cols = energy_features + spatial_features + metadata_cols + trig_features
         normalized_data = preprocessor.fit_transform(final_df[feature_cols])
         
         # Reconstruct DataFrame with proper column names
         normalized_df = pd.DataFrame(
             normalized_data, 
-            columns=energy_features + spatial_features + metadata_cols
+            columns=feature_cols
         )
         
         logger.info("Global normalization applied successfully")
@@ -196,6 +210,7 @@ if __name__ == "__main__":
                     if f.name not in ["event_cone_parameters.parquet", 
                                     "event_cone_parameters_normalized.parquet"]]  # Exclude output files
     
+    # parquet_files = parquet_files[:200]
     logger.info(f"Found {len(parquet_files)} parquet files to process")
     
     if not parquet_files:
