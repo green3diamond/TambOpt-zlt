@@ -256,16 +256,16 @@ if __name__ == "__main__":
     if all_cone_params:
         final_raw_df = pd.concat(all_cone_params, ignore_index=True)
         final_raw_df.drop_duplicates(subset=['event_id'], keep='first', inplace=True)
+        final_raw_df.to_parquet('ml/processed_events_50k/tmp_10k_2.parquet', index=False)
         
-        # GLOBAL NORMALIZATION (fit on all events together)
-        final_normalized_df = normalize_cone_features(final_raw_df)
-        final_normalized_df.to_parquet(output_file, index=False)
         
-        logger.info(f"Saved {len(final_normalized_df)} unique normalized cone parameters to {output_file}")
-        logger.info(f"Final columns: {final_normalized_df.columns.tolist()}")
-        logger.info(f"Shape: {final_normalized_df.shape}")
-        logger.info(f"Primary energy stats (normalized): mean={final_normalized_df['primary_kinetic_energy'].mean():.3f}, std={final_normalized_df['primary_kinetic_energy'].std():.3f}")
-        logger.info(f"Spatial features stats (normalized): std={final_normalized_df[['X_mean_min','radius']].std().mean():.3f}")
+        # # GLOBAL NORMALIZATION (fit on all events together)
+        # final_normalized_df = normalize_cone_features(final_raw_df)
+        # final_normalized_df.to_parquet(output_file, index=False)
+        
+        logger.info(f"Saved {len(final_raw_df)} unique normalized cone parameters to {output_file}")
+        logger.info(f"Final columns: {final_raw_df.columns.tolist()}")
+        logger.info(f"Shape: {final_raw_df.shape}")
     else:
         logger.error("No cone parameters computed!")
     
