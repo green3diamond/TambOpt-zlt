@@ -13,7 +13,7 @@ TambOpt is a small collection of tools, models, and notebooks for simulating par
 ---
 
 ## Structure (what’s where) 
-- `corsika_application/` — C++ source for a CORSIKA-based air-shower application; build & run instructions included in `corsika_application/README.md`.
+- `corsika_application/` — C++ code for a CORSIKA-based particle-shower application; instructions included in `corsika_application/README.md`.
 - `cluster_scripts/` — helper scripts for generating args and SBATCH scripts for cluster submission (`submit_tambo_jobs.py`).
 - `detector_optimization/` — simulation and optimization tools for detector placement (has `requirements.txt` and `simulator.py`).
 - `ml/` — ML training and preprocessing for NNs; see `ml/README.md` and scripts such as `gnn.py`, `nn.py`, and preprocessing utilities.
