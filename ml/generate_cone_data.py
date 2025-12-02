@@ -146,12 +146,6 @@ def normalize_cone_features(final_df: pd.DataFrame) -> pd.DataFrame:
         numeric_cols = energy_features + spatial_features
         initial_count = len(final_df)
         
-        if len(final_df) > 1:  # Need at least 2 points for z-score
-            z_scores = np.abs(stats.zscore(final_df[numeric_cols]))
-            outlier_mask = (z_scores < 2).all(axis=1)
-            final_df = final_df[outlier_mask].reset_index(drop=True)
-            logger.info(f"Outlier removal: {initial_count} -> {len(final_df)} events")
-        
         # Define transformations (GLOBAL fit across all events)
         log_scaler = Pipeline([
             ("log", FunctionTransformer(
@@ -210,7 +204,6 @@ if __name__ == "__main__":
                     if f.name not in ["event_cone_parameters.parquet", 
                                     "event_cone_parameters_normalized.parquet"]]  # Exclude output files
     
-    # parquet_files = parquet_files[:200]
     logger.info(f"Found {len(parquet_files)} parquet files to process")
     
     if not parquet_files:
@@ -256,12 +249,12 @@ if __name__ == "__main__":
     if all_cone_params:
         final_raw_df = pd.concat(all_cone_params, ignore_index=True)
         final_raw_df.drop_duplicates(subset=['event_id'], keep='first', inplace=True)
-        final_raw_df.to_parquet('ml/processed_events_50k/tmp_10k_2.parquet', index=False)
+        final_raw_df.to_parquet('ml/processed_events_50k/raw_cone_data.parquet', index=False)
         
         
-        # # GLOBAL NORMALIZATION (fit on all events together)
-        # final_normalized_df = normalize_cone_features(final_raw_df)
-        # final_normalized_df.to_parquet(output_file, index=False)
+        # GLOBAL NORMALIZATION (fit on all events together)
+        final_normalized_df = normalize_cone_features(final_raw_df)
+        final_normalized_df.to_parquet(output_file, index=False)
         
         logger.info(f"Saved {len(final_raw_df)} unique normalized cone parameters to {output_file}")
         logger.info(f"Final columns: {final_raw_df.columns.tolist()}")
