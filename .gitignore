@@ -20,3 +20,4 @@ notebooks/src/__pycache__/*
 tambo_pre_processed_files_500000_simulations/*
 .vscode/*
 *.log
+*/__pycache__/*
