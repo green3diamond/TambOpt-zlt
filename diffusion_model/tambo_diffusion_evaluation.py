@@ -1,15 +1,19 @@
 import sys
 sys.path.append('/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_optimization')
 import torch
-from flow_train_loc import (
+from diffusion_train import (
     TamboDataModule, 
     TamboDiffusionLitModel, 
     df_cleaned
 )
 from models.DiffusionCondition import DDIMSampler
+import time
+import os
+import numpy as np
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
+start_time = time.time()
+print(f"Device: {device}")
 # -------------------------------
 # 1. Load trained checkpoint
 # -------------------------------
@@ -21,8 +25,11 @@ lit_model = TamboDiffusionLitModel.load_from_checkpoint(
 ).to(device)
 lit_model.eval()
 
+print(f"Loaded checkpoint: {ckpt_path}")
+
 model = lit_model.model
 model.eval()
+print("Model set to eval mode.")
 
 # -------------------------------
 # 2. Build DDIM Sampler
@@ -35,6 +42,9 @@ sampler = DDIMSampler(
     eta=0.0,
     ddim_steps=100,
 )
+#
+# Announce sampler creation
+print("DDIM sampler built (ddim_steps=100, eta=0.0)")
 
 # -------------------------------
 # 3. Load test set
@@ -51,6 +61,7 @@ data_module = TamboDataModule(
 data_module.setup("test")
 
 test_loader = data_module.test_dataloader()
+print(f"Test dataloader ready. Number of batches: {len(test_loader)}")
 
 # -------------------------------
 # 4. Extract FIRST 5 test samples
@@ -85,17 +96,24 @@ for imgs, cond in test_loader:
 
 
 # first5 is now a list of 5 conditioning vectors (each shape (5,))
-print("Collected first 5 conditioning vectors.")
+print(f"Collected {len(first5_conds)} conditioning vectors.")
+if len(first5_conds) > 0:
+    print(f"First conditioning vector (cpu): {first5_conds[0]}")
 
 # -------------------------------
 # 5. Generate 1000 samples per each conditioning
 # -------------------------------
 num_samples_total = 1000
+# tryyout 200 at first
+num_samples_total = 200
+
 chunk_size = 200  # try 16 or 8 if still OOM
 
 generated_sets = []
 
 for idx, cond_vec in enumerate(first5_conds):
+    print(f"Starting generation for condition {idx+1}/{len(first5_conds)}")
+    print(f"Condition (cpu): {cond_vec}")
     cond_vec = cond_vec.to(device)  # (5,)
 
     images_chunks = []
@@ -127,7 +145,7 @@ for idx, cond_vec in enumerate(first5_conds):
         torch.cuda.empty_cache()
 
         samples_done += bs
-        print(f"Condition {idx+1}/10: {samples_done}/{num_samples_total} samples done")
+        print(f"Condition {idx+1}/{len(first5_conds)}: {samples_done}/{num_samples_total} samples done")
 
     # Concatenate all chunks -> (1000, 3, 32, 32)
     gen_imgs_all = torch.cat(images_chunks, dim=0)
@@ -135,19 +153,68 @@ for idx, cond_vec in enumerate(first5_conds):
         "condition": cond_vec.cpu(),
         "images": gen_imgs_all,   # (1000, 3, 32, 32)
     })
+    print(f"Concatenated generated images for condition {idx+1}: {gen_imgs_all.shape}")
 
     # extra safety between conditions
     torch.cuda.empty_cache()
-    print(f"Finished condition {idx+1}/5")
+    print(f"Finished condition {idx+1}/{len(first5_conds)}")
 
-print("✔ Done: generated 5 × 1000 = 5000 images.")
+total_images = sum([s["images"].shape[0] for s in generated_sets]) if len(generated_sets) > 0 else 0
+print(f"✔ Done: generated {total_images} images across {len(generated_sets)} conditions.")
+print(f"time from start in seconds {time.time()-start_time}")
 
+# -------------------------------
+# Save inputs (conditions) and outputs (generated images) as numpy bundles
+# -------------------------------
+out_dir = "diffusion_model/run_2"
+os.makedirs(out_dir, exist_ok=True)
+
+if len(generated_sets) > 0:
+    # Save per-condition bundles as a single dictionary (pickled inside the .npz)
+    for i, s in enumerate(generated_sets):
+        cond = s["condition"].cpu().numpy()
+        imgs = s["images"].numpy()
+        # ground-truth image if available
+        gt = None
+        if i < len(first5_imgs):
+            gt = first5_imgs[i].cpu().numpy()
+
+        meta = {
+            "condition_index": i + 1,
+            "num_generated": int(imgs.shape[0]),
+            "num_samples_requested": int(num_samples_total),
+        }
+
+        bundle = {
+            "input": cond,    # condition vector (5,)
+            "target": gt,     # ground-truth image (3,H,W) or None
+            "output": imgs,   # generated images (N,3,H,W)
+            "meta": meta,
+        }
+
+        out_path = os.path.join(out_dir, f"condition_{i+1}.npz")
+        # Save the bundle as a single named entry (will be pickled)
+        np.savez_compressed(out_path, bundle=bundle)
+        print(f"Saved numpy bundle: {out_path} (images shape: {imgs.shape})")
+
+    # Save summary file with all conditions (as dict)
+    all_conds = np.stack([s["condition"].cpu().numpy() for s in generated_sets])
+    summary = {
+        "all_conditions": all_conds,
+        "total_images": int(total_images),
+        "num_conditions": len(generated_sets),
+    }
+    summary_path = os.path.join(out_dir, "summary.npz")
+    np.savez_compressed(summary_path, summary=summary)
+    print(f"Saved summary numpy bundle: {summary_path} (conditions: {all_conds.shape})")
+else:
+    print("No generated sets to save.")
 
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
 
-num_conds = 10 # first 5 conditions
+num_conds = 10 # first 10 conditions
 
 for idx in range(num_conds):
     # ----------------------------------------------------
@@ -232,6 +299,9 @@ for idx in range(num_conds):
     axs[0].legend(loc="upper right")
 
     plt.tight_layout()
-    plt.savefig(f"condition_{idx+1}.png", dpi=300, bbox_inches="tight")
+    out_dir = "diffusion_model/run_2"
+    out_name = os.path.join(out_dir, f"condition_{idx+1}.png")
+    print(f"Saving plot: {out_name}")
+    plt.savefig(out_name, dpi=300, bbox_inches="tight")
     plt.close()
 
