@@ -24,3 +24,4 @@ tambo_pre_processed_files_500000_simulations/*
 diffusion_model/*/*.png
 diffusion_model/*/*.npz
 .DS_Store
+*.pyc
