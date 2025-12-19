@@ -25,3 +25,5 @@ diffusion_model/*/*.png
 diffusion_model/*/*.npz
 .DS_Store
 *.pyc
+detector_optimization/NN_Files/
+detector_optimization/Python_Layouts/
