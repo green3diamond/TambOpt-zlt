@@ -215,8 +215,8 @@ class TamboDiffusionGenerator:
         start_time = time.time()
 
         for idx, cond_vec in enumerate(conditions_to_process):
-            print(f"Starting generation for condition {idx+1}/{len(conditions_to_process)}")
-            print(f"Condition (cpu): {cond_vec}")
+            # print(f"Starting generation for condition {idx+1}/{len(conditions_to_process)}")
+            # print(f"Condition (cpu): {cond_vec}")
             cond_vec = cond_vec.to(self.device)  # (5,)
 
             images_chunks = []
@@ -248,7 +248,7 @@ class TamboDiffusionGenerator:
                 torch.cuda.empty_cache()
 
                 samples_done += bs
-                print(f"Condition {idx+1}/{len(conditions_to_process)}: {samples_done}/{num_samples} samples done")
+                # print(f"Condition {idx+1}/{len(conditions_to_process)}: {samples_done}/{num_samples} samples done")
 
             # Concatenate all chunks -> (num_samples, 3, 32, 32)
             gen_imgs_all = torch.cat(images_chunks, dim=0)
@@ -256,15 +256,15 @@ class TamboDiffusionGenerator:
                 "condition": cond_vec.cpu(),
                 "images": gen_imgs_all,
             })
-            print(f"Concatenated generated images for condition {idx+1}: {gen_imgs_all.shape}")
+            # print(f"Concatenated generated images for condition {idx+1}: {gen_imgs_all.shape}")
 
             # Extra safety between conditions
             torch.cuda.empty_cache()
-            print(f"Finished condition {idx+1}/{len(conditions_to_process)}")
+            # print(f"Finished condition {idx+1}/{len(conditions_to_process)}")
 
         total_images = sum([s["images"].shape[0] for s in self.generated_sets])
-        print(f"✔ Done: generated {total_images} images across {len(self.generated_sets)} conditions.")
-        print(f"Total generation time: {time.time() - start_time:.2f}s")
+        # print(f"✔ Done: generated {total_images} images across {len(self.generated_sets)} conditions.")
+        # print(f"Total generation time: {time.time() - start_time:.2f}s")
         return self.generated_sets
 
     def save_results(self):
