@@ -98,6 +98,10 @@ class PlaneDiffusionEvaluator:
 
         # Set random seeds
         self._seed_all(self.seed)
+        
+        self.test_images = []
+        self.test_conditions = []
+        self.generated_sets = []
 
         print(f"Initialized PlaneDiffusionEvaluator")
         print(f"Device: {self.device}")
@@ -142,6 +146,7 @@ class PlaneDiffusionEvaluator:
         print(f"DDIM sampler built (ddim_steps={self.ddim_steps}, eta={self.eta}, w={self.guidance_w})")
         print(f"Model loading time: {time.time() - start_time:.2f}s")
 
+
     def setup_data(self):
         """Setup test dataset and dataloader."""
         self.test_dataset = self.PlaneDataset(
@@ -161,6 +166,7 @@ class PlaneDiffusionEvaluator:
         )
 
         print(f"Test dataloader ready. Number of batches: {len(self.test_loader)}")
+
 
     @torch.no_grad()
     def generate_all_planes(
@@ -210,129 +216,212 @@ class PlaneDiffusionEvaluator:
 
         return gt_all, pred_all
 
-    def plot_allplanes_1d_xy_rgb(
-        self,
-        gt_all: torch.Tensor,
-        pred_all: torch.Tensor,
-        out_png: str,
-        title: str,
+
+    def extract_test_samples(self, num_conditions: int = 10):
+        """
+        Extract test samples and their conditions.
+
+        Args:
+            num_conditions: Number of test conditions to extract
+        """
+        self.test_images = []
+        self.test_conditions = []
+        count = 0
+
+        for batch in self.test_loader:
+            planes = batch["planes"]
+            p_energy = batch["p_energy"]
+            class_id = batch["class_id"]
+            sin_zenith = batch["sin_zenith"]
+            cos_zenith = batch["cos_zenith"]
+            sin_azimuth = batch["sin_azimuth"]
+            cos_azimuth = batch["cos_azimuth"]
+            
+            B = planes.size(0)
+
+            for i in range(B):
+                # Store planes (24,3,H,W)
+                self.test_images.append(planes[i].clone())
+
+                # Store condition (7,) - includes class_id
+                self.test_conditions.append(torch.stack([
+                    p_energy[i],
+                    class_id[i],
+                    sin_zenith[i],
+                    cos_zenith[i],
+                    sin_azimuth[i],
+                    cos_azimuth[i],
+                ]))
+
+                count += 1
+                if count == num_conditions:
+                    break
+
+            if count == num_conditions:
+                break
+
+        print(f"Collected {len(self.test_conditions)} conditioning vectors.")
+        if len(self.test_conditions) > 0:
+            print(f"First conditioning vector (cpu): {self.test_conditions[0]}")
+
+
+    def generate_samples(
+        self, 
+        num_samples: int = 1000, 
+        num_conditions: Optional[int] = None,
+        chunk_size: int = 200
     ):
         """
-        Create 1D projection plots for all planes.
-
-        Layout:
-          rows = 24 planes
-          cols = 6 = [C0-X, C1-X, C2-X, C0-Y, C1-Y, C2-Y]
+        Generate samples for each test condition using autoregressive plane generation.
 
         Args:
-            gt_all: Ground truth tensor (24,3,H,W)
-            pred_all: Prediction tensor (24,3,H,W)
-            out_png: Output file path
-            title: Plot title
-        """
-        gt = gt_all.detach().cpu().float().numpy()
-        pr = pred_all.detach().cpu().float().numpy()
-        P, C, H, W = gt.shape
-        assert P == 24 and C == 3
-
-        col_titles = ["C0-X", "C1-X", "C2-X", "C0-Y", "C1-Y", "C2-Y"]
-
-        fig_h = 48
-        fig_w = 18
-        fig, axes = plt.subplots(P, 6, figsize=(fig_w, fig_h), sharex=False)
-
-        fig.suptitle(title, fontsize=10)
-
-        for p in range(P):
-            for c in range(3):
-                # X projection
-                axx = axes[p, c]
-                gt_x = gt[p, c].sum(axis=0)
-                pr_x = pr[p, c].sum(axis=0)
-                axx.plot(gt_x, linewidth=1.0, label="GT")
-                axx.plot(pr_x, linewidth=1.0, linestyle="--", label="Pred")
-                axx.tick_params(labelsize=6)
-
-                # Y projection
-                axy = axes[p, c + 3]
-                gt_y = gt[p, c].sum(axis=1)
-                pr_y = pr[p, c].sum(axis=1)
-                axy.plot(gt_y, linewidth=1.0, label="GT")
-                axy.plot(pr_y, linewidth=1.0, linestyle="--", label="Pred")
-                axy.tick_params(labelsize=6)
-
-            axes[p, 0].set_ylabel(f"p{p:02d}", fontsize=7, rotation=0, labelpad=18, va="center")
-
-        for j in range(6):
-            axes[0, j].set_title(col_titles[j], fontsize=8)
-        axes[0, 5].legend(fontsize=7, loc="upper right")
-
-        for j in range(3):
-            axes[-1, j].set_xlabel("X bin (sum over Y)", fontsize=8)
-        for j in range(3, 6):
-            axes[-1, j].set_xlabel("Y bin (sum over X)", fontsize=8)
-
-        fig.tight_layout(rect=[0, 0.02, 1, 0.98])
-        os.makedirs(os.path.dirname(out_png), exist_ok=True)
-        fig.savefig(out_png, dpi=170)
-        plt.close(fig)
-        print(f"Saved plot: {out_png}")
-
-    def evaluate_samples(self, num_samples: int = 4):
-        """
-        Evaluate and plot samples from the test set.
-
-        Args:
-            num_samples: Number of samples to evaluate
+            num_samples: Number of samples to generate per condition
+            num_conditions: Number of conditions to use (None = use all extracted)
+            chunk_size: Batch size for generation (to avoid OOM)
         """
         if self.sampler is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
-        if self.test_loader is None:
-            raise RuntimeError("Data not setup. Call setup_data() first.")
+        if len(self.test_conditions) == 0:
+            raise RuntimeError("No test samples extracted. Call extract_test_samples() first.")
 
-        done = 0
+        # Determine how many conditions to process
+        conditions_to_process = self.test_conditions
+        if num_conditions is not None:
+            conditions_to_process = self.test_conditions[:num_conditions]
+
+        self.generated_sets = []
         start_time = time.time()
 
-        for batch in self.test_loader:
-            B = batch["planes"].shape[0]
-            take = min(B, num_samples - done)
-            if take <= 0:
-                break
+        for idx, cond_vec in enumerate(conditions_to_process):
+            cond_vec = cond_vec.to(self.device)  # (6,)
 
-            batch_small = {k: v[:take] for k, v in batch.items()}
-            gt_all, pred_all = self.generate_all_planes(batch_small)
+            # Get the ground truth planes shape from test_images
+            gt_planes = self.test_images[idx]  # (24,3,H,W)
+            P, C, H, W = gt_planes.shape
 
-            for i in range(take):
-                class_i = int(batch_small["class_id"][i].item())
-                title = (f"sample={done+i:04d} class_id={class_i}  "
-                        f"DDIM steps={self.ddim_steps} eta={self.eta} w={self.guidance_w}")
-                out_png = os.path.join(self.output_dir, f"sample_{done+i:04d}_allplanes_1d_xy.pdf")
-                self.plot_allplanes_1d_xy_rgb(gt_all[i], pred_all[i], out_png, title)
+            all_samples = []
+            samples_done = 0
 
-            done += take
-            print(f"[eval] done {done}/{num_samples}")
-            if done >= num_samples:
-                break
+            while samples_done < num_samples:
+                bs = min(chunk_size, num_samples - samples_done)
 
-        print(f"Total evaluation time: {time.time() - start_time:.2f}s")
+                # Prepare condition batch
+                p_energy = cond_vec[0].unsqueeze(0).expand(bs)
+                class_id = cond_vec[1].unsqueeze(0).expand(bs).long()
+                sin_zenith = cond_vec[2].unsqueeze(0).expand(bs)
+                cos_zenith = cond_vec[3].unsqueeze(0).expand(bs)
+                sin_azimuth = cond_vec[4].unsqueeze(0).expand(bs)
+                cos_azimuth = cond_vec[5].unsqueeze(0).expand(bs)
 
-    def run_full_pipeline(self, num_samples: int = 4):
+                # Generate all 24 planes autoregressively
+                pred_all = torch.zeros((bs, P, C, H, W), device=self.device)
+                past = torch.zeros((bs, C, H, W), device=self.device)
+
+                with torch.no_grad():
+                    for plane_idx in range(P):
+                        plane_idx_tensor = torch.full((bs,), plane_idx, device=self.device, dtype=torch.long)
+                        noise = torch.randn((bs, C, H, W), device=self.device)
+
+                        pred = self.sampler(
+                            noise,
+                            p_energy,
+                            class_id,
+                            sin_zenith,
+                            cos_zenith,
+                            sin_azimuth,
+                            cos_azimuth,
+                            plane_idx_tensor,
+                            past,
+                        )
+                        pred_all[:, plane_idx] = pred
+                        past = pred
+
+                all_samples.append(pred_all.cpu())
+
+                # Free GPU memory
+                del noise, pred, pred_all, past
+                torch.cuda.empty_cache()
+
+                samples_done += bs
+
+            # Concatenate all chunks -> (num_samples, 24, 3, H, W)
+            gen_imgs_all = torch.cat(all_samples, dim=0)
+            self.generated_sets.append({
+                "condition": cond_vec.cpu(),
+                "images": gen_imgs_all,
+            })
+
+            # Extra safety between conditions
+            torch.cuda.empty_cache()
+
+        total_images = sum([s["images"].shape[0] for s in self.generated_sets])
+        print(f"✔ Done: generated {total_images} images across {len(self.generated_sets)} conditions.")
+        print(f"Total generation time: {time.time() - start_time:.2f}s")
+        return self.generated_sets
+
+
+    def plot_xy_profiles(self, num_conditions: Optional[int] = None, save_dir: Optional[str] = None):
         """
-        Run the complete evaluation pipeline.
+        Plot average X and Y profiles across all generated samples.
 
         Args:
-            num_samples: Number of samples to evaluate
+            num_conditions: Number of conditions to plot (None = all)
+            save_dir: Directory to save plots (None = display only)
         """
-        print("=" * 60)
-        print("Starting full evaluation pipeline")
-        print("=" * 60)
+        if len(self.generated_sets) == 0:
+            print("No generated sets to plot.")
+            return
 
-        self.load_model()
-        self.setup_data()
-        self.evaluate_samples(num_samples=num_samples)
+        condition_names = ['energy', 'class_id', 'sin_zenith', 'cos_zenith', 'sin_azimuth', 'cos_azimuth']
+        num_to_plot = num_conditions if num_conditions else len(self.generated_sets)
+        num_to_plot = min(num_to_plot, len(self.generated_sets))
 
-        print("=" * 60)
-        print("Pipeline complete!")
-        print(f"Saved outputs to: {self.output_dir}")
-        print("=" * 60)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+
+        for idx in range(num_to_plot):
+            output = self.generated_sets[idx]
+            
+            # Print conditions
+            print(f"\nCondition {idx + 1}:")
+            for icondition, condition_val in enumerate(output['condition']):
+                print(f"  {condition_names[icondition]}: {condition_val.item():.4f}")
+
+            images = output['images']  # Shape: (N, 24, 3, H, W)
+            images_np = images.cpu().numpy()
+
+            # Average over samples (N) and channels (3) -> (24, H, W)
+            avg_profiles = images_np.mean(axis=(0, 2))  # Shape: (24, H, W)
+
+            # X profile: average over Y (axis=1) -> (24, W)
+            avg_x_profile = avg_profiles.mean(axis=1)
+            
+            # Y profile: average over X (axis=2) -> (24, H)
+            avg_y_profile = avg_profiles.mean(axis=2)
+
+            # Plot
+            fig, axes = plt.subplots(4, 6, figsize=(24, 16))
+            fig.suptitle(f"Condition {idx + 1}: X and Y Profiles", fontsize=14)
+
+            for plane_idx in range(24):
+                ax = axes[plane_idx // 6, plane_idx % 6]
+                
+                ax.plot(avg_x_profile[plane_idx], label='X Profile', linewidth=1.5)
+                ax.plot(avg_y_profile[plane_idx], label='Y Profile', linewidth=1.5, linestyle='--')
+                
+                ax.set_title(f"Plane {plane_idx}", fontsize=9)
+                ax.set_xlabel('Position', fontsize=8)
+                ax.set_ylabel('Average Intensity', fontsize=8)
+                ax.legend(fontsize=7)
+                ax.grid(True, alpha=0.3)
+
+            plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+
+            if save_dir:
+                save_path = os.path.join(save_dir, f"xy_profiles_condition_{idx + 1}.png")
+                plt.savefig(save_path, dpi=150, bbox_inches='tight')
+                print(f"Saved: {save_path}")
+                plt.close()
+            else:
+                plt.show()
