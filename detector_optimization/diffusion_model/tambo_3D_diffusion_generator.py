@@ -147,124 +147,6 @@ class PlaneDiffusionEvaluator:
         print(f"Model loading time: {time.time() - start_time:.2f}s")
 
 
-    def setup_data(self):
-        """Setup test dataset and dataloader."""
-        self.test_dataset = self.PlaneDataset(
-            self.data_dir,
-            split="test",
-            cache_size=8,
-            prewarm_cache=False
-        )
-
-        self.test_loader = DataLoader(
-            self.test_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=self.num_workers,
-            drop_last=False,
-            pin_memory=torch.cuda.is_available(),
-        )
-
-        print(f"Test dataloader ready. Number of batches: {len(self.test_loader)}")
-
-
-    @torch.no_grad()
-    def generate_all_planes(
-        self,
-        batch: Dict[str, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Autoregressively generate all 24 planes with DDIM.
-
-        Args:
-            batch: Dictionary containing batch data
-
-        Returns:
-            Tuple of (ground_truth, predictions) tensors
-        """
-        gt_all = batch["planes"].to(self.device)  # (B,24,3,H,W)
-        B, P, C, H, W = gt_all.shape
-        assert P == 24 and C == 3, f"Expected (B,24,3,H,W), got {gt_all.shape}"
-
-        p_energy = batch["p_energy"].to(self.device)
-        class_id = batch["class_id"].to(self.device)
-        sin_zenith = batch["sin_zenith"].to(self.device)
-        cos_zenith = batch["cos_zenith"].to(self.device)
-        sin_azimuth = batch["sin_azimuth"].to(self.device)
-        cos_azimuth = batch["cos_azimuth"].to(self.device)
-
-        pred_all = torch.zeros_like(gt_all)
-        past = torch.zeros((B, 3, H, W), device=self.device)
-
-        for plane_idx in range(P):
-            plane_idx_tensor = torch.full((B,), plane_idx, device=self.device, dtype=torch.long)
-            x = torch.randn((B, 3, H, W), device=self.device)
-
-            pred = self.sampler(
-                x,
-                p_energy,
-                class_id,
-                sin_zenith,
-                cos_zenith,
-                sin_azimuth,
-                cos_azimuth,
-                plane_idx_tensor,
-                past,
-            )
-            pred_all[:, plane_idx] = pred
-            past = pred
-
-        return gt_all, pred_all
-
-
-    def extract_test_samples(self, num_conditions: int = 10):
-        """
-        Extract test samples and their conditions.
-
-        Args:
-            num_conditions: Number of test conditions to extract
-        """
-        self.test_images = []
-        self.test_conditions = []
-        count = 0
-
-        for batch in self.test_loader:
-            planes = batch["planes"]
-            p_energy = batch["p_energy"]
-            class_id = batch["class_id"]
-            sin_zenith = batch["sin_zenith"]
-            cos_zenith = batch["cos_zenith"]
-            sin_azimuth = batch["sin_azimuth"]
-            cos_azimuth = batch["cos_azimuth"]
-            
-            B = planes.size(0)
-
-            for i in range(B):
-                # Store planes (24,3,H,W)
-                self.test_images.append(planes[i].clone())
-
-                # Store condition (7,) - includes class_id
-                self.test_conditions.append(torch.stack([
-                    p_energy[i],
-                    class_id[i],
-                    sin_zenith[i],
-                    cos_zenith[i],
-                    sin_azimuth[i],
-                    cos_azimuth[i],
-                ]))
-
-                count += 1
-                if count == num_conditions:
-                    break
-
-            if count == num_conditions:
-                break
-
-        print(f"Collected {len(self.test_conditions)} conditioning vectors.")
-        if len(self.test_conditions) > 0:
-            print(f"First conditioning vector (cpu): {self.test_conditions[0]}")
-
-
     def generate_samples(
         self, 
         num_samples: int = 1000, 
@@ -297,8 +179,7 @@ class PlaneDiffusionEvaluator:
             cond_vec = cond_vec.to(self.device)  # (6,)
 
             # Get the ground truth planes shape from test_images
-            gt_planes = self.test_images[idx]  # (24,3,H,W)
-            P, C, H, W = gt_planes.shape
+            P, C, H, W = (24, 3, 32, 32)
 
             all_samples = []
             samples_done = 0
