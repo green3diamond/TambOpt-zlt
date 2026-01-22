@@ -1,4 +1,4 @@
-# model_planes_single.py - Single Head Architecture (Diffusion Only) - FIXED
+# model_bbox.py - Bounding Box Regression Architecture - BBOX OUTPUT
 import math
 import torch
 from torch import nn
@@ -57,19 +57,6 @@ class ClassEmbedding(nn.Module):
     def forward(self, x):
         return self.embedding(x)
 
-class PlaneIndexEmbedding(nn.Module):
-    """Embedding for plane index (0-23)"""
-    def __init__(self, d_model, dim):
-        super().__init__()
-        self.embedding = nn.Sequential(
-            nn.Embedding(num_embeddings=24, embedding_dim=d_model),
-            nn.Linear(d_model, dim),
-            Swish(),
-            nn.Linear(dim, dim),
-        )
-    
-    def forward(self, x):
-        return self.embedding(x)
 
 class DownSample(nn.Module):
     def __init__(self, in_ch):
@@ -144,93 +131,81 @@ class ResBlock(nn.Module):
 
 class UNetPlanes(nn.Module):
     """
-    UNet for plane-based diffusion with single head:
-    - Predicts noise for plane content (diffusion)
-    
-    Conditioned on: p_energy, class_id, sin_zenith, cos_zenith, sin_azimuth, cos_azimuth, 
-                    plane_index, past_plane
+    MLP-based model for bounding box regression with diffusion:
+    - Predicts noise for ALL 24 bounding boxes at once (24×4 = 96 values)
+    - No autoregression needed
+
+    Conditioned on: p_energy, class_id, sin_zenith, cos_zenith, sin_azimuth, cos_azimuth
     """
     def __init__(self, T, num_classes, ch, ch_mult, num_res_blocks, dropout):
         super().__init__()
         tdim = ch * 4
-        
+        hidden_dim = ch * 8  # MLP hidden dimension
+        output_dim = 24 * 4  # 24 planes × 4 coordinates
+
         # Time embedding for diffusion
         self.time_embedding = TimeEmbedding(T, ch, tdim)
-        
+
         # Class embedding (discrete)
         self.class_embedding = ClassEmbedding(num_classes, ch, tdim)
-        
+
         # Continuous embeddings for physics parameters
         self.p_energy_embedding = ContinuousEmbedding(tdim)
         self.sin_zenith_embedding = ContinuousEmbedding(tdim)
         self.cos_zenith_embedding = ContinuousEmbedding(tdim)
         self.sin_azimuth_embedding = ContinuousEmbedding(tdim)
         self.cos_azimuth_embedding = ContinuousEmbedding(tdim)
-        
-        # Plane index embedding (0-23)
-        self.plane_embedding = PlaneIndexEmbedding(ch, tdim)
-        
-        # Input: 3 channels (current noisy plane) + 3 channels (past plane) = 6 channels
-        self.head = nn.Conv2d(6, ch, 3, padding=1)
-        
-        # Downsampling blocks
-        self.downblocks = nn.ModuleList()
-        chs = [ch]
-        now_ch = ch
-        for i, mult in enumerate(ch_mult):
-            out_ch = ch * mult
-            for _ in range(num_res_blocks):
-                self.downblocks.append(ResBlock(now_ch, out_ch, tdim, dropout))
-                now_ch = out_ch
-                chs.append(now_ch)
-            if i != len(ch_mult) - 1:
-                self.downblocks.append(DownSample(now_ch))
-                chs.append(now_ch)
-        
-        # Middle blocks
-        self.middleblocks = nn.ModuleList([
-            ResBlock(now_ch, now_ch, tdim, dropout, attn=True),
-            ResBlock(now_ch, now_ch, tdim, dropout, attn=False),
-        ])
-        
-        # Upsampling blocks
-        self.upblocks = nn.ModuleList()
-        for i, mult in reversed(list(enumerate(ch_mult))):
-            out_ch = ch * mult
-            for _ in range(num_res_blocks + 1):
-                self.upblocks.append(ResBlock(chs.pop() + now_ch, out_ch, tdim, dropout, attn=False))
-                now_ch = out_ch
-            if i != 0:
-                self.upblocks.append(UpSample(now_ch))
-        assert len(chs) == 0
-        
-        # Diffusion head for plane content
-        # Output: 3 channels (density, energy, time) noise prediction
-        self.diffusion_head = nn.Sequential(
-            nn.GroupNorm(min(32, now_ch), now_ch),  # FIXED: Added min()
+
+        # MLP for bbox processing
+        # Input: 96 (all 24 planes × 4 bbox coords, noisy)
+        self.bbox_encoder = nn.Sequential(
+            nn.Linear(output_dim, hidden_dim * 2),
             Swish(),
-            nn.Conv2d(now_ch, 3, 3, padding=1)
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            Swish(),
+            nn.Dropout(dropout),
         )
 
-    def forward(self, x, t, p_energy, class_id, sin_zenith, cos_zenith, 
-                sin_azimuth, cos_azimuth, plane_idx, past_plane):
+        # Combine bbox features with conditioning
+        # hidden_dim + 2*tdim (time + all other conditions)
+        self.combiner = nn.Sequential(
+            nn.Linear(hidden_dim + 2 * tdim, hidden_dim),
+            Swish(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            Swish(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            Swish(),
+            nn.Dropout(dropout),
+        )
+
+        # Output head: predict noise for all 24 bboxes (96 values)
+        self.diffusion_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            Swish(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim)
+        )
+
+    def forward(self, x, t, p_energy, class_id, sin_zenith, cos_zenith,
+                sin_azimuth, cos_azimuth):
         """
         Args:
-            x: (B, 3, H, W) - noisy current plane
+            x: (B, 96) - noisy bounding boxes for all 24 planes (flattened)
             t: (B,) - diffusion timestep
             p_energy: (B,) - primary energy (normalized)
             class_id: (B,) - particle class ID
             sin_zenith, cos_zenith: (B,) - zenith angle
             sin_azimuth, cos_azimuth: (B,) - azimuth angle
-            plane_idx: (B,) - plane index (0-23)
-            past_plane: (B, 3, H, W) - previous plane (or zeros for first plane)
-        
+
         Returns:
-            noise_pred: (B, 3, H, W) - predicted noise
+            noise_pred: (B, 96) - predicted noise for all bounding boxes
         """
         # Time embedding
-        temb = self.time_embedding(t)
-        
+        temb = self.time_embedding(t)  # (B, tdim)
+
         # Combine all condition embeddings
         cemb = (
             self.class_embedding(class_id) +
@@ -238,35 +213,19 @@ class UNetPlanes(nn.Module):
             self.sin_zenith_embedding(sin_zenith) +
             self.cos_zenith_embedding(cos_zenith) +
             self.sin_azimuth_embedding(sin_azimuth) +
-            self.cos_azimuth_embedding(cos_azimuth) +
-            self.plane_embedding(plane_idx)
-        )
-        
-        # Concatenate current noisy plane with past plane
-        h = torch.cat([x, past_plane], dim=1)  # (B, 6, H, W)
-        h = self.head(h)
-        
-        # Downsampling
-        hs = [h]
-        for layer in self.downblocks:
-            h = layer(h, temb, cemb)
-            hs.append(h)
-        
-        # Middle (bottleneck)
-        for layer in self.middleblocks:
-            h = layer(h, temb, cemb)
-        
-        # Upsampling
-        for layer in self.upblocks:
-            if isinstance(layer, ResBlock):
-                h = torch.cat([h, hs.pop()], dim=1)
-            h = layer(h, temb, cemb)
-        
-        assert len(hs) == 0
-        
-        # Predict noise for plane content
-        noise_pred = self.diffusion_head(h)
-        
+            self.cos_azimuth_embedding(cos_azimuth)
+        )  # (B, tdim)
+
+        # Encode bbox
+        h = self.bbox_encoder(x)  # (B, hidden_dim)
+
+        # Combine with conditioning
+        h = torch.cat([h, temb, cemb], dim=1)  # (B, hidden_dim + 2*tdim)
+        h = self.combiner(h)  # (B, hidden_dim)
+
+        # Predict noise for all bboxes
+        noise_pred = self.diffusion_head(h)  # (B, 96)
+
         return noise_pred
 
 
@@ -285,11 +244,11 @@ if __name__ == '__main__':
         num_res_blocks=2,
         dropout=0.1
     )
-    
+
     print(f"Model parameters: {count_parameters(model):,}")
-    
+
     # Test forward pass
-    x = torch.randn(batch_size, 3, 64, 64)  # noisy plane
+    x = torch.randn(batch_size, 96)  # noisy bboxes for all 24 planes (24×4=96)
     t = torch.randint(1000, size=[batch_size])
     p_energy = torch.rand(batch_size)
     class_id = torch.randint(5, size=[batch_size])
@@ -297,13 +256,12 @@ if __name__ == '__main__':
     cos_zenith = torch.rand(batch_size)
     sin_azimuth = torch.rand(batch_size)
     cos_azimuth = torch.rand(batch_size)
-    plane_idx = torch.randint(24, size=[batch_size])
-    past_plane = torch.randn(batch_size, 3, 64, 64)
-    
+
     # Test forward pass
     noise_pred = model(
-        x, t, p_energy, class_id, sin_zenith, cos_zenith, 
-        sin_azimuth, cos_azimuth, plane_idx, past_plane
+        x, t, p_energy, class_id, sin_zenith, cos_zenith,
+        sin_azimuth, cos_azimuth
     )
-    print(f"Noise prediction shape: {noise_pred.shape}")  # (8, 3, 64, 64)
+    print(f"Noise prediction shape: {noise_pred.shape}")  # (8, 96)
+    assert noise_pred.shape == (batch_size, 96), f"Expected ({batch_size}, 96), got {noise_pred.shape}"
     print("✓ Model test passed!")

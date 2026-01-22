@@ -1,4 +1,4 @@
-# train_planes_single.py - Single Head (Diffusion Only) - STANDARDIZED VERSION
+# train_bbox.py - Bounding Box Regression (Diffusion Only) - STANDARDIZED VERSION
 import os
 from typing import Dict
 from tqdm import tqdm
@@ -12,12 +12,44 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.utils import save_image, make_grid
 
 from diffusion import (
-    GaussianDiffusionTrainer, 
+    GaussianDiffusionTrainer,
     GaussianDiffusionSampler,
-    DDIMSamplerPlanes,
-    AutoregressivePlaneGenerator
+    DDIMSamplerPlanes
 )
 from unet import UNetPlanes, count_parameters
+
+
+def compute_bbox_from_plane(plane):
+    """
+    Compute bounding box coordinates from a plane.
+
+    Args:
+        plane: (3, H, W) - plane with density, energy, time channels
+
+    Returns:
+        bbox: (4,) - [xmin, xmax, ymin, ymax]
+    """
+    # Use density channel to find bounding box
+    density = plane[0]  # (H, W)
+
+    # Find non-zero regions (threshold at small value to avoid noise)
+    threshold = density.max() * 0.01 if density.max() > 0 else 0
+    mask = density > threshold
+
+    if mask.sum() == 0:
+        # If no signal, return zeros
+        return torch.zeros(4)
+
+    # Find bounding box coordinates
+    rows = torch.any(mask, dim=1)
+    cols = torch.any(mask, dim=0)
+
+    ymin = torch.where(rows)[0].min().float()
+    ymax = torch.where(rows)[0].max().float()
+    xmin = torch.where(cols)[0].min().float()
+    xmax = torch.where(cols)[0].max().float()
+
+    return torch.tensor([xmin, xmax, ymin, ymax])
 
 print("Number of CPU cores available:", os.cpu_count())
 print(f"CUDA Available: {torch.cuda.is_available()}")
@@ -28,8 +60,8 @@ for i in range(torch.cuda.device_count()):
 
 class PlaneDataset(Dataset):
     """
-    Dataset for loading preprocessed plane data from step3_preprocessing.py
-    
+    Dataset for loading preprocessed plane data and extracting bounding boxes
+
     Expected data format:
     - histograms: (N, 24, 3, H, W) - STANDARDIZED (zero mean, unit variance)
     - p_energy: (N,) - normalized primary energy
@@ -45,44 +77,54 @@ class PlaneDataset(Dataset):
         """
         self.split = split
         self.chunk_dir = os.path.join(chunk_dir, split)
-        
+
         # Read chunk index
         index_file = os.path.join(self.chunk_dir, 'index.txt')
         with open(index_file, 'r') as f:
             self.chunk_files = [line.strip() for line in f]
-        
+
         # Load all chunks
         print(f"Loading {split} data from {len(self.chunk_files)} chunks...")
         self.load_all_chunks()
-        
+
         print(f"Loaded {len(self)} samples from {split} split")
-        print(f"Histograms shape: {self.histograms.shape}")
-        print(f"Data range: [{self.histograms.min():.3f}, {self.histograms.max():.3f}]")
-        print(f"Data mean: {self.histograms.mean():.3f}, std: {self.histograms.std():.3f}")
+        print(f"Bounding boxes shape: {self.bboxes.shape}")
+        print(f"Data range: [{self.bboxes.min():.3f}, {self.bboxes.max():.3f}]")
+        print(f"Data mean: {self.bboxes.mean():.3f}, std: {self.bboxes.std():.3f}")
 
     def load_all_chunks(self):
-        """Load all chunks into memory"""
-        all_hists = []
+        """Load all chunks into memory and compute bounding boxes"""
+        all_bboxes = []
         all_p_energy = []
         all_sin_zenith = []
         all_cos_zenith = []
         all_sin_azimuth = []
         all_cos_azimuth = []
         all_class_id = []
-        
+
         for chunk_file in tqdm(self.chunk_files, desc=f"Loading {self.split} chunks"):
             chunk_path = os.path.join(self.chunk_dir, chunk_file)
             data = torch.load(chunk_path, map_location='cpu')
-            
-            all_hists.append(data['histograms'])
+
+            # Extract planes and compute bounding boxes for each sample
+            histograms = data['histograms']  # (N, 24, 3, H, W)
+            chunk_bboxes = []
+            for sample_idx in range(len(histograms)):
+                sample_bboxes = torch.stack([
+                    compute_bbox_from_plane(histograms[sample_idx, plane_idx])
+                    for plane_idx in range(24)
+                ])  # (24, 4)
+                chunk_bboxes.append(sample_bboxes)
+
+            all_bboxes.append(torch.stack(chunk_bboxes))  # (N, 24, 4)
             all_p_energy.append(data['p_energy'])
             all_sin_zenith.append(data['sin_zenith'])
             all_cos_zenith.append(data['cos_zenith'])
             all_sin_azimuth.append(data['sin_azimuth'])
             all_cos_azimuth.append(data['cos_azimuth'])
             all_class_id.append(data['class_id'])
-        
-        self.histograms = torch.cat(all_hists, dim=0)  # (N, 24, 3, H, W) - STANDARDIZED
+
+        self.bboxes = torch.cat(all_bboxes, dim=0)  # (N, 24, 4) - STANDARDIZED
         self.p_energy = torch.cat(all_p_energy, dim=0)
         self.sin_zenith = torch.cat(all_sin_zenith, dim=0)
         self.cos_zenith = torch.cat(all_cos_zenith, dim=0)
@@ -91,14 +133,14 @@ class PlaneDataset(Dataset):
         self.class_id = torch.cat(all_class_id, dim=0)
 
     def __len__(self):
-        return len(self.histograms)
+        return len(self.bboxes)
 
     def __getitem__(self, idx):
-        """Returns data for training autoregressive plane model"""
-        planes = self.histograms[idx]  # (24, 3, H, W)
-        
+        """Returns data for training autoregressive bbox model"""
+        bboxes = self.bboxes[idx]  # (24, 4)
+
         return {
-            'planes': planes,
+            'bboxes': bboxes,
             'p_energy': self.p_energy[idx],
             'sin_zenith': self.sin_zenith[idx],
             'cos_zenith': self.cos_zenith[idx],
@@ -141,44 +183,48 @@ class EMA:
 
 def load_standardization_stats(data_dir):
     """Load standardization statistics from preprocessing"""
-    stats_path = os.path.join(data_dir, "..", "standardization_stats_train_only.pt")
+    stats_path = os.path.join(data_dir, "..", "standardization_stats_bbox_train_only.pt")
     if not os.path.exists(stats_path):
         # Try alternative path
-        stats_path = os.path.join(data_dir, "standardization_stats_train_only.pt")
-    
+        stats_path = os.path.join(data_dir, "standardization_stats_bbox_train_only.pt")
+
     if not os.path.exists(stats_path):
-        raise FileNotFoundError(
-            f"Standardization stats not found. Expected at: {stats_path}\n"
-            "Make sure you ran step3_preprocessing.py first."
-        )
-    
+        # Fall back to original stats (will need to be recomputed for bbox)
+        print("WARNING: Bbox standardization stats not found.")
+        print("Expected at:", stats_path)
+        print("Will use placeholder stats - you should compute proper bbox statistics!")
+        # Return placeholder stats (24 planes, 4 bbox coords)
+        mean = torch.zeros(24, 4)
+        std = torch.ones(24, 4)
+        return mean, std
+
     stats = torch.load(stats_path, map_location='cpu')
-    print(f"\nLoaded standardization stats from: {stats_path}")
+    print(f"\nLoaded bbox standardization stats from: {stats_path}")
     print(f"  Mean shape: {stats['mean'].shape}")
     print(f"  Std shape: {stats['std'].shape}")
-    
+
     return stats['mean'], stats['std']
 
 
 def denormalize_standardized(standardized, mean, std):
     """
     Convert from standardized (zero mean, unit variance) back to original scale
-    
+
     Args:
-        standardized: (B, 24, 3, H, W) or (24, 3, H, W) - standardized data
-        mean: (24, 3) - per-plane, per-channel means
-        std: (24, 3) - per-plane, per-channel standard deviations
-    
+        standardized: (B, 24, 4) or (24, 4) - standardized bounding boxes
+        mean: (24, 4) - per-plane, per-coordinate means
+        std: (24, 4) - per-plane, per-coordinate standard deviations
+
     Returns:
         denormalized: same shape as input, in original scale
     """
     # Add batch dimension handling
-    if standardized.dim() == 4:
-        # (24, 3, H, W)
-        return standardized * std[:, :, None, None] + mean[:, :, None, None]
-    elif standardized.dim() == 5:
-        # (B, 24, 3, H, W)
-        return standardized * std[None, :, :, None, None] + mean[None, :, :, None, None]
+    if standardized.dim() == 2:
+        # (24, 4)
+        return standardized * std + mean
+    elif standardized.dim() == 3:
+        # (B, 24, 4)
+        return standardized * std[None, :, :] + mean[None, :, :]
     else:
         raise ValueError(f"Unexpected dimension: {standardized.dim()}")
 
@@ -330,33 +376,33 @@ def train(modelConfig: Dict):
                 optimizer.zero_grad()
                 
                 # Get batch data (already standardized)
-                all_planes = batch['planes'].to(device)  # (B, 24, 3, H, W)
+                all_bboxes = batch['bboxes'].to(device)  # (B, 24, 4)
                 p_energy = batch['p_energy'].to(device)
                 sin_zenith = batch['sin_zenith'].to(device)
                 cos_zenith = batch['cos_zenith'].to(device)
                 sin_azimuth = batch['sin_azimuth'].to(device)
                 cos_azimuth = batch['cos_azimuth'].to(device)
                 class_id = batch['class_id'].to(device)
-                
-                B = all_planes.shape[0]
-                
+
+                B = all_bboxes.shape[0]
+
                 # Randomly select a plane to train on (0-23)
                 plane_indices = torch.randint(0, 24, (B,), device=device)
-                
-                # Get target plane and past plane
-                target_planes = []
-                past_planes = []
-                
+
+                # Get target bbox and past bbox
+                target_bboxes = []
+                past_bboxes = []
+
                 for i, plane_idx in enumerate(plane_indices):
-                    target_planes.append(all_planes[i, plane_idx])
-                    
+                    target_bboxes.append(all_bboxes[i, plane_idx])
+
                     if plane_idx > 0:
-                        past_planes.append(all_planes[i, plane_idx - 1])
+                        past_bboxes.append(all_bboxes[i, plane_idx - 1])
                     else:
-                        past_planes.append(torch.zeros_like(all_planes[i, 0]))
-                
-                target_plane = torch.stack(target_planes)  # (B, 3, H, W)
-                past_plane = torch.stack(past_planes)  # (B, 3, H, W)
+                        past_bboxes.append(torch.zeros_like(all_bboxes[i, 0]))
+
+                target_bbox = torch.stack(target_bboxes)  # (B, 4)
+                past_bbox = torch.stack(past_bboxes)  # (B, 4)
                 
                 # Apply classifier-free guidance training to ALL conditions
                 if modelConfig.get("use_cfg", False):
@@ -389,7 +435,7 @@ def train(modelConfig: Dict):
                 
                 # Forward pass through diffusion trainer
                 loss = trainer(
-                    target_plane,
+                    target_bbox,
                     p_energy_masked,
                     class_id_masked,
                     sin_zenith_masked,
@@ -397,7 +443,7 @@ def train(modelConfig: Dict):
                     sin_azimuth_masked,
                     cos_azimuth_masked,
                     plane_indices,
-                    past_plane
+                    past_bbox
                 )
                 
                 # Backward pass
@@ -432,33 +478,33 @@ def train(modelConfig: Dict):
             
             with torch.no_grad():
                 for batch in tqdm(val_dataloader, desc="Validation", leave=False):
-                    all_planes = batch['planes'].to(device)
+                    all_bboxes = batch['bboxes'].to(device)
                     p_energy = batch['p_energy'].to(device)
                     sin_zenith = batch['sin_zenith'].to(device)
                     cos_zenith = batch['cos_zenith'].to(device)
                     sin_azimuth = batch['sin_azimuth'].to(device)
                     cos_azimuth = batch['cos_azimuth'].to(device)
                     class_id = batch['class_id'].to(device)
-                    
-                    B = all_planes.shape[0]
+
+                    B = all_bboxes.shape[0]
                     plane_indices = torch.randint(0, 24, (B,), device=device)
-                    
-                    target_planes = []
-                    past_planes = []
+
+                    target_bboxes = []
+                    past_bboxes = []
                     for i, plane_idx in enumerate(plane_indices):
-                        target_planes.append(all_planes[i, plane_idx])
+                        target_bboxes.append(all_bboxes[i, plane_idx])
                         if plane_idx > 0:
-                            past_planes.append(all_planes[i, plane_idx - 1])
+                            past_bboxes.append(all_bboxes[i, plane_idx - 1])
                         else:
-                            past_planes.append(torch.zeros_like(all_planes[i, 0]))
-                    
-                    target_plane = torch.stack(target_planes)
-                    past_plane = torch.stack(past_planes)
-                    
+                            past_bboxes.append(torch.zeros_like(all_bboxes[i, 0]))
+
+                    target_bbox = torch.stack(target_bboxes)
+                    past_bbox = torch.stack(past_bboxes)
+
                     loss = trainer(
-                        target_plane, p_energy, class_id,
+                        target_bbox, p_energy, class_id,
                         sin_zenith, cos_zenith, sin_azimuth, cos_azimuth,
-                        plane_indices, past_plane
+                        plane_indices, past_bbox
                     )
                     
                     val_loss += loss.item()
@@ -576,7 +622,7 @@ def eval(modelConfig: Dict):
         ).to(device)
     
     # Create autoregressive generator
-    ar_generator = AutoregressivePlaneGenerator(sampler)
+    ar_generator = AutoregressiveBBoxGenerator(sampler)
     
     # Sample generation
     os.makedirs(modelConfig["sampled_dir"], exist_ok=True)
@@ -603,12 +649,12 @@ def eval(modelConfig: Dict):
             sin_azimuth = dataset.sin_azimuth[sample_idx].to(device)
             cos_azimuth = dataset.cos_azimuth[sample_idx].to(device)
             class_id_tensor = dataset.class_id[sample_idx].to(device)
-            
+
             # Get real data for comparison (already standardized)
-            real_planes_std = dataset.histograms[sample_idx].to(device)  # (B, 24, 3, H, W)
-            
-            # Generate all 24 planes (will be in standardized space)
-            generated_planes_std = ar_generator.generate_all_planes(
+            real_bboxes_std = dataset.bboxes[sample_idx].to(device)  # (B, 24, 4)
+
+            # Generate all 24 bounding boxes (will be in standardized space)
+            generated_bboxes_std = ar_generator.generate_all_bboxes(
                 batch_size=len(sample_idx),
                 p_energy=p_energy,
                 class_id=class_id_tensor,
@@ -616,64 +662,35 @@ def eval(modelConfig: Dict):
                 cos_zenith=cos_zenith,
                 sin_azimuth=sin_azimuth,
                 cos_azimuth=cos_azimuth,
-                device=device,
-                img_size=modelConfig["img_size"]
-            )  # (B, 24, 3, H, W) - standardized
-            
+                device=device
+            )  # (B, 24, 4) - standardized
+
             # Denormalize both generated and real data
-            generated_planes = denormalize_standardized(generated_planes_std, mean, std)
-            real_planes = denormalize_standardized(real_planes_std, mean, std)
-            
+            generated_bboxes = denormalize_standardized(generated_bboxes_std, mean, std)
+            real_bboxes = denormalize_standardized(real_bboxes_std, mean, std)
+
             print(f"\nClass {class_id} statistics:")
-            print(f"  Generated (standardized): [{generated_planes_std.min():.3f}, {generated_planes_std.max():.3f}]")
-            print(f"  Generated (denormalized): [{generated_planes.min():.3f}, {generated_planes.max():.3f}]")
-            print(f"  Real (denormalized): [{real_planes.min():.3f}, {real_planes.max():.3f}]")
-            
-            # Save visualizations
+            print(f"  Generated (standardized): [{generated_bboxes_std.min():.3f}, {generated_bboxes_std.max():.3f}]")
+            print(f"  Generated (denormalized): [{generated_bboxes.min():.3f}, {generated_bboxes.max():.3f}]")
+            print(f"  Real (denormalized): [{real_bboxes.min():.3f}, {real_bboxes.max():.3f}]")
+
+            # Save bounding boxes as numpy arrays
             for sample_i in range(len(sample_idx)):
-                gen_sample_planes = generated_planes[sample_i]  # (24, 3, H, W)
-                real_sample_planes = real_planes[sample_i]
-                
-                # Create comparison visualizations for each channel
-                for channel_idx, channel_name in enumerate(['density', 'energy', 'time']):
-                    gen_channel = gen_sample_planes[:, channel_idx:channel_idx+1, :, :]  # (24, 1, H, W)
-                    real_channel = real_sample_planes[:, channel_idx:channel_idx+1, :, :]
-                    
-                    # Normalize for visualization (handles unbounded data)
-                    gen_vis = normalize_for_visualization(gen_channel, percentile_clip=99.5)
-                    real_vis = normalize_for_visualization(real_channel, percentile_clip=99.5)
-                    
-                    # Create comparison grid: generated on top, real on bottom
-                    combined = torch.cat([gen_vis, real_vis], dim=0)  # (48, 1, H, W)
-                    grid = make_grid(combined, nrow=6, padding=2, normalize=False)
-                    
-                    save_path = os.path.join(
-                        modelConfig["sampled_dir"],
-                        f"class_{class_id}_sample_{sample_i}_{channel_name}_comparison.png"
-                    )
-                    save_image(grid, save_path)
-                
-                # Also save generated only
-                density_planes = gen_sample_planes[:, 0:1, :, :]
-                energy_planes = gen_sample_planes[:, 1:2, :, :]
-                time_planes = gen_sample_planes[:, 2:3, :, :]
-                
-                # Normalize each channel separately
-                density_vis = normalize_for_visualization(density_planes)
-                energy_vis = normalize_for_visualization(energy_planes)
-                time_vis = normalize_for_visualization(time_planes)
-                
-                save_image(make_grid(density_vis, nrow=6, padding=2), 
-                          os.path.join(modelConfig["sampled_dir"],
-                                      f"class_{class_id}_sample_{sample_i}_density.png"))
-                save_image(make_grid(energy_vis, nrow=6, padding=2),
-                          os.path.join(modelConfig["sampled_dir"],
-                                      f"class_{class_id}_sample_{sample_i}_energy.png"))
-                save_image(make_grid(time_vis, nrow=6, padding=2),
-                          os.path.join(modelConfig["sampled_dir"],
-                                      f"class_{class_id}_sample_{sample_i}_time.png"))
-            
-            print(f"Generated samples for class {class_id}")
+                gen_sample_bboxes = generated_bboxes[sample_i]  # (24, 4)
+                real_sample_bboxes = real_bboxes[sample_i]  # (24, 4)
+
+                save_path = os.path.join(
+                    modelConfig["sampled_dir"],
+                    f"class_{class_id}_sample_{sample_i}_bboxes.npz"
+                )
+
+                np.savez(
+                    save_path,
+                    generated_bboxes=gen_sample_bboxes.cpu().numpy(),
+                    real_bboxes=real_sample_bboxes.cpu().numpy()
+                )
+
+            print(f"Generated bbox samples for class {class_id}")
     
     print(f"\nSamples saved to {modelConfig['sampled_dir']}")
 

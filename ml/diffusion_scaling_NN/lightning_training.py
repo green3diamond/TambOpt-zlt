@@ -18,43 +18,77 @@ from diffusion import GaussianDiffusionTrainer
 from unet import UNetPlanes, count_parameters
 
 
+def compute_bbox_from_plane(plane):
+    """
+    Compute bounding box coordinates from a plane.
+
+    Args:
+        plane: (3, H, W) - plane with density, energy, time channels
+
+    Returns:
+        bbox: (4,) - [xmin, xmax, ymin, ymax]
+    """
+    # Use density channel to find bounding box
+    density = plane[0]  # (H, W)
+
+    # Find non-zero regions (threshold at small value to avoid noise)
+    threshold = density.max() * 0.01 if density.max() > 0 else 0
+    mask = density > threshold
+
+    if mask.sum() == 0:
+        # If no signal, return zeros
+        return torch.zeros(4)
+
+    # Find bounding box coordinates
+    rows = torch.any(mask, dim=1)
+    cols = torch.any(mask, dim=0)
+
+    ymin = torch.where(rows)[0].min().float()
+    ymax = torch.where(rows)[0].max().float()
+    xmin = torch.where(cols)[0].min().float()
+    xmax = torch.where(cols)[0].max().float()
+
+    return torch.tensor([xmin, xmax, ymin, ymax])
+
+
 class PlaneDataset(Dataset):
     """
     Memory-efficient dataset with LRU caching and optional pre-warming
+    Extracts bounding boxes from plane histograms
     """
     def __init__(self, chunk_dir, split='train', cache_size=40, prewarm_cache=True):
         self.split = split
         self.chunk_dir = os.path.join(chunk_dir, split)
         self.cache_size = cache_size
-        
+
         # Read chunk index
         index_file = os.path.join(self.chunk_dir, 'index.txt')
         with open(index_file, 'r') as f:
             self.chunk_files = [line.strip() for line in f]
-        
+
         # Build index
         print(f"Building index for {split} data from {len(self.chunk_files)} chunks...")
         self.chunk_index = []
         self.chunk_sizes = []
-        
+
         for chunk_idx, chunk_file in enumerate(tqdm(self.chunk_files, desc=f"Indexing {split}")):
             chunk_path = os.path.join(self.chunk_dir, chunk_file)
             data = torch.load(chunk_path, map_location='cpu', weights_only=False)
             chunk_size = len(data['histograms'])
             self.chunk_sizes.append(chunk_size)
-            
+
             for sample_idx in range(chunk_size):
                 self.chunk_index.append((chunk_idx, sample_idx))
-            
+
             del data
-        
+
         # LRU cache for chunks
         self.chunk_cache = OrderedDict()
         self.cache_lock = threading.Lock()
-        
+
         print(f"Loaded index for {len(self)} samples from {split} split")
         print(f"Total chunks: {len(self.chunk_files)}, Cache size: {cache_size}")
-        
+
         # Pre-warm cache
         if prewarm_cache and cache_size > 0:
             self._prewarm_cache()
@@ -96,9 +130,13 @@ class PlaneDataset(Dataset):
     def __getitem__(self, idx):
         chunk_idx, sample_idx = self.chunk_index[idx]
         data = self._load_chunk(chunk_idx)
-        
+
+        # Extract planes and compute bounding boxes
+        planes = data['histograms'][sample_idx]  # (24, 3, H, W)
+        bboxes = torch.stack([compute_bbox_from_plane(planes[i]) for i in range(24)])  # (24, 4)
+
         return {
-            'planes': data['histograms'][sample_idx],
+            'bboxes': bboxes,
             'p_energy': data['p_energy'][sample_idx],
             'sin_zenith': data['sin_zenith'][sample_idx],
             'cos_zenith': data['cos_zenith'][sample_idx],
@@ -188,54 +226,39 @@ class PlaneDiffusionModule(pl.LightningModule):
                     )
     
     def forward(self, batch):
-        all_planes = batch['planes']
+        all_bboxes = batch['bboxes']  # (B, 24, 4)
         p_energy = batch['p_energy']
         sin_zenith = batch['sin_zenith']
         cos_zenith = batch['cos_zenith']
         sin_azimuth = batch['sin_azimuth']
         cos_azimuth = batch['cos_azimuth']
         class_id = batch['class_id']
-        
-        B = all_planes.shape[0]
-        device = all_planes.device
-        
-        # Randomly select plane
-        plane_indices = torch.randint(0, 24, (B,), device=device)
-        
-        # Get target and past planes
-        target_planes = []
-        past_planes = []
-        
-        for i, plane_idx in enumerate(plane_indices):
-            target_planes.append(all_planes[i, plane_idx])
-            
-            if plane_idx > 0:
-                past_planes.append(all_planes[i, plane_idx - 1])
-            else:
-                past_planes.append(torch.zeros_like(all_planes[i, 0]))
-        
-        target_plane = torch.stack(target_planes)
-        past_plane = torch.stack(past_planes)
+
+        B = all_bboxes.shape[0]
+        device = all_bboxes.device
+
+        # Flatten to (B, 96) for all 24 planes at once
+        all_bboxes_flat = all_bboxes.view(B, -1)  # (B, 96)
         
         # Classifier-free guidance
         if self.hparams.use_cfg:
             mask = torch.rand(B, device=device) < self.hparams.cfg_drop_prob
-            
+
             p_energy_masked = p_energy.clone()
             p_energy_masked[mask] = 0.0
-            
+
             class_id_masked = class_id.clone()
             class_id_masked[mask] = self.hparams.cfg_null_class
-            
+
             sin_zenith_masked = sin_zenith.clone()
             sin_zenith_masked[mask] = 0.0
-            
+
             cos_zenith_masked = cos_zenith.clone()
             cos_zenith_masked[mask] = 0.0
-            
+
             sin_azimuth_masked = sin_azimuth.clone()
             sin_azimuth_masked[mask] = 0.0
-            
+
             cos_azimuth_masked = cos_azimuth.clone()
             cos_azimuth_masked[mask] = 0.0
         else:
@@ -245,20 +268,18 @@ class PlaneDiffusionModule(pl.LightningModule):
             cos_zenith_masked = cos_zenith
             sin_azimuth_masked = sin_azimuth
             cos_azimuth_masked = cos_azimuth
-        
+
         # Forward pass
         loss = self.diffusion_trainer(
-            target_plane,
+            all_bboxes_flat,
             p_energy_masked,
             class_id_masked,
             sin_zenith_masked,
             cos_zenith_masked,
             sin_azimuth_masked,
-            cos_azimuth_masked,
-            plane_indices,
-            past_plane
+            cos_azimuth_masked
         )
-        
+
         return loss
     
     def training_step(self, batch, batch_idx):

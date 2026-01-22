@@ -1,23 +1,9 @@
 #!/usr/bin/env python3
-# eval_ddim_allplanes_1d_xy_rgb.py
+# eval_ddim_allbboxes.py
 #
-# Autoregressively generate ALL 24 planes with DDIM, then for each sample
-# save ONE figure per event with ONLY 1D projections:
-#   - 24 rows (planes 0..23)
-#   - 6 columns: [Den-X, Den-Y, Eng-X, Eng-Y, Tim-X, Tim-Y]
-# Each subplot overlays GT vs Pred.
+# Autoregressively generate ALL 24 bounding boxes with DDIM
+# Outputs bounding box predictions (xmin, xmax, ymin, ymax) for each plane
 # Includes denormalization using training statistics.
-#
-# Key fixes vs your version:
-#  1) Correct X/Y projections for (H,W) maps:
-#        X projection (len W) = sum over Y = axis=0
-#        Y projection (len H) = sum over X = axis=1
-#  2) Clamp density >= 0 after denormalization before using density * avg
-#  3) Mask empty bins when reconstructing sum maps (optional safety)
-#  4) Clean up naming: out_path instead of out_png, and save as PDF if extension is .pdf
-
-#global values
-# python /n/home04/hhanif/tam/diffusion_ml/lightining_eval.py    --data_dir /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_3rd_step/     --ckpt /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/checkpoints/tam_unet/epoch_epoch=839-val_loss_val_loss=0.0340.ckpt     --stats_path /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_3rd_step/standardization_stats_train_only.pt     --out_dir /n/home04/hhanif/tam/plots/lighting_eval_plots_w2_ddim50     --num_samples 100     --ddim_steps 50     --eta 0.0     --guidance_w 2
 
 import os
 import argparse
@@ -27,11 +13,10 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from scipy.ndimage import gaussian_filter1d
 from torch.utils.data import DataLoader
 
-from lightning_training import PlaneDataset, PlaneDiffusionModule
-from diffusion import DDIMSamplerPlanes
+from lightning_training import PlaneDataset, PlaneDiffusionModule, compute_bbox_from_plane
+from diffusion import DDIMSamplerPlanes, AutoregressiveBBoxGenerator
 
 
 def get_particle_type_name(class_id: int) -> str:
