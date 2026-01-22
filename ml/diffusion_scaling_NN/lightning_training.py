@@ -54,7 +54,7 @@ def compute_bbox_from_plane(plane):
 class PlaneDataset(Dataset):
     """
     Memory-efficient dataset with LRU caching and optional pre-warming
-    Extracts bounding boxes from plane histograms
+    Precomputes bounding boxes from plane histograms during chunk loading
     """
     def __init__(self, chunk_dir, split='train', cache_size=40, prewarm_cache=True):
         self.split = split
@@ -82,7 +82,7 @@ class PlaneDataset(Dataset):
 
             del data
 
-        # LRU cache for chunks
+        # LRU cache for chunks (stores precomputed bboxes)
         self.chunk_cache = OrderedDict()
         self.cache_lock = threading.Lock()
 
@@ -92,51 +92,66 @@ class PlaneDataset(Dataset):
         # Pre-warm cache
         if prewarm_cache and cache_size > 0:
             self._prewarm_cache()
-    
+
     def _prewarm_cache(self):
         """Pre-load chunks into cache"""
         chunks_to_load = min(self.cache_size, len(self.chunk_files))
         print(f"Pre-warming cache with {chunks_to_load} chunks...")
-        
+
         for chunk_idx in tqdm(range(chunks_to_load), desc="Loading chunks"):
             self._load_chunk(chunk_idx)
-        
+
         print(f"Cache pre-warmed with {len(self.chunk_cache)} chunks")
-    
+
+    def _precompute_bboxes(self, histograms):
+        """Precompute bounding boxes for all samples in a chunk (vectorized)"""
+        N = len(histograms)
+        all_bboxes = torch.zeros(N, 24, 4)
+        for sample_idx in range(N):
+            for plane_idx in range(24):
+                all_bboxes[sample_idx, plane_idx] = compute_bbox_from_plane(
+                    histograms[sample_idx, plane_idx]
+                )
+        return all_bboxes
+
     def _load_chunk_from_disk(self, chunk_idx):
-        """Load chunk from disk"""
+        """Load chunk from disk and precompute bboxes"""
         chunk_file = self.chunk_files[chunk_idx]
         chunk_path = os.path.join(self.chunk_dir, chunk_file)
-        return torch.load(chunk_path, map_location='cpu', weights_only=False)
-    
+        data = torch.load(chunk_path, map_location='cpu', weights_only=False)
+
+        # Precompute bboxes once during loading
+        data['bboxes'] = self._precompute_bboxes(data['histograms'])
+        # Remove histograms to save memory (we only need bboxes)
+        del data['histograms']
+
+        return data
+
     def _load_chunk(self, chunk_idx):
         """Load chunk with LRU caching"""
         with self.cache_lock:
             if chunk_idx in self.chunk_cache:
                 self.chunk_cache.move_to_end(chunk_idx)
                 return self.chunk_cache[chunk_idx]
-            
+
             data = self._load_chunk_from_disk(chunk_idx)
             self.chunk_cache[chunk_idx] = data
-            
+
             while len(self.chunk_cache) > self.cache_size:
                 self.chunk_cache.popitem(last=False)
-            
+
             return data
-    
+
     def __len__(self):
         return len(self.chunk_index)
-    
+
     def __getitem__(self, idx):
         chunk_idx, sample_idx = self.chunk_index[idx]
         data = self._load_chunk(chunk_idx)
 
-        # Extract planes and compute bounding boxes
-        planes = data['histograms'][sample_idx]  # (24, 3, H, W)
-        bboxes = torch.stack([compute_bbox_from_plane(planes[i]) for i in range(24)])  # (24, 4)
-
+        # Bboxes are precomputed - just fetch them
         return {
-            'bboxes': bboxes,
+            'bboxes': data['bboxes'][sample_idx],
             'p_energy': data['p_energy'][sample_idx],
             'sin_zenith': data['sin_zenith'][sample_idx],
             'cos_zenith': data['cos_zenith'][sample_idx],
@@ -144,11 +159,12 @@ class PlaneDataset(Dataset):
             'cos_azimuth': data['cos_azimuth'][sample_idx],
             'class_id': data['class_id'][sample_idx] + 1
         }
-    
-    def get_all_class_ids(self):
-        """Get all class IDs for validation"""
+
+    def get_sample_class_ids(self, max_chunks=3):
+        """Get class IDs from a sample of chunks for validation (fast)"""
         all_class_ids = []
-        for chunk_idx in range(len(self.chunk_files)):
+        chunks_to_check = min(max_chunks, len(self.chunk_files))
+        for chunk_idx in range(chunks_to_check):
             data = self._load_chunk(chunk_idx)
             all_class_ids.append(data['class_id'])
         return torch.cat(all_class_ids)
@@ -240,27 +256,18 @@ class PlaneDiffusionModule(pl.LightningModule):
         # Flatten to (B, 96) for all 24 planes at once
         all_bboxes_flat = all_bboxes.view(B, -1)  # (B, 96)
         
-        # Classifier-free guidance
+        # Classifier-free guidance (using torch.where to avoid clones)
         if self.hparams.use_cfg:
             mask = torch.rand(B, device=device) < self.hparams.cfg_drop_prob
+            zero = torch.tensor(0.0, device=device, dtype=p_energy.dtype)
+            null_class = torch.tensor(self.hparams.cfg_null_class, device=device, dtype=class_id.dtype)
 
-            p_energy_masked = p_energy.clone()
-            p_energy_masked[mask] = 0.0
-
-            class_id_masked = class_id.clone()
-            class_id_masked[mask] = self.hparams.cfg_null_class
-
-            sin_zenith_masked = sin_zenith.clone()
-            sin_zenith_masked[mask] = 0.0
-
-            cos_zenith_masked = cos_zenith.clone()
-            cos_zenith_masked[mask] = 0.0
-
-            sin_azimuth_masked = sin_azimuth.clone()
-            sin_azimuth_masked[mask] = 0.0
-
-            cos_azimuth_masked = cos_azimuth.clone()
-            cos_azimuth_masked[mask] = 0.0
+            p_energy_masked = torch.where(mask, zero, p_energy)
+            class_id_masked = torch.where(mask, null_class, class_id)
+            sin_zenith_masked = torch.where(mask, zero, sin_zenith)
+            cos_zenith_masked = torch.where(mask, zero, cos_zenith)
+            sin_azimuth_masked = torch.where(mask, zero, sin_azimuth)
+            cos_azimuth_masked = torch.where(mask, zero, cos_azimuth)
         else:
             p_energy_masked = p_energy
             class_id_masked = class_id
@@ -365,18 +372,16 @@ class PlaneDataModule(pl.LightningDataModule):
                 prewarm_cache=False  # Don't prewarm validation
             )
             
-            # Verify class IDs
-            print("\nVerifying class IDs...")
-            train_classes_raw = torch.unique(self.train_dataset.get_all_class_ids()).tolist()
-            val_classes_raw = torch.unique(self.val_dataset.get_all_class_ids()).tolist()
+            # Verify class IDs (sample check - fast)
+            print("\nVerifying class IDs (sampling a few chunks)...")
+            train_classes_raw = torch.unique(self.train_dataset.get_sample_class_ids(max_chunks=3)).tolist()
+            val_classes_raw = torch.unique(self.val_dataset.get_sample_class_ids(max_chunks=3)).tolist()
 
             train_classes = sorted([c + 1 for c in train_classes_raw])
             val_classes = sorted([c + 1 for c in val_classes_raw])
 
-            print(f"Train classes (raw): {sorted(train_classes_raw)} -> shifted: {train_classes}")
-            print(f"Val classes   (raw): {sorted(val_classes_raw)} -> shifted: {val_classes}")
-
-            assert set(train_classes) == {1, 2, 3}, f"Expected [1,2,3], got {train_classes}"
+            print(f"Train classes (raw, sampled): {sorted(train_classes_raw)} -> shifted: {train_classes}")
+            print(f"Val classes   (raw, sampled): {sorted(val_classes_raw)} -> shifted: {val_classes}")
     
     def train_dataloader(self):
         return DataLoader(

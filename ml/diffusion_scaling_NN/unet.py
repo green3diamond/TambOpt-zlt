@@ -58,81 +58,12 @@ class ClassEmbedding(nn.Module):
         return self.embedding(x)
 
 
-class DownSample(nn.Module):
-    def __init__(self, in_ch):
-        super().__init__()
-        self.c1 = nn.Conv2d(in_ch, in_ch, 3, stride=2, padding=1)
-        self.c2 = nn.Conv2d(in_ch, in_ch, 5, stride=2, padding=2)
-
-    def forward(self, x, temb, cemb):
-        return self.c1(x) + self.c2(x)
-
-class UpSample(nn.Module):
-    def __init__(self, in_ch):
-        super().__init__()
-        self.c = nn.Conv2d(in_ch, in_ch, 3, stride=1, padding=1)
-        self.t = nn.ConvTranspose2d(in_ch, in_ch, 5, 2, 2, 1)
-
-    def forward(self, x, temb, cemb):
-        x = self.t(x)
-        return self.c(x)
-
-class AttnBlock(nn.Module):
-    def __init__(self, in_ch):
-        super().__init__()
-        self.group_norm = nn.GroupNorm(min(32, in_ch), in_ch)
-        self.proj_q = nn.Conv2d(in_ch, in_ch, 1)
-        self.proj_k = nn.Conv2d(in_ch, in_ch, 1)
-        self.proj_v = nn.Conv2d(in_ch, in_ch, 1)
-        self.proj = nn.Conv2d(in_ch, in_ch, 1)
-
-    def forward(self, x):
-        B, C, H, W = x.shape
-        h = self.group_norm(x)
-        q = self.proj_q(h).permute(0, 2, 3, 1).view(B, H * W, C)
-        k = self.proj_k(h).view(B, C, H * W)
-        w = torch.bmm(q, k) * (C ** (-0.5))
-        w = F.softmax(w, dim=-1)
-        v = self.proj_v(h).permute(0, 2, 3, 1).view(B, H * W, C)
-        h = torch.bmm(w, v).view(B, H, W, C).permute(0, 3, 1, 2)
-        return x + self.proj(h)
-
-class ResBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, tdim, dropout, attn=True):
-        super().__init__()
-        self.block1 = nn.Sequential(
-            nn.GroupNorm(min(32, in_ch), in_ch),  # FIXED: Added min()
-            Swish(),
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-        )
-        self.temb_proj = nn.Sequential(
-            Swish(),
-            nn.Linear(tdim, out_ch),
-        )
-        self.cond_proj = nn.Sequential(
-            Swish(),
-            nn.Linear(tdim, out_ch),
-        )
-        self.block2 = nn.Sequential(
-            nn.GroupNorm(min(32, out_ch), out_ch),
-            Swish(),
-            nn.Dropout(dropout),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-        )
-        self.shortcut = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
-        self.attn = AttnBlock(out_ch) if attn else nn.Identity()
-
-    def forward(self, x, temb, cemb):
-        h = self.block1(x)
-        h = h + self.temb_proj(temb)[:, :, None, None] + self.cond_proj(cemb)[:, :, None, None]
-        h = self.block2(h)
-        h = h + self.shortcut(x)
-        return self.attn(h)
 
 class UNetPlanes(nn.Module):
     """
-    MLP-based model for bounding box regression with diffusion:
-    - Predicts noise for ALL 24 bounding boxes at once (24×4 = 96 values)
+    MLP-based model for bbox range prediction with diffusion:
+    - Predicts noise for bbox ranges for ALL 24 planes at once (24×4 = 96 values)
+    - Each plane has 4 values: xmin, xmax, ymin, ymax
     - No autoregression needed
 
     Conditioned on: p_energy, class_id, sin_zenith, cos_zenith, sin_azimuth, cos_azimuth
@@ -156,8 +87,8 @@ class UNetPlanes(nn.Module):
         self.sin_azimuth_embedding = ContinuousEmbedding(tdim)
         self.cos_azimuth_embedding = ContinuousEmbedding(tdim)
 
-        # MLP for bbox processing
-        # Input: 96 (all 24 planes × 4 bbox coords, noisy)
+        # MLP for bbox range processing
+        # Input: 96 (all 24 planes × 4 coords: xmin, xmax, ymin, ymax, noisy)
         self.bbox_encoder = nn.Sequential(
             nn.Linear(output_dim, hidden_dim * 2),
             Swish(),
@@ -181,7 +112,8 @@ class UNetPlanes(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # Output head: predict noise for all 24 bboxes (96 values)
+        # Output head: predict noise for all 24 bbox ranges (96 values)
+        # Output: 24 planes × 4 coords (xmin, xmax, ymin, ymax)
         self.diffusion_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             Swish(),
@@ -193,7 +125,8 @@ class UNetPlanes(nn.Module):
                 sin_azimuth, cos_azimuth):
         """
         Args:
-            x: (B, 96) - noisy bounding boxes for all 24 planes (flattened)
+            x: (B, 96) - noisy bbox ranges for all 24 planes (flattened)
+                        Format: [plane0_xmin, plane0_xmax, plane0_ymin, plane0_ymax, ...]
             t: (B,) - diffusion timestep
             p_energy: (B,) - primary energy (normalized)
             class_id: (B,) - particle class ID
@@ -201,7 +134,7 @@ class UNetPlanes(nn.Module):
             sin_azimuth, cos_azimuth: (B,) - azimuth angle
 
         Returns:
-            noise_pred: (B, 96) - predicted noise for all bounding boxes
+            noise_pred: (B, 96) - predicted noise for all bbox ranges
         """
         # Time embedding
         temb = self.time_embedding(t)  # (B, tdim)
@@ -248,7 +181,7 @@ if __name__ == '__main__':
     print(f"Model parameters: {count_parameters(model):,}")
 
     # Test forward pass
-    x = torch.randn(batch_size, 96)  # noisy bboxes for all 24 planes (24×4=96)
+    x = torch.randn(batch_size, 96)  # noisy bbox ranges for all 24 planes (24×4=96)
     t = torch.randint(1000, size=[batch_size])
     p_energy = torch.rand(batch_size)
     class_id = torch.randint(5, size=[batch_size])
@@ -265,3 +198,4 @@ if __name__ == '__main__':
     print(f"Noise prediction shape: {noise_pred.shape}")  # (8, 96)
     assert noise_pred.shape == (batch_size, 96), f"Expected ({batch_size}, 96), got {noise_pred.shape}"
     print("✓ Model test passed!")
+    print("Note: Output is 96 values = 24 planes × 4 coords (xmin, xmax, ymin, ymax)")

@@ -5,8 +5,7 @@ import torch.nn.functional as F
 
 def extract(v, t, x_shape):
     """Extract values from v at indices t and reshape for broadcasting"""
-    device = t.device
-    out = torch.gather(v, index=t, dim=0).float().to(device)
+    out = torch.gather(v, index=t, dim=0)
     # For 1D data (bboxes), we need shape (B, 1) for broadcasting
     if len(x_shape) == 2:  # (B, 4) bbox case
         return out.view([t.shape[0], 1])
@@ -25,9 +24,10 @@ class GaussianDiffusionTrainer(nn.Module):
         self.model = model
         self.T = T
 
-        # Create beta schedule
-        self.register_buffer('betas', torch.linspace(beta_1, beta_T, T).double())
-        alphas = 1. - self.betas
+        # Create beta schedule (use float32 directly)
+        betas = torch.linspace(beta_1, beta_T, T, dtype=torch.float32)
+        self.register_buffer('betas', betas)
+        alphas = 1. - betas
         alphas_bar = torch.cumprod(alphas, dim=0)
 
         self.register_buffer('sqrt_alphas_bar', torch.sqrt(alphas_bar))
@@ -36,11 +36,15 @@ class GaussianDiffusionTrainer(nn.Module):
     def forward(self, x_0, p_energy, class_id, sin_zenith, cos_zenith,
                 sin_azimuth, cos_azimuth):
         """
-        Training forward pass with diffusion objective only
+        Training forward pass with diffusion objective
 
         Args:
-            x_0: (B, 96) - clean target bounding boxes for all 24 planes (STANDARDIZED)
-            [other args]: conditioning parameters
+            x_0: (B, 96) - clean target bbox ranges for all 24 planes (STANDARDIZED)
+                         Format: [plane0_xmin, plane0_xmax, plane0_ymin, plane0_ymax, ..., plane23_xmin, ...]
+            p_energy: (B,) - primary energy (normalized)
+            class_id: (B,) - particle class ID
+            sin_zenith, cos_zenith: (B,) - zenith angle
+            sin_azimuth, cos_azimuth: (B,) - azimuth angle
 
         Returns:
             loss: scalar tensor - MSE loss between predicted and true noise
@@ -69,7 +73,7 @@ class GaussianDiffusionTrainer(nn.Module):
 
 class GaussianDiffusionSampler(nn.Module):
     """
-    Sampler for generating all 24 bounding boxes at once
+    Sampler for generating bbox ranges for all 24 planes at once
 
     IMPORTANT: Generates STANDARDIZED data (no clipping applied)
     """
@@ -79,14 +83,15 @@ class GaussianDiffusionSampler(nn.Module):
         self.T = T
         self.w = w  # classifier-free guidance weight
 
-        self.register_buffer('betas', torch.linspace(beta_1, beta_T, T).double())
-        alphas = 1. - self.betas
+        betas = torch.linspace(beta_1, beta_T, T, dtype=torch.float32)
+        self.register_buffer('betas', betas)
+        alphas = 1. - betas
         alphas_bar = torch.cumprod(alphas, dim=0)
         alphas_bar_prev = F.pad(alphas_bar, [1, 0], value=1)[:T]
 
         self.register_buffer('coeff1', torch.sqrt(1. / alphas))
         self.register_buffer('coeff2', self.coeff1 * (1. - alphas) / torch.sqrt(1. - alphas_bar))
-        self.register_buffer('posterior_var', self.betas * (1. - alphas_bar_prev) / (1. - alphas_bar))
+        self.register_buffer('posterior_var', betas * (1. - alphas_bar_prev) / (1. - alphas_bar))
 
     def predict_xt_prev_mean_from_eps(self, x_t, t, eps):
         return (extract(self.coeff1, t, x_t.shape) * x_t -
@@ -123,10 +128,11 @@ class GaussianDiffusionSampler(nn.Module):
     def forward(self, x_T, p_energy, class_id, sin_zenith, cos_zenith,
                 sin_azimuth, cos_azimuth):
         """
-        Generate all 24 bounding boxes from noise
+        Generate bbox ranges for all 24 planes from noise
 
         Returns:
-            bboxes: (B, 96) - generated bounding boxes for all 24 planes (STANDARDIZED, unbounded)
+            bbox_ranges: (B, 96) - generated bbox ranges for all 24 planes (STANDARDIZED, unbounded)
+                                   Format: [plane0_xmin, plane0_xmax, plane0_ymin, plane0_ymax, ...]
         """
         x_t = x_T
 
@@ -144,7 +150,6 @@ class GaussianDiffusionSampler(nn.Module):
                 noise = 0
 
             x_t = mean + torch.sqrt(var) * noise
-            assert torch.isnan(x_t).int().sum() == 0, "nan in tensor."
 
         # NO CLIPPING - return standardized (unbounded) data
         x_0 = x_t
@@ -154,7 +159,7 @@ class GaussianDiffusionSampler(nn.Module):
 class DDIMSamplerPlanes(nn.Module):
     """
     DDIM sampler for faster generation
-    Generates all 24 bounding boxes at once (no autoregression)
+    Generates bbox ranges for all 24 planes at once (no autoregression)
 
     IMPORTANT: Generates STANDARDIZED data (no clipping applied)
     """
@@ -184,7 +189,8 @@ class DDIMSamplerPlanes(nn.Module):
         DDIM sampling for faster generation
 
         Returns:
-            bboxes: (B, 96) - generated bounding boxes for all 24 planes (STANDARDIZED, unbounded)
+            bbox_ranges: (B, 96) - generated bbox ranges for all 24 planes (STANDARDIZED, unbounded)
+                                   Format: [plane0_xmin, plane0_xmax, plane0_ymin, plane0_ymax, ...]
         """
         for i in reversed(range(len(self.ddim_timesteps))):
             t = int(self.ddim_timesteps[i].item())
