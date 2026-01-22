@@ -18,48 +18,19 @@ from diffusion import GaussianDiffusionTrainer
 from unet import UNetPlanes, count_parameters
 
 
-def compute_bbox_from_plane(plane):
-    """
-    Compute bounding box coordinates from a plane.
-
-    Args:
-        plane: (3, H, W) - plane with density, energy, time channels
-
-    Returns:
-        bbox: (4,) - [xmin, xmax, ymin, ymax]
-    """
-    # Use density channel to find bounding box
-    density = plane[0]  # (H, W)
-
-    # Find non-zero regions (threshold at small value to avoid noise)
-    threshold = density.max() * 0.01 if density.max() > 0 else 0
-    mask = density > threshold
-
-    if mask.sum() == 0:
-        # If no signal, return zeros
-        return torch.zeros(4)
-
-    # Find bounding box coordinates
-    rows = torch.any(mask, dim=1)
-    cols = torch.any(mask, dim=0)
-
-    ymin = torch.where(rows)[0].min().float()
-    ymax = torch.where(rows)[0].max().float()
-    xmin = torch.where(cols)[0].min().float()
-    xmax = torch.where(cols)[0].max().float()
-
-    return torch.tensor([xmin, xmax, ymin, ymax])
-
-
 class PlaneDataset(Dataset):
     """
     Memory-efficient dataset with LRU caching and optional pre-warming
     Precomputes bounding boxes from plane histograms during chunk loading
+    Applies global normalization to bbox coordinates
     """
-    def __init__(self, chunk_dir, split='train', cache_size=40, prewarm_cache=True):
+    def __init__(self, chunk_dir, split='train', cache_size=40, prewarm_cache=True,
+                 bbox_mean=None, bbox_std=None):
         self.split = split
         self.chunk_dir = os.path.join(chunk_dir, split)
         self.cache_size = cache_size
+        self.bbox_mean = bbox_mean  # Global mean (scalar)
+        self.bbox_std = bbox_std    # Global std (scalar)
 
         # Read chunk index
         index_file = os.path.join(self.chunk_dir, 'index.txt')
@@ -74,7 +45,8 @@ class PlaneDataset(Dataset):
         for chunk_idx, chunk_file in enumerate(tqdm(self.chunk_files, desc=f"Indexing {split}")):
             chunk_path = os.path.join(self.chunk_dir, chunk_file)
             data = torch.load(chunk_path, map_location='cpu', weights_only=False)
-            chunk_size = len(data['histograms'])
+            # Use bbox_ranges to determine chunk size (histograms not needed)
+            chunk_size = len(data['bbox_ranges']) if 'bbox_ranges' in data else len(data.get('histograms', []))
             self.chunk_sizes.append(chunk_size)
 
             for sample_idx in range(chunk_size):
@@ -103,27 +75,26 @@ class PlaneDataset(Dataset):
 
         print(f"Cache pre-warmed with {len(self.chunk_cache)} chunks")
 
-    def _precompute_bboxes(self, histograms):
-        """Precompute bounding boxes for all samples in a chunk (vectorized)"""
-        N = len(histograms)
-        all_bboxes = torch.zeros(N, 24, 4)
-        for sample_idx in range(N):
-            for plane_idx in range(24):
-                all_bboxes[sample_idx, plane_idx] = compute_bbox_from_plane(
-                    histograms[sample_idx, plane_idx]
-                )
-        return all_bboxes
-
     def _load_chunk_from_disk(self, chunk_idx):
-        """Load chunk from disk and precompute bboxes"""
+        """Load chunk from disk and use pre-computed bbox_ranges with optional normalization"""
         chunk_file = self.chunk_files[chunk_idx]
         chunk_path = os.path.join(self.chunk_dir, chunk_file)
         data = torch.load(chunk_path, map_location='cpu', weights_only=False)
 
-        # Precompute bboxes once during loading
-        data['bboxes'] = self._precompute_bboxes(data['histograms'])
-        # Remove histograms to save memory (we only need bboxes)
-        del data['histograms']
+        # Use pre-computed bbox_ranges from preprocessing (already in format: xmin, xmax, ymin, ymax)
+        bboxes = data['bbox_ranges']  # (N, 24, 4)
+
+        # Apply global normalization if statistics are provided
+        if self.bbox_mean is not None and self.bbox_std is not None:
+            bboxes = (bboxes - self.bbox_mean) / self.bbox_std
+
+        data['bboxes'] = bboxes
+
+        # Remove histograms and bbox_ranges to save memory (we only need normalized bboxes)
+        if 'histograms' in data:
+            del data['histograms']
+        if 'bbox_ranges' in data:
+            del data['bbox_ranges']
 
         return data
 
@@ -168,6 +139,40 @@ class PlaneDataset(Dataset):
             data = self._load_chunk(chunk_idx)
             all_class_ids.append(data['class_id'])
         return torch.cat(all_class_ids)
+
+    def compute_global_bbox_stats(self, max_samples=10000):
+        """Compute global mean and std for all bbox coordinates from pre-computed bbox_ranges"""
+        print(f"Computing global bbox statistics from training data (up to {max_samples} samples)...")
+        all_bboxes = []
+        samples_collected = 0
+
+        for chunk_idx in tqdm(range(len(self.chunk_files)), desc="Loading chunks for stats"):
+            chunk_file = self.chunk_files[chunk_idx]
+            chunk_path = os.path.join(self.chunk_dir, chunk_file)
+            data = torch.load(chunk_path, map_location='cpu', weights_only=False)
+
+            # Use pre-computed bbox_ranges (already xmin, xmax, ymin, ymax per plane)
+            bboxes = data['bbox_ranges']  # (N, 24, 4)
+            all_bboxes.append(bboxes)
+            samples_collected += len(bboxes)
+
+            del data
+
+            if samples_collected >= max_samples:
+                break
+
+        # Concatenate all bboxes and flatten to compute global statistics
+        all_bboxes = torch.cat(all_bboxes, dim=0)  # (N, 24, 4)
+        all_coords = all_bboxes.flatten()  # Flatten all coordinates to a single vector
+
+        bbox_mean = all_coords.mean().item()
+        bbox_std = all_coords.std().item()
+
+        print(f"Global bbox statistics computed from {len(all_bboxes)} samples:")
+        print(f"  Mean: {bbox_mean:.6f}")
+        print(f"  Std:  {bbox_std:.6f}")
+
+        return bbox_mean, bbox_std
 
 
 class PlaneDiffusionModule(pl.LightningModule):
@@ -338,8 +343,8 @@ class PlaneDiffusionModule(pl.LightningModule):
 
 
 class PlaneDataModule(pl.LightningDataModule):
-    """PyTorch Lightning data module"""
-    
+    """PyTorch Lightning data module with global normalization"""
+
     def __init__(
         self,
         data_dir: str,
@@ -348,6 +353,8 @@ class PlaneDataModule(pl.LightningDataModule):
         cache_size: int = 40,
         prefetch_factor: int = 4,
         prewarm_cache: bool = True,
+        compute_global_stats: bool = True,
+        max_samples_for_stats: int = 10000,
     ):
         super().__init__()
         self.data_dir = data_dir
@@ -356,22 +363,64 @@ class PlaneDataModule(pl.LightningDataModule):
         self.cache_size = cache_size
         self.prefetch_factor = prefetch_factor
         self.prewarm_cache = prewarm_cache
-    
+        self.compute_global_stats = compute_global_stats
+        self.max_samples_for_stats = max_samples_for_stats
+        self.bbox_mean = None
+        self.bbox_std = None
+
     def setup(self, stage: Optional[str] = None):
         if stage == 'fit' or stage is None:
-            self.train_dataset = PlaneDataset(
-                self.data_dir, 
-                split='train', 
+            # First, create train dataset WITHOUT normalization to compute stats
+            temp_train_dataset = PlaneDataset(
+                self.data_dir,
+                split='train',
                 cache_size=self.cache_size,
-                prewarm_cache=self.prewarm_cache
+                prewarm_cache=False,  # Don't prewarm yet
+                bbox_mean=None,
+                bbox_std=None
+            )
+
+            # Compute global bbox statistics from training data
+            if self.compute_global_stats:
+                print("\n" + "="*60)
+                print("COMPUTING GLOBAL NORMALIZATION STATISTICS FROM TRAINING DATA")
+                print("="*60)
+                self.bbox_mean, self.bbox_std = temp_train_dataset.compute_global_bbox_stats(
+                    max_samples=self.max_samples_for_stats
+                )
+                print(f"Global bbox normalization: mean={self.bbox_mean:.6f}, std={self.bbox_std:.6f}")
+                print("="*60 + "\n")
+
+                # Save statistics to file
+                stats_file = os.path.join(self.data_dir, 'global_bbox_stats.pt')
+                torch.save({
+                    'bbox_mean': self.bbox_mean,
+                    'bbox_std': self.bbox_std,
+                    'max_samples': self.max_samples_for_stats,
+                    'notes': 'Global normalization statistics for all bbox coordinates (xmin, xmax, ymin, ymax across all planes)'
+                }, stats_file)
+                print(f"Saved global bbox statistics to: {stats_file}\n")
+
+            del temp_train_dataset
+
+            # Now create datasets WITH normalization
+            self.train_dataset = PlaneDataset(
+                self.data_dir,
+                split='train',
+                cache_size=self.cache_size,
+                prewarm_cache=self.prewarm_cache,
+                bbox_mean=self.bbox_mean,
+                bbox_std=self.bbox_std
             )
             self.val_dataset = PlaneDataset(
-                self.data_dir, 
-                split='val', 
+                self.data_dir,
+                split='val',
                 cache_size=max(5, self.cache_size // 4),
-                prewarm_cache=False  # Don't prewarm validation
+                prewarm_cache=False,  # Don't prewarm validation
+                bbox_mean=self.bbox_mean,
+                bbox_std=self.bbox_std
             )
-            
+
             # Verify class IDs (sample check - fast)
             print("\nVerifying class IDs (sampling a few chunks)...")
             train_classes_raw = torch.unique(self.train_dataset.get_sample_class_ids(max_chunks=3)).tolist()
@@ -469,7 +518,9 @@ def train(args):
         num_workers=args.num_workers,
         cache_size=args.cache_size,
         prefetch_factor=args.prefetch_factor,
-        prewarm_cache=args.prewarm_cache
+        prewarm_cache=args.prewarm_cache,
+        compute_global_stats=True,
+        max_samples_for_stats=10000
     )
     
     model = PlaneDiffusionModule(

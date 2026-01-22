@@ -286,7 +286,7 @@ def save_chunked_split(ds: Dict, out_dir: str, split_name: str, chunk_size: int)
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Step3 (train-only stats + class balancing): merge step2 .pt files, balance classes, split, compute per-plane standardization on TRAIN only, apply to all splits, save chunked outputs."
+        description="Step3 (class balancing + split): merge step2 .pt files, balance classes, split, save chunked outputs WITHOUT normalization."
     )
     parser.add_argument("--inputs", nargs="+", required=True, help="Step2 histograms.pt files.")
     parser.add_argument(
@@ -299,7 +299,6 @@ def main():
     parser.add_argument("--test-frac", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=24)
     parser.add_argument("--chunk-size", type=int, default=2000)
-    parser.add_argument("--eps", type=float, default=1e-8)
     parser.add_argument(
         "--balance-method",
         choices=["undersample", "oversample", "none"],
@@ -332,7 +331,7 @@ def main():
         n_total = merged["histograms"].shape[0]
         print(f"Total samples after balancing: {n_total}")
 
-    # 1) SPLIT FIRST
+    # 1) SPLIT
     print("\nCreating stratified splits by class_id ...")
     train_idx, val_idx, test_idx = stratified_split_indices(
         merged["class_id"],
@@ -343,82 +342,27 @@ def main():
     )
     print(f"Split sizes: train={train_idx.numel()} val={val_idx.numel()} test={test_idx.numel()}")
 
-    # 2) COMPUTE STATS ON TRAIN ONLY
-    print("\nComputing per-plane/per-channel mean/std on TRAIN only ...")
-    train_hist = merged["histograms"].index_select(0, train_idx)
-    mean, std = compute_plane_channel_stats(train_hist, eps=args.eps)
-
-    # Compute bbox range stats on TRAIN only
-    print("\nComputing bbox range mean/std on TRAIN only ...")
-    train_bbox = merged["bbox_ranges"].index_select(0, train_idx)
-    bbox_mean, bbox_std = compute_bbox_stats(train_bbox, eps=args.eps)
-
-    stats = {
-        "mean": mean,  # (24,3)
-        "std": std,    # (24,3)
-        "eps": args.eps,
-        "notes": "Train-only standardization. Stats computed per plane (24) and per channel (3) over (N_train,H,W). Applied to train/val/test.",
-        "source_files": args.inputs,
-        "hist_shape_merged": tuple(merged["histograms"].shape),
-        "n_total": int(n_total),
-        "n_train": int(train_idx.numel()),
-        "n_val": int(val_idx.numel()),
-        "n_test": int(test_idx.numel()),
-        "fractions": {"train": args.train_frac, "val": args.val_frac, "test": args.test_frac},
-        "seed": args.seed,
-        "balance_method": args.balance_method,
-    }
-    stats_path = os.path.join(args.outdir, "standardization_stats_train_only.pt")
-    torch.save(stats, stats_path)
-    print(f"Saved standardization stats: {stats_path}")
-
-    # Save bbox range stats
-    bbox_stats = {
-        "mean": bbox_mean,  # (24, 4)
-        "std": bbox_std,    # (24, 4)
-        "eps": args.eps,
-        "notes": "Train-only bbox range standardization. Stats computed per plane (24) and per coordinate (4: xmin, xmax, ymin, ymax).",
-        "source_files": args.inputs,
-        "bbox_shape_merged": tuple(merged["bbox_ranges"].shape),
-        "n_total": int(n_total),
-        "n_train": int(train_idx.numel()),
-        "n_val": int(val_idx.numel()),
-        "n_test": int(test_idx.numel()),
-        "fractions": {"train": args.train_frac, "val": args.val_frac, "test": args.test_frac},
-        "seed": args.seed,
-        "balance_method": args.balance_method,
-    }
-    bbox_stats_path = os.path.join(args.outdir, "standardization_stats_bbox_train_only.pt")
-    torch.save(bbox_stats, bbox_stats_path)
-    print(f"Saved bbox standardization stats: {bbox_stats_path}")
-
-    # 3) APPLY STATS TO ALL DATA
-    print("\nStandardizing ALL histograms and bbox ranges using TRAIN stats ...")
-    merged_std = dict(merged)
-    merged_std["histograms"] = standardize_histograms(merged["histograms"], mean, std)
-    merged_std["bbox_ranges"] = standardize_bbox_ranges(merged["bbox_ranges"], bbox_mean, bbox_std)
-    merged_std["metadata"] = dict(merged.get("metadata", {}))
-    merged_std["metadata"].update(
+    # Update metadata (NO NORMALIZATION)
+    merged["metadata"] = dict(merged.get("metadata", {}))
+    merged["metadata"].update(
         {
-            "standardized": True,
-            "standardization_stats": os.path.basename(stats_path),
-            "bbox_standardization_stats": os.path.basename(bbox_stats_path),
-            "standardization_type": "per_plane_per_channel_train_only",
+            "standardized": False,
             "train_frac": args.train_frac,
             "val_frac": args.val_frac,
             "test_frac": args.test_frac,
             "seed": args.seed,
             "balance_method": args.balance_method,
+            "notes": "Data saved WITHOUT normalization. Normalization will be applied during training."
         }
     )
 
-    # 4) MATERIALIZE SPLITS (STANDARDIZED)
-    train_ds = subset_dataset(merged_std, train_idx)
-    val_ds = subset_dataset(merged_std, val_idx)
-    test_ds = subset_dataset(merged_std, test_idx)
+    # 2) MATERIALIZE SPLITS (NO NORMALIZATION)
+    train_ds = subset_dataset(merged, train_idx)
+    val_ds = subset_dataset(merged, val_idx)
+    test_ds = subset_dataset(merged, test_idx)
 
-    # 5) SAVE CHUNKED
-    print("\nSaving chunked datasets ...")
+    # 3) SAVE CHUNKED
+    print("\nSaving chunked datasets (WITHOUT normalization) ...")
     save_chunked_split(train_ds, args.outdir, "train", args.chunk_size)
     save_chunked_split(val_ds, args.outdir, "val", args.chunk_size)
     save_chunked_split(test_ds, args.outdir, "test", args.chunk_size)
@@ -426,19 +370,19 @@ def main():
     # summary
     meta_path = os.path.join(args.outdir, "step3_summary.txt")
     with open(meta_path, "w") as f:
-        f.write("Step3 summary (train-only standardization stats + class balancing)\n")
+        f.write("Step3 summary (class balancing + split, NO NORMALIZATION)\n")
         f.write(f"Balance method: {args.balance_method}\n")
         f.write(f"Total samples: {n_total}\n")
         f.write(f"Train/Val/Test: {train_idx.numel()}/{val_idx.numel()}/{test_idx.numel()}\n")
         f.write(f"Chunk size: {args.chunk_size}\n")
-        f.write(f"Histogram standardization stats: {stats_path}\n")
-        f.write(f"Bbox range standardization stats: {bbox_stats_path}\n")
         f.write("Splits are stratified by class_id.\n")
         f.write("Classes are balanced (equal samples per class).\n")
         f.write("Files include histograms and bbox_ranges (xmin, xmax, ymin, ymax for each plane).\n")
+        f.write("NO NORMALIZATION applied - normalization will be done during training with global statistics.\n")
         f.write("Files are saved as outdir/{train,val,test}/chunk_00000.pt and an index.txt in each split.\n")
 
     print(f"\nDone. Output written to: {args.outdir}")
+    print("NOTE: Data saved WITHOUT normalization. Normalization will be applied during training.")
 
 
 if __name__ == "__main__":
