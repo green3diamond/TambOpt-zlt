@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=tambo_hist_array
+#SBATCH --job-name=tambo_bbox_array
 #SBATCH --mem=150G
 #SBATCH --time=2-00:00
 #SBATCH --output=/n/home04/zdimitrov/tambo/logs/step2_bboxes/step2_bboxes_%A_%a.log
@@ -42,7 +42,7 @@ INPUT_FILE="${BASE_INPUT_DIR}/${SUBDIR}/valid_files.txt"
 OUTPUT_SUBDIR="${BASE_OUTPUT_DIR}/${SUBDIR}"
 mkdir -p "${OUTPUT_SUBDIR}"
 
-OUTPUT_FILE="${OUTPUT_SUBDIR}/histograms.pt"
+OUTPUT_FILE="${OUTPUT_SUBDIR}/bboxes.pt"
 
 echo "========================================="
 echo "Array task ID: ${SLURM_ARRAY_TASK_ID}"
@@ -69,8 +69,6 @@ echo "Number of files to process: ${NUM_FILES}"
 python /n/home05/zdimitrov/tambo/TambOpt/ml/diffusion_scaling_NN/preprocessing/step2_preprocessing.py \
     "${INPUT_FILE}" \
     --output "${OUTPUT_FILE}" \
-    --bins 32 \
-    --sigma 0.0 \
     --min-particles 50 \
     --outlier-method iqr \
     --iqr-multiplier 1.5 \
@@ -92,7 +90,7 @@ if [[ -f "${OUTPUT_FILE}" ]]; then
   echo "File size: $(du -h ${OUTPUT_FILE} | cut -f1)"
   
   # Verify the file is valid PyTorch format
-  python -c "import torch; d=torch.load('${OUTPUT_FILE}'); print(f'Samples: {d[\"histograms\"].shape[0]}')" 2>/dev/null
+  python -c "import torch; d=torch.load('${OUTPUT_FILE}'); print(f'Samples: {d[\"bbox_ranges\"].shape[0]}')" 2>/dev/null
   
   if [[ $? -eq 0 ]]; then
     echo "File validated successfully"
@@ -107,4 +105,4 @@ else
   exit 1
 fi
 
-echo "Histogram creation complete for ${SUBDIR}"
+echo "Bounding box extraction complete for ${SUBDIR}"
