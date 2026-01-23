@@ -2,7 +2,7 @@
 #SBATCH --job-name=tambo_bbox_array
 #SBATCH --mem=150G
 #SBATCH --time=2-00:00
-#SBATCH --output=/n/home04/zdimitrov/tambo/logs/step2_bboxes/step2_bboxes_%A_%a.log
+#SBATCH --output=/n/home05/zdimitrov/tambo/logs/step2_bboxes/step2_bboxes_%A_%a.log
 #SBATCH -p arguelles_delgado
 #SBATCH --array=0-4
 #SBATCH --cpus-per-task=24
@@ -17,7 +17,7 @@ BASE_INPUT_DIR=/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_sim
 BASE_OUTPUT_DIR=/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_2nd_step_min_50/
 
 # Logs directory
-mkdir -p /n/home04/zdimitrov/tambo/logs/step2_bboxes/
+mkdir -p /n/home05/zdimitrov/tambo/logs/step2_bboxes/
 mkdir -p "${BASE_OUTPUT_DIR}"
 
 # Subdirectories to process
