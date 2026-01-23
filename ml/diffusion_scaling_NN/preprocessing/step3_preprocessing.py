@@ -3,7 +3,7 @@
 """
 Step 3 Preprocessing: Merge datasets, balance classes, and split into train/val/test.
 
-This script combines multiple step 2 outputs, balances classes, and creates data splits.
+This script combines multiple step 2 outputs (bbox data), balances classes, and creates data splits.
 
 Summary of steps:
 1. Load multiple step 2 .pt files (one per PDG class: electrons, muons, pions, etc.)
@@ -32,20 +32,20 @@ from typing import Dict, List, Tuple
 
 import torch
 
-# python /n/home04/hhanif/tam/step3_preprocessing.py   --inputs     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_111/histograms.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_-11/histograms.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_11/histograms.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_-211/histograms.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_211/histograms.pt"   --outdir "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_3rd_step"   --chunk-size 500   --seed 24
+# python /n/home04/hhanif/tam/step3_preprocessing.py   --inputs     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_111/bboxes.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_-11/bboxes.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_11/bboxes.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_-211/bboxes.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_211/bboxes.pt"   --outdir "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_3rd_step"   --chunk-size 500   --seed 24
 def _ensure_dir(p: str) -> None:
     os.makedirs(p, exist_ok=True)
 
 
 def load_step2_dataset(path: str) -> Dict:
     obj = torch.load(path, map_location="cpu")
-    if not isinstance(obj, dict) or "histograms" not in obj:
+    if not isinstance(obj, dict) or "bbox_ranges" not in obj:
         raise ValueError(f"Not a recognized step2 dataset: {path}")
     return obj
 
 
 def concat_datasets(dsets: List[Dict]) -> Dict:
-    hist = torch.cat([d["histograms"] for d in dsets], dim=0)
+    bbox = torch.cat([d["bbox_ranges"] for d in dsets], dim=0)
 
     def cat_if_present(key: str, dtype=None):
         if all(key in d for d in dsets):
@@ -56,8 +56,7 @@ def concat_datasets(dsets: List[Dict]) -> Dict:
         return None
 
     out = {
-        "histograms": hist,
-        "bbox_ranges": cat_if_present("bbox_ranges", torch.float32),
+        "bbox_ranges": bbox,
         "p_energy": cat_if_present("p_energy", torch.float32),
         "sin_zenith": cat_if_present("sin_zenith", torch.float32),
         "cos_zenith": cat_if_present("cos_zenith", torch.float32),
@@ -170,26 +169,6 @@ def balance_classes(dataset: Dict, seed: int, method: str = "undersample") -> Di
 
 
 @torch.no_grad()
-def compute_plane_channel_stats(histograms: torch.Tensor, eps: float = 1e-8) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    histograms: (N, 24, 3, H, W)
-    Returns mean/std: (24, 3)
-    """
-    if histograms.ndim != 5 or histograms.shape[1] != 24 or histograms.shape[2] != 3:
-        raise ValueError(f"Expected histograms shape (N,24,3,H,W), got {tuple(histograms.shape)}")
-
-    mean = histograms.mean(dim=(0, 3, 4))
-    var = histograms.var(dim=(0, 3, 4), unbiased=False)
-    std = torch.sqrt(var).clamp_min(eps)
-    return mean, std
-
-
-@torch.no_grad()
-def standardize_histograms(histograms: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
-    return (histograms - mean[None, :, :, None, None]) / std[None, :, :, None, None]
-
-
-@torch.no_grad()
 def compute_bbox_stats(bbox_ranges: torch.Tensor, eps: float = 1e-8) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute mean and std for bbox ranges
@@ -266,7 +245,7 @@ def stratified_split_indices(
 
 def subset_dataset(ds: Dict, indices: torch.Tensor) -> Dict:
     out = {"metadata": dict(ds.get("metadata", {}))}
-    n = ds["histograms"].shape[0]
+    n = ds["bbox_ranges"].shape[0]
 
     for k, v in ds.items():
         if k == "metadata":
@@ -286,7 +265,7 @@ def save_chunked_split(ds: Dict, out_dir: str, split_name: str, chunk_size: int)
     split_dir = os.path.join(out_dir, split_name)
     _ensure_dir(split_dir)
 
-    n = ds["histograms"].shape[0]
+    n = ds["bbox_ranges"].shape[0]
     n_chunks = (n + chunk_size - 1) // chunk_size
 
     for ci in range(n_chunks):
@@ -313,7 +292,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Step3 (class balancing + split): merge step2 .pt files, balance classes, split, save chunked outputs WITHOUT normalization."
     )
-    parser.add_argument("--inputs", nargs="+", required=True, help="Step2 histograms.pt files.")
+    parser.add_argument("--inputs", nargs="+", required=True, help="Step2 bboxes.pt files.")
     parser.add_argument(
         "--outdir",
         default="/n/netscratch/arguelles_delgado_lab/Everyone/hhanif/tambo_simulation_nov_25/pre_processed_3rd_step",
@@ -345,15 +324,15 @@ def main():
         dsets.append(d)
 
     merged = concat_datasets(dsets)
-    n_total = merged["histograms"].shape[0]
+    n_total = merged["bbox_ranges"].shape[0]
     print(f"\nMerged samples: {n_total}")
-    print(f"Histograms shape: {tuple(merged['histograms'].shape)}  (N,24,3,H,W)")
+    print(f"Bbox ranges shape: {tuple(merged['bbox_ranges'].shape)}  (N,24,4)")
 
     # BALANCE CLASSES
     if args.balance_method != "none":
         print(f"\nBalancing classes using method: {args.balance_method}")
         merged = balance_classes(merged, seed=args.seed, method=args.balance_method)
-        n_total = merged["histograms"].shape[0]
+        n_total = merged["bbox_ranges"].shape[0]
         print(f"Total samples after balancing: {n_total}")
 
     # 1) SPLIT
@@ -402,7 +381,7 @@ def main():
         f.write(f"Chunk size: {args.chunk_size}\n")
         f.write("Splits are stratified by class_id.\n")
         f.write("Classes are balanced (equal samples per class).\n")
-        f.write("Files include histograms and bbox_ranges (xmin, xmax, ymin, ymax for each plane).\n")
+        f.write("Files include bbox_ranges (xmin, xmax, ymin, ymax for each of 24 planes) and metadata.\n")
         f.write("NO NORMALIZATION applied - normalization will be done during training with global statistics.\n")
         f.write("Files are saved as outdir/{train,val,test}/chunk_00000.pt and an index.txt in each split.\n")
 
