@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """
-Automated SLURM job submission for preprocessing.
-Usage: python auto_submit_preprocessing.py --chunk-size 500
+Step 1 Auto-Submit: Automated SLURM job array submission for preprocessing.
+
+This script generates and submits SLURM job arrays to parallelize the first preprocessing step.
+
+Summary of steps:
+1. Read paths to simulation directories from text files (one per PDG class)
+2. Calculate total number of SLURM array tasks needed based on chunk size
+3. Generate a SLURM batch script that:
+   - Maps array task IDs to specific simulation chunks
+   - Processes simulations in parallel across multiple nodes
+   - Calls step1_preprocessing.py for each chunk
+4. Submit the generated SLURM script or output it for manual submission (--dry-run)
+
+Usage: python step1_auto_submit.py --chunk-size 2000 [--dry-run]
 """
 # python /n/home04/hhanif/tam/step1_auto_submit.py --chunk-size 2000
 import argparse

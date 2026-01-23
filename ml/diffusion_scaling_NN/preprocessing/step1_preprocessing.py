@@ -1,5 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Step 1 Preprocessing: Transform particle coordinates from local to global frame.
+
+This script processes raw simulation directories and combines particle data from multiple planes.
+
+Summary of steps:
+1. Read simulation directory paths from a text file
+2. For each simulation directory:
+   - Find all particles*/particles.parquet files (one per detector plane)
+   - Load parquet files with awkward arrays
+   - Filter particles by PDG code (keep electrons, muons, photons: 11, 13, 22)
+   - Extract simulation parameters (energy, zenith, azimuth) from config files
+   - Load plane geometry (center, normal, x-axis, y-axis) from config.yaml
+   - Transform particle coordinates from local plane frame to global 3D coordinates
+   - Add metadata columns: plane_index, class_id, energy, angles
+3. Concatenate all planes into a single parquet file per simulation
+4. Validate output files (check all 24 planes present with ≥10 particles each)
+5. Write valid file paths to a manifest file (valid_files.txt) using file locking
+6. Support batch processing with --batch-start and --batch-end for parallel execution
+
+Output: Combined parquet files with global (x, y, z) coordinates and metadata for each simulation.
+"""
 
 import os
 import re

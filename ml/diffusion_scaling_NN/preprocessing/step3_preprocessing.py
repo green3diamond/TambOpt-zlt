@@ -1,5 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Step 3 Preprocessing: Merge datasets, balance classes, and split into train/val/test.
+
+This script combines multiple step 2 outputs, balances classes, and creates data splits.
+
+Summary of steps:
+1. Load multiple step 2 .pt files (one per PDG class: electrons, muons, pions, etc.)
+2. Concatenate all datasets into a single merged dataset
+3. Balance classes using configurable method:
+   - 'undersample': Reduce majority classes to match minority class size
+   - 'oversample': Increase minority classes to match majority class size (with replacement)
+   - 'none': Skip balancing
+4. Perform stratified train/val/test split:
+   - Split proportions configurable (default: 90/9/1)
+   - Stratification preserves class distribution in each split
+   - Shuffle samples within each split
+5. Save each split in chunks to manage memory:
+   - Chunks are saved as separate .pt files (e.g., chunk_00000.pt)
+   - Each chunk contains subset of samples with full metadata
+   - Index file (index.txt) lists all chunk files per split
+6. Write summary statistics to step3_summary.txt
+
+Output: Chunked datasets in outdir/{train,val,test}/ with balanced classes, ready for training.
+Note: NO normalization applied - normalization will be done during training using global statistics.
+"""
 
 import os
 import argparse

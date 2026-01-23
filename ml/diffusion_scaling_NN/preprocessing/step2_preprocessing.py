@@ -1,5 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Step 2 Preprocessing: Create 3D histogram tensors from preprocessed parquet files.
+
+This script converts particle data into multi-channel 2D histograms for each detector plane.
+
+Summary of steps:
+1. Read list of preprocessed parquet files from step 1 (from valid_files.txt)
+2. For each parquet file and each of 24 detector planes:
+   - Extract particle positions (x, y), kinetic energy, and time
+   - Remove outliers using configurable methods (IQR, MAD, Z-score, percentile)
+   - Compute plane-specific bounding box ranges AFTER outlier removal
+   - Create three 2D histograms per plane (bins × bins):
+     * Channel 0: Particle density (count)
+     * Channel 1: Average kinetic energy per bin
+     * Channel 2: Average time per bin
+   - Apply Gaussian smoothing to histograms (optional, controlled by --sigma)
+3. Stack histograms into tensor shape: (N_samples, 24_planes, 3_channels, H, W)
+4. Store bounding box ranges for each plane: (N_samples, 24_planes, 4) [xmin, xmax, ymin, ymax] (only change in comparison to default diffusion model preprocessing)
+5. Include simulation metadata: primary energy, zenith/azimuth angles, class ID
+6. Save data in batches to manage memory, then combine into final .pt file
+7. Clean up temporary batch files
+
+Output: Single PyTorch .pt file containing histograms, bbox_ranges, and metadata for all valid simulations.
+"""
 
 import os
 import argparse
