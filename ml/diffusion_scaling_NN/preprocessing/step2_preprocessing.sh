@@ -2,7 +2,7 @@
 #SBATCH --job-name=tambo_hist_array
 #SBATCH --mem=150G
 #SBATCH --time=2-00:00
-#SBATCH --output=/n/home04/hhanif/tam/logs/step2_histograms/step2_histograms_%A_%a.log
+#SBATCH --output=/n/home04/zdimitrov/tambo/logs/step2_bboxes/step2_bboxes_%A_%a.log
 #SBATCH -p arguelles_delgado
 #SBATCH --array=0-4
 #SBATCH --cpus-per-task=24
@@ -14,10 +14,10 @@ mamba activate /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tamboOpt_
 
 # Base directories
 BASE_INPUT_DIR=/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_1st_step/
-BASE_OUTPUT_DIR=/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step_min_50/
+BASE_OUTPUT_DIR=/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_2nd_step_min_50/
 
 # Logs directory
-mkdir -p /n/home04/hhanif/tam/logs/step2_histograms/
+mkdir -p /n/home04/zdimitrov/tambo/logs/step2_bboxes/
 mkdir -p "${BASE_OUTPUT_DIR}"
 
 # Subdirectories to process
@@ -66,7 +66,7 @@ echo "Number of files to process: ${NUM_FILES}"
 # - Batch size of 3000 to prevent memory accumulation
 # - Each batch gets saved separately then combined at the end
 
-python /n/home04/hhanif/tam/step2_preprocessing.py \
+python /n/home05/zdimitrov/tambo/TambOpt/ml/diffusion_scaling_NN/preprocessing/step2_preprocessing.py \
     "${INPUT_FILE}" \
     --output "${OUTPUT_FILE}" \
     --bins 32 \

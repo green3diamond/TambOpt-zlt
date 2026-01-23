@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Step 2 Preprocessing: Create 3D histogram tensors from preprocessed parquet files.
+Step 2 Preprocessing: Extract bounding boxes from preprocessed parquet files.
 
-This script converts particle data into multi-channel 2D histograms for each detector plane.
+This script extracts bounding box ranges for each detector plane without creating histograms.
 
 Summary of steps:
 1. Read list of preprocessed parquet files from step 1 (from valid_files.txt)
@@ -11,18 +11,12 @@ Summary of steps:
    - Extract particle positions (x, y), kinetic energy, and time
    - Remove outliers using configurable methods (IQR, MAD, Z-score, percentile)
    - Compute plane-specific bounding box ranges AFTER outlier removal
-   - Create three 2D histograms per plane (bins × bins):
-     * Channel 0: Particle density (count)
-     * Channel 1: Average kinetic energy per bin
-     * Channel 2: Average time per bin
-   - Apply Gaussian smoothing to histograms (optional, controlled by --sigma)
-3. Stack histograms into tensor shape: (N_samples, 24_planes, 3_channels, H, W)
-4. Store bounding box ranges for each plane: (N_samples, 24_planes, 4) [xmin, xmax, ymin, ymax] (only change in comparison to default diffusion model preprocessing)
-5. Include simulation metadata: primary energy, zenith/azimuth angles, class ID
-6. Save data in batches to manage memory, then combine into final .pt file
-7. Clean up temporary batch files
+3. Store bounding box ranges for each plane: (N_samples, 24_planes, 4) [xmin, xmax, ymin, ymax]
+4. Include simulation metadata: primary energy, zenith/azimuth angles, class ID
+5. Save data in batches to manage memory, then combine into final .pt file
+6. Clean up temporary batch files
 
-Output: Single PyTorch .pt file containing histograms, bbox_ranges, and metadata for all valid simulations.
+Output: Single PyTorch .pt file containing bbox_ranges and metadata for all valid simulations.
 """
 
 import os
@@ -33,25 +27,7 @@ import torch
 from tqdm.auto import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
-from scipy.ndimage import gaussian_filter
 import gc
-
-
-def create_2d_histograms(x, y, values, bins=64, x_range=None, y_range=None):
-    """Create 2D histogram for given particle positions and values."""
-    if x_range is None:
-        x_range = (x.min(), x.max())
-    if y_range is None:
-        y_range = (y.min(), y.max())
-
-    hist, _, _ = np.histogram2d(
-        x, y,
-        bins=bins,
-        range=[x_range, y_range],
-        weights=values
-    )
-
-    return hist
 
 
 def calculate_outlier_thresholds_iqr(data, iqr_multiplier=1.5):
@@ -156,12 +132,11 @@ def process_single_file(
     outlier_params=None
 ):
     """
-    Process a single parquet file and create 3D histograms for all planes.
+    Process a single parquet file and extract bounding boxes for all planes.
 
     Returns:
     --------
     dict with keys:
-        'histograms': torch.Tensor (24, 3, bins, bins)  [planes, channels, H, W]
         'bbox_ranges': torch.Tensor (24, 4) [planes, (xmin, xmax, ymin, ymax)]
         'p_energy', 'sin_zenith', 'cos_zenith', 'sin_azimuth', 'cos_azimuth'
         'class_id': int
@@ -186,9 +161,6 @@ def process_single_file(
         sin_azimuth = float(table['sin_azimuth'][0].as_py())
         cos_azimuth = float(table['cos_azimuth'][0].as_py())
         class_id = int(table['class_id'][0].as_py())
-
-        # histograms: (24 planes, 3 channels, bins, bins)
-        histograms = np.zeros((24, 3, bins, bins), dtype=np.float32)
 
         # bbox_ranges: (24 planes, 4) - [xmin, xmax, ymin, ymax] for each plane
         bbox_ranges = np.zeros((24, 4), dtype=np.float32)
@@ -224,53 +196,9 @@ def process_single_file(
             # Store bbox ranges: [xmin, xmax, ymin, ymax]
             bbox_ranges[plane_idx] = [x_range[0], x_range[1], y_range[0], y_range[1]]
 
-            # Create 2D histograms
-            hist_density = create_2d_histograms(
-                plane_x, plane_y,
-                np.ones_like(plane_x),
-                bins=bins,
-                x_range=x_range,
-                y_range=y_range
-            )
-
-            hist_energy = create_2d_histograms(
-                plane_x, plane_y,
-                plane_ke,
-                bins=bins,
-                x_range=x_range,
-                y_range=y_range
-            )
-
-            hist_time = create_2d_histograms(
-                plane_x, plane_y,
-                plane_time,
-                bins=bins,
-                x_range=x_range,
-                y_range=y_range
-            )
-
-            if sigma > 0:
-                hist_density = gaussian_filter(hist_density, sigma=sigma)
-                hist_energy = gaussian_filter(hist_energy, sigma=sigma)
-                hist_time = gaussian_filter(hist_time, sigma=sigma)
-
-            # averages per bin
-            mask_nonzero = hist_density > 0
-            hist_energy_avg = np.zeros_like(hist_energy)
-            hist_time_avg = np.zeros_like(hist_time)
-
-            hist_energy_avg[mask_nonzero] = hist_energy[mask_nonzero] / hist_density[mask_nonzero]
-            hist_time_avg[mask_nonzero] = hist_time[mask_nonzero] / hist_density[mask_nonzero]
-
-            histograms[plane_idx, 0] = hist_density
-            histograms[plane_idx, 1] = hist_energy_avg
-            histograms[plane_idx, 2] = hist_time_avg
-
-        histograms_torch = torch.from_numpy(histograms)
         bbox_ranges_torch = torch.from_numpy(bbox_ranges)
 
         return {
-            'histograms': histograms_torch,
             'bbox_ranges': bbox_ranges_torch,
             'p_energy': p_energy,
             'sin_zenith': sin_zenith,
@@ -323,7 +251,6 @@ def save_batch(batch_samples, batch_idx, batch_dir, args):
     batch_file = os.path.join(batch_dir, f"batch_{batch_idx:04d}.pt")
 
     batch_dataset = {
-        'histograms': torch.stack([s['histograms'] for s in batch_samples]),
         'bbox_ranges': torch.stack([s['bbox_ranges'] for s in batch_samples]),
         'p_energy': torch.tensor([s['p_energy'] for s in batch_samples], dtype=torch.float32),
         'sin_zenith': torch.tensor([s['sin_zenith'] for s in batch_samples], dtype=torch.float32),
@@ -342,7 +269,6 @@ def combine_batches(batch_files, final_output, args):
     """Combine all batch files into final output."""
     print(f"\nCombining {len(batch_files)} batch files into final dataset...")
 
-    all_histograms = []
     all_bbox_ranges = []
     all_p_energy = []
     all_sin_zenith = []
@@ -358,7 +284,6 @@ def combine_batches(batch_files, final_output, args):
             continue
 
         batch_data = torch.load(batch_file)
-        all_histograms.append(batch_data['histograms'])
         all_bbox_ranges.append(batch_data['bbox_ranges'])
         all_p_energy.append(batch_data['p_energy'])
         all_sin_zenith.append(batch_data['sin_zenith'])
@@ -372,11 +297,10 @@ def combine_batches(batch_files, final_output, args):
         del batch_data
         gc.collect()
 
-    if len(all_histograms) == 0:
+    if len(all_bbox_ranges) == 0:
         raise ValueError("No valid batch files found!")
 
     final_dataset = {
-        'histograms': torch.cat(all_histograms, dim=0),
         'bbox_ranges': torch.cat(all_bbox_ranges, dim=0),
         'p_energy': torch.cat(all_p_energy, dim=0),
         'sin_zenith': torch.cat(all_sin_zenith, dim=0),
@@ -386,8 +310,6 @@ def combine_batches(batch_files, final_output, args):
         'class_id': torch.cat(all_class_id, dim=0),
         'file_paths': all_file_paths,
         'metadata': {
-            'bins': args.bins,
-            'sigma': args.sigma,
             'min_particles_per_plane': args.min_particles,
             'outlier_method': args.outlier_method if args.outlier_method != 'none' else None,
             'outlier_params': {},
@@ -410,14 +332,10 @@ def combine_batches(batch_files, final_output, args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create 3D histogram tensors from preprocessed parquet files"
+        description="Extract bounding boxes from preprocessed parquet files"
     )
     parser.add_argument("file_list", help="Text file with parquet file paths (one per line)")
     parser.add_argument("--output", required=True, help="Output .pt file path")
-    parser.add_argument("--bins", type=int, default=64,
-                        help="Number of bins for 2D histograms (default: 64)")
-    parser.add_argument("--sigma", type=float, default=1.0,
-                        help="Gaussian filter sigma (default: 1.0, use 0 for no filtering)")
     parser.add_argument("--min-particles", type=int, default=30,
                         help="Minimum particles per plane (default: 30)")
     parser.add_argument("--outlier-method", type=str, default='iqr',
@@ -439,6 +357,10 @@ def main():
                         help="Number of files to submit at once (default: 3000)")
 
     args = parser.parse_args()
+
+    # Set dummy values for bins and sigma for backward compatibility with function signatures
+    args.bins = 64  # Not used but kept for function signature compatibility
+    args.sigma = 0  # Not used
 
     file_paths = read_file_list(args.file_list)
     print(f"Found {len(file_paths)} files to process")
@@ -558,8 +480,8 @@ def main():
         print(f"Could not remove batch directory: {e}")
 
     print(f"\n=== SUCCESS ===")
-    print(f"Saved {final_dataset['histograms'].shape[0]} samples to {args.output}")
-    print(f"Dataset shape: {final_dataset['histograms'].shape}")
+    print(f"Saved {final_dataset['bbox_ranges'].shape[0]} samples to {args.output}")
+    print(f"Bbox ranges shape: {final_dataset['bbox_ranges'].shape}")
 
 
 if __name__ == "__main__":
