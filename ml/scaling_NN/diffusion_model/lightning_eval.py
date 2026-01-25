@@ -20,10 +20,10 @@ from diffusion import DDIMSamplerPlanes, GaussianDiffusionSampler
 
 def load_standardization_stats(data_dir: str) -> Tuple[torch.Tensor, torch.Tensor]:
     """Load bbox standardization statistics"""
-    stats_path = os.path.join(data_dir, "standardization_stats_bbox_train_only.pt")
+    stats_path = os.path.join(data_dir, "global_bbox_stats.pt")
     if not os.path.exists(stats_path):
         # Try alternative path
-        stats_path = os.path.join(data_dir, "..", "standardization_stats_bbox_train_only.pt")
+        stats_path = os.path.join(data_dir, "..", "global_bbox_stats.pt")
 
     if not os.path.exists(stats_path):
         # Try global stats from lightning training
@@ -181,8 +181,8 @@ def evaluate(args):
         split='test',
         cache_size=args.cache_size,
         prewarm_cache=False,
-        bbox_mean=mean.item() if mean.ndim == 0 else None,
-        bbox_std=std.item() if std.ndim == 0 else None
+        bbox_mean=None,
+        bbox_std=None
     )
 
     test_loader = DataLoader(
@@ -299,7 +299,8 @@ def evaluate(args):
 
         # Denormalize
         pred_bbox = denormalize_standardized(pred_bbox_std, mean, std)
-        gt_bbox = denormalize_standardized(gt_bbox_std, mean, std)
+        # pred_bbox = pred_bbox_std
+        gt_bbox = gt_bbox_std
 
         # Compute metrics
         metrics = compute_bbox_metrics(pred_bbox, gt_bbox)
