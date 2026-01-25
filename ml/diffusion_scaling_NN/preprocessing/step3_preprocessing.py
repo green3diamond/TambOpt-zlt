@@ -32,7 +32,16 @@ from typing import Dict, List, Tuple
 
 import torch
 
-# python /n/home04/hhanif/tam/step3_preprocessing.py   --inputs     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_111/bboxes.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_-11/bboxes.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_11/bboxes.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_-211/bboxes.pt"     "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_2nd_step/pdg_211/bboxes.pt"   --outdir "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations/pre_processed_3rd_step"   --chunk-size 500   --seed 24
+# python /n/home05/zdimitrov/tambo/TambOpt/ml/diffusion_scaling_NN/preprocessing/step3_preprocessing.py \
+# --inputs \
+# "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_2nd_step_min_50/pdg_111/bboxes.pt" \
+# "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_2nd_step_min_50/pdg_-11/bboxes.pt" \
+# "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_2nd_step_min_50/pdg_11/bboxes.pt" \
+# "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_2nd_step_min_50/pdg_-211/bboxes.pt" \
+# "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_2nd_step_min_50/pdg_211/bboxes.pt" \
+# --outdir "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_3rd_step_min_50/" \
+# --chunk-size 500   --seed 24
+
 def _ensure_dir(p: str) -> None:
     os.makedirs(p, exist_ok=True)
 
@@ -295,7 +304,7 @@ def main():
     parser.add_argument("--inputs", nargs="+", required=True, help="Step2 bboxes.pt files.")
     parser.add_argument(
         "--outdir",
-        default="/n/netscratch/arguelles_delgado_lab/Everyone/hhanif/tambo_simulation_nov_25/pre_processed_3rd_step",
+        default="/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_3rd_step_min_50/",
         help="Output folder for step3.",
     )
     parser.add_argument("--train-frac", type=float, default=0.90)
