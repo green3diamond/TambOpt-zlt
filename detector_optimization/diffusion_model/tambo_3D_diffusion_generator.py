@@ -17,7 +17,6 @@ class PlaneDiffusionEvaluator:
         evaluator = PlaneDiffusionEvaluator(
             data_dir="/path/to/data",
             checkpoint_path="/path/to/ckpt.ckpt",
-            output_dir="./eval_output",
             device="cuda:0"
         )
         evaluator.run_full_pipeline(num_samples=10, ddim_steps=50)
@@ -27,7 +26,6 @@ class PlaneDiffusionEvaluator:
         self,
         data_dir: str,
         checkpoint_path: str,
-        output_dir: str,
         device: Optional[str] = None,
         batch_size: int = 2,
         num_workers: int = 2,
@@ -46,7 +44,6 @@ class PlaneDiffusionEvaluator:
         Args:
             data_dir: Directory containing test data
             checkpoint_path: Path to the trained model checkpoint
-            output_dir: Directory to save evaluation plots
             device: Device to use ('cuda:0', 'cpu', etc.). Auto-detected if None
             batch_size: Batch size for data loading
             num_workers: Number of data loading workers
@@ -74,7 +71,6 @@ class PlaneDiffusionEvaluator:
         # Store parameters
         self.data_dir = data_dir
         self.checkpoint_path = checkpoint_path
-        self.output_dir = output_dir
         self.device = torch.device(device if device else ("cuda:0" if torch.cuda.is_available() else "cpu"))
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -93,9 +89,6 @@ class PlaneDiffusionEvaluator:
         self.test_dataset = None
         self.test_loader = None
 
-        # Create output directory
-        os.makedirs(self.output_dir, exist_ok=True)
-
         # Set random seeds
         self._seed_all(self.seed)
         
@@ -105,7 +98,6 @@ class PlaneDiffusionEvaluator:
 
         print(f"Initialized PlaneDiffusionEvaluator")
         print(f"Device: {self.device}")
-        print(f"Output directory: {self.output_dir}")
 
     def _seed_all(self, seed: int):
         """Set random seeds for reproducibility."""
