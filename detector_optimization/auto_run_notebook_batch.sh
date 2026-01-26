@@ -9,4 +9,4 @@ module load python
 
 conda activate multiproc_env
 
-python auto_run_notebook.py SWGOLO7_run_3.ipynb
+python auto_run_notebook.py SWGOLO7_scaled_run_1.ipynb
