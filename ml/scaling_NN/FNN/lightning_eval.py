@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Evaluation script for bbox range prediction using PyTorch Lightning checkpoints
-Generates bbox predictions using DDIM sampling and saves results
+Evaluation script for FNN bbox range prediction using PyTorch Lightning checkpoints
+Generates bbox predictions and saves results
 """
 import os
 import argparse
@@ -14,8 +14,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from lightning_training import PlaneDataset, PlaneDiffusionModule
-from diffusion import DDIMSamplerPlanes, GaussianDiffusionSampler
+from TambOpt.ml.scaling_NN.FNN.lightning_training_fnn import PlaneDataset, PlaneFNNModule
 
 
 def load_standardization_stats(data_dir: str) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -100,6 +99,9 @@ def compute_bbox_metrics(pred_bbox: torch.Tensor, gt_bbox: torch.Tensor) -> Dict
     # Mean squared error
     mse = ((pred_bbox - gt_bbox) ** 2).mean().item()
 
+    # Root mean squared error
+    rmse = np.sqrt(mse)
+
     # Per-coordinate MAE
     mae_xmin = torch.abs(pred_bbox[:, :, 0] - gt_bbox[:, :, 0]).mean().item()
     mae_xmax = torch.abs(pred_bbox[:, :, 1] - gt_bbox[:, :, 1]).mean().item()
@@ -109,6 +111,7 @@ def compute_bbox_metrics(pred_bbox: torch.Tensor, gt_bbox: torch.Tensor) -> Dict
     return {
         "mae": mae,
         "mse": mse,
+        "rmse": rmse,
         "mae_xmin": mae_xmin,
         "mae_xmax": mae_xmax,
         "mae_ymin": mae_ymin,
@@ -129,7 +132,7 @@ def visualize_bbox_comparison(pred_bbox: np.ndarray, gt_bbox: np.ndarray,
         out_dir: output directory
     """
     fig, axes = plt.subplots(6, 4, figsize=(16, 20))
-    fig.suptitle(f"Sample {sample_idx} - Class {class_id} - Bbox Comparison", fontsize=16)
+    fig.suptitle(f"Sample {sample_idx} - Class {class_id} - Bbox Comparison (FNN)", fontsize=16)
 
     for plane_idx in range(24):
         row = plane_idx // 4
@@ -181,8 +184,8 @@ def evaluate(args):
         split='test',
         cache_size=args.cache_size,
         prewarm_cache=False,
-        bbox_mean=mean.cpu() if mean is not None else None,
-        bbox_std=std.cpu() if std is not None else None
+        bbox_mean=None,
+        bbox_std=None
     )
 
     test_loader = DataLoader(
@@ -196,7 +199,7 @@ def evaluate(args):
 
     # Load model from checkpoint
     print(f"\nLoading model from checkpoint: {args.ckpt}")
-    pl_module = PlaneDiffusionModule.load_from_checkpoint(
+    pl_module = PlaneFNNModule.load_from_checkpoint(
         args.ckpt,
         map_location=device
     )
@@ -209,30 +212,6 @@ def evaluate(args):
         for name, param in pl_module.model.named_parameters():
             if name in pl_module.model_ema:
                 param.data = pl_module.model_ema[name].to(device)
-
-    # Create sampler
-    if args.use_ddim:
-        print(f"\nUsing DDIM sampler with {args.ddim_steps} steps, eta={args.eta}")
-        sampler = DDIMSamplerPlanes(
-            pl_module.model,
-            beta_1=pl_module.hparams.beta_1,
-            beta_T=pl_module.hparams.beta_T,
-            T=pl_module.hparams.T,
-            eta=args.eta,
-            ddim_steps=args.ddim_steps,
-            w=args.guidance_w
-        ).to(device)
-    else:
-        print(f"\nUsing Gaussian sampler with guidance_w={args.guidance_w}")
-        sampler = GaussianDiffusionSampler(
-            pl_module.model,
-            beta_1=pl_module.hparams.beta_1,
-            beta_T=pl_module.hparams.beta_T,
-            T=pl_module.hparams.T,
-            w=args.guidance_w
-        ).to(device)
-
-    sampler.eval()
 
     # Create output directories
     os.makedirs(args.out_dir, exist_ok=True)
@@ -277,12 +256,8 @@ def evaluate(args):
         # Generate predictions
         start_time = time.time()
 
-        # Sample noise
-        x_T = torch.randn(B, 96, device=device)  # (B, 96) flattened bbox ranges
-
-        # Generate bbox ranges
-        pred_bbox_flat_std = sampler(
-            x_T,
+        # Forward pass - direct prediction (no diffusion sampling needed)
+        pred_bbox_flat_std = pl_module.model(
             p_energy,
             class_id,
             sin_zenith,
@@ -299,8 +274,7 @@ def evaluate(args):
 
         # Denormalize
         pred_bbox = denormalize_standardized(pred_bbox_std, mean, std)
-        gt_bbox = denormalize_standardized(gt_bbox_std, mean, std)
-        # pred_bbox = pred_bbox_std
+        gt_bbox = gt_bbox_std
 
         # Compute metrics
         metrics = compute_bbox_metrics(pred_bbox, gt_bbox)
@@ -326,15 +300,15 @@ def evaluate(args):
         # Print batch statistics
         if batch_idx % 10 == 0:
             print(f"\nBatch {batch_idx}: MAE={metrics['mae']:.4f}, MSE={metrics['mse']:.4f}")
-            print(f"  Time: {elapsed_time:.2f}s ({elapsed_time/B:.2f}s per sample)")
+            print(f"  Time: {elapsed_time:.4f}s ({elapsed_time/B:.6f}s per sample)")
 
     # Aggregate metrics
     print("\n" + "="*60)
-    print("EVALUATION RESULTS")
+    print("EVALUATION RESULTS (FNN)")
     print("="*60)
     print(f"Samples evaluated: {num_samples}")
     print(f"Total time: {total_time:.2f}s")
-    print(f"Avg time per sample: {total_time/num_samples:.2f}s")
+    print(f"Avg time per sample: {total_time/num_samples:.6f}s")
     print("\nMetrics:")
 
     avg_metrics = {}
@@ -361,30 +335,18 @@ def evaluate(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Evaluate bbox prediction model')
+    parser = argparse.ArgumentParser(description='Evaluate FNN bbox prediction model')
 
     # Data paths
     parser.add_argument('--data_dir', type=str, required=True,
                        help='Path to preprocessed data directory')
     parser.add_argument('--ckpt', type=str, required=True,
                        help='Path to model checkpoint')
-    parser.add_argument('--out_dir', type=str, default='./eval_results',
+    parser.add_argument('--out_dir', type=str, default='./eval_results_fnn',
                        help='Output directory for results')
 
-    # Sampling parameters
-    parser.add_argument('--use_ddim', action='store_true', default=True,
-                       help='Use DDIM sampler (default: True)')
-    parser.add_argument('--no_ddim', action='store_false', dest='use_ddim',
-                       help='Use Gaussian sampler instead of DDIM')
-    parser.add_argument('--ddim_steps', type=int, default=50,
-                       help='Number of DDIM steps (default: 50)')
-    parser.add_argument('--eta', type=float, default=0.0,
-                       help='DDIM eta parameter (default: 0.0)')
-    parser.add_argument('--guidance_w', type=float, default=0.0,
-                       help='Classifier-free guidance weight (default: 0.0)')
-
     # Evaluation parameters
-    parser.add_argument('--batch_size', type=int, default=16,
+    parser.add_argument('--batch_size', type=int, default=64,
                        help='Batch size for evaluation')
     parser.add_argument('--num_samples', type=int, default=100,
                        help='Number of samples to evaluate')
@@ -412,7 +374,7 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(args.seed)
 
     print("="*60)
-    print("Evaluation Configuration:")
+    print("Evaluation Configuration (FNN):")
     print("="*60)
     for arg, value in vars(args).items():
         print(f"{arg:20s}: {value}")

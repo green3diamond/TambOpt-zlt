@@ -28,7 +28,7 @@ python -V
 # Helpful defaults
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 
-python /n/home05/zdimitrov/tambo/TambOpt/ml/diffusion_scaling_NN/lightning_eval.py \
+python /n/home05/zdimitrov/tambo/TambOpt/ml/scaling_NN/diffusion_model/lightning_eval.py \
   --data_dir /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/pre_processed_3rd_step_min_50/ \
   --ckpt /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tambo_simulations/checkpoints/tam_unet/epoch_epoch=1649-val_loss_val_loss=0.0590.ckpt \
   --out_dir /n/home05/zdimitrov/tambo/eval_results \
