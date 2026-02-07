@@ -141,9 +141,9 @@ class PlaneDiffusionEvaluator:
 
     def generate_samples(
         self, 
-        num_samples: int = 1000, 
         num_conditions: Optional[int] = None,
-        chunk_size: int = 200
+        chunk_size: int = 200,
+        log_progress: bool = True
     ):
         """
         Generate samples for each test condition using autoregressive plane generation.
@@ -163,74 +163,68 @@ class PlaneDiffusionEvaluator:
         conditions_to_process = self.test_conditions
         if num_conditions is not None:
             conditions_to_process = self.test_conditions[:num_conditions]
-
+        
+        bs = conditions_to_process.shape[0]
+        
         self.generated_sets = []
         start_time = time.time()
+        
+        conditions_to_process = conditions_to_process.to(self.device)
+        # Get the ground truth planes shape from test_images
+        P, C, H, W = (24, 3, 32, 32)
+        
+        p_energy = conditions_to_process[:, 0]
+        class_id = conditions_to_process[:, 1].long()
+        sin_zenith = conditions_to_process[:, 2]
+        cos_zenith = conditions_to_process[:, 3]
+        sin_azimuth = conditions_to_process[:, 4]
+        cos_azimuth = conditions_to_process[:, 5]
+        
+        # Generate all 24 planes autoregressively
+        pred_all = torch.zeros((bs, P, C, H, W), device=self.device)
+        past = torch.zeros((bs, C, H, W), device=self.device)
+        
+        with torch.no_grad():
+            for plane_idx in range(P):
+                plane_idx_tensor = torch.full((bs,), plane_idx, device=self.device, dtype=torch.long)
+                noise = torch.randn((bs, C, H, W), device=self.device)
 
-        for idx, cond_vec in enumerate(conditions_to_process):
-            cond_vec = cond_vec.to(self.device)  # (6,)
+                pred = self.sampler(
+                    noise,
+                    p_energy,
+                    class_id,
+                    sin_zenith,
+                    cos_zenith,
+                    sin_azimuth,
+                    cos_azimuth,
+                    plane_idx_tensor,
+                    past,
+                )
+                pred_all[:, plane_idx] = pred
+                past = pred
 
-            # Get the ground truth planes shape from test_images
-            P, C, H, W = (24, 3, 32, 32)
+            all_samples = pred_all.cpu()
 
-            all_samples = []
-            samples_done = 0
-
-            while samples_done < num_samples:
-                bs = min(chunk_size, num_samples - samples_done)
-
-                # Prepare condition batch
-                p_energy = cond_vec[0].unsqueeze(0).expand(bs)
-                class_id = cond_vec[1].unsqueeze(0).expand(bs).long()
-                sin_zenith = cond_vec[2].unsqueeze(0).expand(bs)
-                cos_zenith = cond_vec[3].unsqueeze(0).expand(bs)
-                sin_azimuth = cond_vec[4].unsqueeze(0).expand(bs)
-                cos_azimuth = cond_vec[5].unsqueeze(0).expand(bs)
-
-                # Generate all 24 planes autoregressively
-                pred_all = torch.zeros((bs, P, C, H, W), device=self.device)
-                past = torch.zeros((bs, C, H, W), device=self.device)
-
-                with torch.no_grad():
-                    for plane_idx in range(P):
-                        plane_idx_tensor = torch.full((bs,), plane_idx, device=self.device, dtype=torch.long)
-                        noise = torch.randn((bs, C, H, W), device=self.device)
-
-                        pred = self.sampler(
-                            noise,
-                            p_energy,
-                            class_id,
-                            sin_zenith,
-                            cos_zenith,
-                            sin_azimuth,
-                            cos_azimuth,
-                            plane_idx_tensor,
-                            past,
-                        )
-                        pred_all[:, plane_idx] = pred
-                        past = pred
-
-                all_samples.append(pred_all.cpu())
-
-                # Free GPU memory
-                del noise, pred, pred_all, past
-                torch.cuda.empty_cache()
-
-                samples_done += bs
-
-            # Concatenate all chunks -> (num_samples, 24, 3, H, W)
-            gen_imgs_all = torch.cat(all_samples, dim=0)
-            self.generated_sets.append({
-                "condition": cond_vec.cpu(),
-                "images": gen_imgs_all,
-            })
-
-            # Extra safety between conditions
+            # Free GPU memory
+            del noise, pred, pred_all, past
             torch.cuda.empty_cache()
 
-        total_images = sum([s["images"].shape[0] for s in self.generated_sets])
-        print(f"✔ Done: generated {total_images} images across {len(self.generated_sets)} conditions.")
-        print(f"Total generation time: {time.time() - start_time:.2f}s")
+            samples_done = bs
+            
+        # Concatenate all chunks -> (num_samples, 24, 3, H, W)
+        self.generated_sets = {
+            "conditions": conditions_to_process.cpu(),
+            "images": all_samples,
+        }
+
+        # Extra safety between conditions
+        torch.cuda.empty_cache()
+
+        total_images = self.generated_sets["images"].shape[0]
+        total_conditions = self.generated_sets["conditions"].shape[0]
+        if log_progress:
+            print(f"✔ Done: generated {total_images} images across {total_conditions} conditions.")
+            print(f"Total generation time: {time.time() - start_time:.2f}s")
         return self.generated_sets
 
 
