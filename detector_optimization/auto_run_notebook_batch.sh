@@ -5,8 +5,9 @@
 #SBATCH -c 4                                    # number of cores
 #SBATCH --gres=gpu:nvidia_a100_1g.10gb:1        # requested GPU type
 
+
 module load python 
 
 conda activate multiproc_env
 
-python auto_run_notebook.py SWGOLO7_scaled_run_1.ipynb
+python auto_run_notebook.py SWGOLO7_optimization.ipynb
