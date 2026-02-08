@@ -142,8 +142,6 @@ class PlaneDiffusionEvaluator:
     def generate_samples(
         self, 
         num_conditions: Optional[int] = None,
-        chunk_size: int = 200,
-        log_progress: bool = True
     ):
         """
         Generate samples for each test condition using autoregressive plane generation.
@@ -151,7 +149,6 @@ class PlaneDiffusionEvaluator:
         Args:
             num_samples: Number of samples to generate per condition
             num_conditions: Number of conditions to use (None = use all extracted)
-            chunk_size: Batch size for generation (to avoid OOM)
         """
         if self.sampler is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
@@ -208,9 +205,7 @@ class PlaneDiffusionEvaluator:
             # Free GPU memory
             del noise, pred, pred_all, past
             torch.cuda.empty_cache()
-
-            samples_done = bs
-            
+                        
         # Concatenate all chunks -> (num_samples, 24, 3, H, W)
         self.generated_sets = {
             "conditions": conditions_to_process.cpu(),
@@ -222,9 +217,8 @@ class PlaneDiffusionEvaluator:
 
         total_images = self.generated_sets["images"].shape[0]
         total_conditions = self.generated_sets["conditions"].shape[0]
-        if log_progress:
-            print(f"✔ Done: generated {total_images} images across {total_conditions} conditions.")
-            print(f"Total generation time: {time.time() - start_time:.2f}s")
+        print(f"✔ Done: generated {total_images} showers across {total_conditions} conditions.")
+        print(f"Total generation time: {time.time() - start_time:.2f}s")
         return self.generated_sets
 
 

@@ -183,10 +183,8 @@ class PlaneFNNGenerator:
     @torch.no_grad()
     def generate_samples(
         self,
-        num_samples: int = 1,
         num_conditions: Optional[int] = None,
-        chunk_size: int = 1000
-    ) -> List[Dict]:
+    ) -> Dict:
         """
         Generate bbox predictions for each test condition.
 
@@ -213,62 +211,48 @@ class PlaneFNNGenerator:
 
         self.generated_sets = []
         start_time = time.time()
+        
+        conditions_to_process = conditions_to_process.to(self.device)
+        
+        bs = conditions_to_process.shape[0]
 
-        for idx, cond_vec in enumerate(conditions_to_process):
-            if isinstance(cond_vec, torch.Tensor):
-                cond_vec = cond_vec.to(self.device)
-            else:
-                cond_vec = torch.tensor(cond_vec, device=self.device)
+        
+        all_bboxes = []
+        samples_done = 0
 
-            # Ensure cond_vec has shape (6,)
-            if cond_vec.dim() == 2:
-                cond_vec = cond_vec.squeeze(0)
+        # Prepare condition batch - expand to batch size
+        p_energy = conditions_to_process[:, 0]
+        class_id = conditions_to_process[:, 1].long()
+        sin_zenith = conditions_to_process[:, 2]
+        cos_zenith = conditions_to_process[:, 3]
+        sin_azimuth = conditions_to_process[:, 4]
+        cos_azimuth = conditions_to_process[:, 5]
+        
+        # Forward pass - direct prediction
+        pred_bbox_flat_std = self.model(
+            p_energy,
+            class_id,
+            sin_zenith,
+            cos_zenith,
+            sin_azimuth,
+            cos_azimuth
+        )  # (B, 96) - standardized
 
-            all_bboxes = []
-            samples_done = 0
+        # Reshape to (B, 24, 4)
+        pred_bbox_std = pred_bbox_flat_std.reshape(bs, 24, 4)
 
-            while samples_done < num_samples:
-                bs = min(chunk_size, num_samples - samples_done)
+        # Denormalize
+        pred_bbox = self._denormalize_bbox(pred_bbox_std)
+        
+        self.generated_sets = {
+            "condition": conditions_to_process.cpu(),
+            "bboxes": pred_bbox.cpu(),
+        }
 
-                # Prepare condition batch - expand to batch size
-                p_energy = cond_vec[0].unsqueeze(0).expand(bs)
-                class_id = cond_vec[1].unsqueeze(0).expand(bs).long()
-                sin_zenith = cond_vec[2].unsqueeze(0).expand(bs)
-                cos_zenith = cond_vec[3].unsqueeze(0).expand(bs)
-                sin_azimuth = cond_vec[4].unsqueeze(0).expand(bs)
-                cos_azimuth = cond_vec[5].unsqueeze(0).expand(bs)
-
-                # Forward pass - direct prediction
-                pred_bbox_flat_std = self.model(
-                    p_energy,
-                    class_id,
-                    sin_zenith,
-                    cos_zenith,
-                    sin_azimuth,
-                    cos_azimuth
-                )  # (B, 96) - standardized
-
-                # Reshape to (B, 24, 4)
-                pred_bbox_std = pred_bbox_flat_std.reshape(bs, 24, 4)
-
-                # Denormalize
-                pred_bbox = self._denormalize_bbox(pred_bbox_std)
-
-                all_bboxes.append(pred_bbox.cpu())
-                samples_done += bs
-
-            # Concatenate all chunks -> (num_samples, 24, 4)
-            bboxes_all = torch.cat(all_bboxes, dim=0)
-            self.generated_sets.append({
-                "condition": cond_vec.cpu(),
-                "bboxes": bboxes_all,
-            })
-
-            print(f"Condition {idx + 1}/{len(conditions_to_process)}: generated {bboxes_all.shape[0]} bbox predictions")
-
-        total_predictions = sum([s["bboxes"].shape[0] for s in self.generated_sets])
-        print(f"Done: generated {total_predictions} bbox predictions across {len(self.generated_sets)} conditions.")
+        total_predictions = self.generated_sets['bboxes'].shape[0]
+        print(f"Done: generated {total_predictions} bbox predictions across {num_conditions} conditions.")
         print(f"Total generation time: {time.time() - start_time:.2f}s")
+        
         return self.generated_sets
 
 
