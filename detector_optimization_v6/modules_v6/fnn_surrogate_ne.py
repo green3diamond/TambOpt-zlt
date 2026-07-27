@@ -139,14 +139,14 @@ def cloud_to_enu(clouds:        torch.Tensor,
 
 # ── Label computation (batched over showers, one shared layout per batch) ────
 
-@torch.no_grad()
 def compute_labels_batch(clouds:   torch.Tensor,
                          e_det:    torch.Tensor,    # East  (defined; detector col 0)
                          n_det:    torch.Tensor,    # North (detector col 1)
                          surface,                    # SurfaceUpMap: (North, East) → Up
                          east_entry:    float = EAST_ENTRY,
                          layer_east_dx: float = LAYER_EAST_DX,
-                         sigma_spatial: float = SIGMA_SPATIAL) -> Tuple[torch.Tensor, torch.Tensor]:
+                         sigma_spatial: float = SIGMA_SPATIAL,
+                         differentiable: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run v4's plane-aware kernel on a batch of showers sharing one layout.
 
     Detectors are (East, North) — matching the ENU h5 convention. The KERNEL is
@@ -160,23 +160,26 @@ def compute_labels_batch(clouds:   torch.Tensor,
         e_det  : (n_det,) East coordinates (defined; sets depth / z_cont).
         n_det  : (n_det,) North coordinates (kernel transverse axis).
         surface: `SurfaceUpMap` — differentiable Up = g(North, East).
+        differentiable: False (default) runs under no_grad — the original
+            behaviour; True keeps the graph so ∂(E, T)/∂(e_det, n_det) exists.
 
     Returns:
         E : (B, n_det) local intensities (v4 kernel `local_intensity`).
         T : (B, n_det) weighted-average times (v4 kernel `et`).
     """
-    up     = surface(n_det, e_det)                       # Up = g(North, East)
-    z_cont = (east_entry - e_det) / layer_east_dx        # depth from defined East
+    with torch.set_grad_enabled(differentiable):
+        up     = surface(n_det, e_det)                   # Up = g(North, East)
+        z_cont = (east_entry - e_det) / layer_east_dx    # depth from defined East
 
-    dummy_flux = torch.tensor([0.0], device=clouds.device)
-    E, T = GetCounts_planeaware(
-        clouds, n_det, up, z_cont,                       # transverse plane (North, Up) — kernel unchanged
-        SmearN_fn=None,
-        fluxB_e=dummy_flux,
-        TimeAverage_vectorized_fn=None,
-        sigma=sigma_spatial,
-    )
-    return E, T
+        dummy_flux = torch.tensor([0.0], device=clouds.device)
+        E, T = GetCounts_planeaware(
+            clouds, n_det, up, z_cont,                   # transverse plane (North, Up) — kernel unchanged
+            SmearN_fn=None,
+            fluxB_e=dummy_flux,
+            TimeAverage_vectorized_fn=None,
+            sigma=sigma_spatial,
+        )
+        return E, T
 
 
 def build_training_pairs(mountain, surface,
