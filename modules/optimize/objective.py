@@ -39,10 +39,32 @@ W_PR    = 5e5
 W_DIV   = 1e3
 
 # Reconstructability thresholds.
+#
+# TODO(08): RE-TUNE THESE — they are calibrated for an electron+muon event and
+# are wrong now that photon is summed in. The distributions quoted below were
+# measured on a two-component corpus; the photon component carries roughly twice
+# the electron's points (measured 185,388 vs 94,059 over 23 events), so per-
+# detector counts rise substantially and both the "saw a particle" floor and the
+# detector-count midpoint sit in the wrong place. Concretely:
+#   - a DARK detector is still dark, so LAYOUT_THRESHOLD = 1.0 keeps its meaning,
+#     but a LIT one clears it far more easily, pushing the soft trigger count up
+#     and re-flattening `r` toward 1.0 — the exact failure the 5e-2 -> 1.0 change
+#     below was made to fix, arriving from the other direction
+#   - RECONSTRUCT_THRESHOLD = 10.0 is a physical minimum, but TAU_RECONSTRUCT
+#     was chosen so the transition spans the *observed* spread of n; a shifted
+#     distribution narrows the fraction of events in the transition and drains
+#     the gradient again
+# Re-tuning needs the new trigger distribution in hand, so it follows the first
+# 08 corpus rather than preceding it: build the corpus, rerun
+# `plots/layouts/activation_counts.py` for the n percentiles, then reset these
+# the way the numbers below were originally set.
+# UNTIL THEN, U FROM 08 IS A NEW BASELINE and is not comparable to the ~33 of 07.
+#
 # 1.0 = "saw at least one particle". Do NOT lower it: at the old 5e-2 a DARK
 # detector scored sigmoid(5*(0-0.05)) = 0.44, flooring the count at ~44/100, so
 # r pinned at 1.0000 for every event and the term had zero gradient. At 1.0 a
-# dark detector gives 0.0067 and the count spans p10=13 / p50=48 / p90=82.
+# dark detector gives 0.0067 and the count spans p10=13 / p50=48 / p90=82
+# (measured on the 07 e+mu corpus).
 LAYOUT_THRESHOLD      = 1.0
 RECONSTRUCT_THRESHOLD = 10.0   # physical minimum detectors to reconstruct
 
