@@ -9,6 +9,27 @@ import torch
 # path. TAMBO-opt is a separate repo outside TambOpt and is intentionally
 # not vendored here.
 sys.path.insert(0, "/n/home05/zdimitrov/tambo/TAMBO-opt")
+
+# The AllShowers transformer attends through `flex_attention`, and on torch
+# 2.9.1+cu128 inductor cannot lower its mask subgraph under DYNAMIC shapes:
+#
+#   InductorError: LoweringException: AttributeError:
+#       'int' object has no attribute 'is_Add'
+#
+# torch.compile() is called without `dynamic=`, so automatic dynamic shapes kick
+# in as soon as a second point-cloud size is seen -- which is guaranteed here,
+# the per-species caps differ (electron 4096, photon 8064, muon 25088). Pinning
+# shapes static avoids that lowering path entirely and Step 0 generates again;
+# verified 2026-08-21 on an A100-40GB, all three species, exit 0.
+#
+# Set here rather than in each caller because it must be in effect BEFORE the
+# first torch.compile, and importing this module is the precondition for using
+# the generator at all. Remove once the sibling repo pins dynamic=False itself
+# or torch fixes the lowering.
+import torch._dynamo
+torch._dynamo.config.automatic_dynamic_shapes = False
+torch._dynamo.config.assume_static_by_default = True
+
 from util.allshowers_related.generate_showers import (
     sample_primary_particles, 
     run_point_count_fm, 
