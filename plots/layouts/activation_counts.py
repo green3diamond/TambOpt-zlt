@@ -85,7 +85,7 @@ from modules.optimize import (
 from modules.constants import (
     GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, OPT_FOLDER, TRAINING_DATASET_FOLDER,
-    HELDOUT_SHOWER_CACHE_PATH, HELDOUT_POSITIONS_PATH,
+    HELDOUT_SHOWER_CACHE_PATH, HELDOUT_POSITIONS_PATH, SPECIES_NAMES,
 )
 from true_utility import KernelDualLabels, _snap, grid_layout, center_layout
 
@@ -180,13 +180,14 @@ def activation(kernel, e_det, n_det, device):
 def stream_counts(args, layouts, surface, device):
     """Run every layout over the heldout reserve, one block of pairs at a time.
 
-    The whole reserve is ~25 GB of point clouds across both species, so
+    The whole reserve is ~25 GB of point clouds across all species, so
     `eval_true_utility.load_events` (which loads its slice whole) cannot be reused.
     Blocks are loaded once and scored against ALL layouts before being freed, so the
     corpus is read once no matter how many layouts are compared.
     """
-    pos_all = torch.load(HELDOUT_POSITIONS_PATH)               # (2*n_pairs, 3) E,N,U
-    n_pairs = pos_all.shape[0] // 2
+    n_species = len(SPECIES_NAMES)
+    pos_all = torch.load(HELDOUT_POSITIONS_PATH)      # (n_species*n_pairs, 3) E,N,U
+    n_pairs = pos_all.shape[0] // n_species
     off = int(args.event_offset)
     if off >= n_pairs:
         raise SystemExit(f"--event-offset {off} past the corpus ({n_pairs} pairs)")
@@ -210,10 +211,10 @@ def stream_counts(args, layouts, surface, device):
     acc = {name: Accum() for name in layouts}
     for lo in range(0, B, args.load_block):
         hi = min(lo + args.load_block, B)
-        # Row i (electron) and row n_pairs+i (muon) are the same physical event, so
-        # they share the vertex and direction — verified equal in the sidecar.
+        # Rows i, n_pairs+i, 2*n_pairs+i ... are components of the same physical
+        # event, so they share the vertex and direction — verified in the sidecar.
         clouds = []
-        for start in (off + lo, n_pairs + off + lo):
+        for start in (s_i * n_pairs + off + lo for s_i in range(n_species)):
             sub = showerdata.load(HELDOUT_SHOWER_CACHE_PATH,
                                   start=start, stop=start + (hi - lo))
             c = torch.as_tensor(sub.points, dtype=torch.float32)
@@ -224,8 +225,7 @@ def stream_counts(args, layouts, surface, device):
             clouds.append(place_clouds_enu(c, pos_all[off + lo:off + hi].float(),
                                            dirs[lo:hi], east_entry=EAST_ENTRY,
                                            layer_east_dx=LAYER_EAST_DX))
-        kernel = KernelDualLabels(clouds[0], clouds[1], surface, device,
-                                  chunk=args.kernel_chunk)
+        kernel = KernelDualLabels(clouds, surface, device, chunk=args.kernel_chunk)
         for name, (e_det, n_det) in layouts.items():
             acc[name].add(activation(kernel, e_det, n_det, device))
         del clouds, kernel

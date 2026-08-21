@@ -141,9 +141,9 @@ def main():
                                 east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX,
                                 n_planes=N_PLANES)
     surface = SurfaceUpMap.from_mountain(mountain).to(device)
-    elec, muon, B, n_pairs, prim = load_events(args.n_events, device, mountain)
+    species_clouds, B, n_pairs, prim = load_events(args.n_events, device, mountain)
     print(f"events      : {B} of {n_pairs} pairs")
-    kernel_fnn = KernelDualLabels(elec, muon, surface, device, chunk=args.kernel_chunk)
+    kernel_fnn = KernelDualLabels(species_clouds, surface, device, chunk=args.kernel_chunk)
     print(f"kernel chunk: {kernel_fnn.chunk} events/call")
 
     fnn, _ = load_models(device)          # recon unused: activation never reconstructs

@@ -222,7 +222,7 @@ def main():
     mountain = load_tr_mountain(GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
                                 east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX,
                                 n_planes=N_PLANES)
-    _elec, _muon, B, n_pairs, prim = load_events(args.n_events, device, mountain)
+    _clouds, B, n_pairs, prim = load_events(args.n_events, device, mountain)
     print(f"events : {B} of {n_pairs} pairs")
 
     fnn, recon = load_models(device)

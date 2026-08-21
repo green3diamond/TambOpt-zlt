@@ -16,7 +16,8 @@ import torch
 
 from ..showers import GetCounts_planeaware
 
-from ..constants import EAST_ENTRY, LAYER_EAST_DX, N_DETECTORS, PRIMARY_DIM, SIGMA_SPATIAL
+from ..constants import (EAST_ENTRY, LAYER_EAST_DX, N_DETECTORS, PRIMARY_DIM,
+                         SPECIES_NAMES, SIGMA_SPATIAL)
 from ..layouts.strategies import (_STRATEGIES, _STRATEGY_FNS)
 from ..surrogates import encode_primary, compute_normalization  # noqa: F401  (re-export)
 from ..surrogates.fnn import _load_species_sidecar
@@ -157,30 +158,33 @@ class _CorpusMeta(NamedTuple):
     dirs:      torch.Tensor    # (n_showers, 3) unit tau travel direction E,N,U
     positions: torch.Tensor    # (n_showers, 3) ENU decay vertices [m]
     primaries: torch.Tensor    # (n_showers, PRIMARY_DIM) encoded primaries
-    species:   torch.Tensor    # (n_showers,) 0=electron, 1=muon
+    species:   torch.Tensor    # (n_showers,) index into constants.SPECIES_NAMES
     n_file:    int             # rows in the corpus file
     per_sp:    int             # file rows per species block
     k_sp:      int             # rows kept per species
-    n_showers: int             # 2 * k_sp
+    n_species: int             # blocks in the corpus
+    n_showers: int             # n_species * k_sp
 
 
 def _load_corpus_metadata(mountain, shower_cache_path: str,
                           max_showers: int = 0) -> _CorpusMeta:
     """Read the corpus metadata (no point clouds) and encode the primaries.
 
-    The corpus is two equal species blocks back to back, so `max_showers` keeps
-    the first `k_sp` of EACH block, not the first `max_showers` rows.
+    The corpus is `len(SPECIES_NAMES)` equal blocks back to back, so
+    `max_showers` keeps the first `k_sp` of EACH block, not the first
+    `max_showers` rows.
     """
     import showerdata
 
+    n_species = len(SPECIES_NAMES)
     meta   = showerdata.load_inc_particles(shower_cache_path)
     n_file = meta.pdg.shape[0]
-    per_sp = n_file // 2                                  # electron / muon block size
+    per_sp = n_file // n_species                          # rows per species block
     keep   = n_file if not max_showers else min(int(max_showers), n_file)
-    k_sp   = keep // 2                                    # rows kept per species
+    k_sp   = keep // n_species                            # rows kept per species
 
-    keep_idx = np.concatenate([np.arange(0, k_sp),
-                               np.arange(per_sp, per_sp + k_sp)])
+    keep_idx = np.concatenate([np.arange(s * per_sp, s * per_sp + k_sp)
+                               for s in range(n_species)])
     dirs   = torch.as_tensor(meta.directions[keep_idx], dtype=torch.float32)
     energs = torch.as_tensor(meta.energies[keep_idx],   dtype=torch.float32)
     pdg    = torch.as_tensor(meta.pdg[keep_idx],        dtype=torch.long)
@@ -192,14 +196,14 @@ def _load_corpus_metadata(mountain, shower_cache_path: str,
     primaries_all = encode_primary(dirs, energs, pdg,
                                    positions_all, array_center)  # (n_showers, PRIMARY_DIM)
 
-    # e/µ species per kept shower from the Step-0 sidecar (same keep_idx as the
+    # Species per kept shower from the Step-0 sidecar (same keep_idx as the
     # metadata). Corpus `pdg` is the EM/hadronic class, so the Step-2 split keys
     # on this sidecar, not on the pdg feature.
     species_all = _load_species_sidecar(shower_cache_path, keep_idx)   # (N,)
 
     return _CorpusMeta(dirs=dirs, positions=positions_all, primaries=primaries_all,
                        species=species_all, n_file=n_file, per_sp=per_sp,
-                       k_sp=k_sp, n_showers=2 * k_sp)
+                       k_sp=k_sp, n_species=n_species, n_showers=n_species * k_sp)
 
 
 def _build_chunk_list(k_sp: int, per_sp: int, load_chunk: int, batch_size: int):
@@ -218,9 +222,14 @@ def _build_chunk_list(k_sp: int, per_sp: int, load_chunk: int, batch_size: int):
     """
     load_chunk = max(int(batch_size), (int(load_chunk) // int(batch_size)) * int(batch_size))
     chunk_list = []
-    for tag, file_start, ds_start in (("e", 0, 0), ("mu", per_sp, k_sp)):
+    # Species-major, matching the corpus layout. A species appended to
+    # SPECIES_NAMES therefore appends its chunks AFTER the existing ones, so the
+    # shared layout `rng` produces the same draws for the earlier species as it
+    # did before -- their labels are unchanged by the addition.
+    for s_i, tag in enumerate(SPECIES_NAMES):
         for c_lo in range(0, k_sp, load_chunk):
-            chunk_list.append((tag, file_start, ds_start, c_lo, min(c_lo + load_chunk, k_sp)))
+            chunk_list.append((tag, s_i * per_sp, s_i * k_sp,
+                               c_lo, min(c_lo + load_chunk, k_sp)))
     return load_chunk, chunk_list
 
 
@@ -401,7 +410,7 @@ def build_training_pairs(mountain, surface,
         E         : (N_pairs, 100) float32
         T         : (N_pairs, 100) float32
         strategy_ids : (N_pairs,)  int64 — index into `_STRATEGIES`
-        species_ids  : (N_pairs,)  int64 — e/µ component (0=electron, 1=muon)
+        species_ids  : (N_pairs,)  int64 — index into `constants.SPECIES_NAMES`
     """
     meta    = _load_corpus_metadata(mountain, shower_cache_path, max_showers)
     n_strat = len(_STRATEGIES)

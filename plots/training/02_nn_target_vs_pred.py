@@ -72,7 +72,7 @@ import modules  # noqa: F401 — package import; keeps modules on the path
 from modules.surrogates import FNNSurrogate
 from modules.constants import (
     TRAINING_DATASET_FOLDER, FNN_FOLDER, RECON_FOLDER,
-    N_DETECTORS, PRIMARY_DIM,
+    N_DETECTORS, PRIMARY_DIM, SPECIES_NAMES,
 )
 from modules.surrogates import build_recon_from_ckpt
 
@@ -663,14 +663,15 @@ def load_recon(folder: str = RECON_DEEPSETS_FOLDER):
 
 
 # --------------------------------------------------------------------------- #
-# Dual-species loading. Mirrors 02_train_fnn_deepsets.py (per-species FNN) and
-# 03_train_recon.py (combined dual surrogate for recon).
+# Per-species loading. Mirrors 02_train_fnn_deepsets.py (per-species FNN) and
+# 03_train_recon.py (combined surrogate for recon).
 # --------------------------------------------------------------------------- #
-SPECIES_TAGS = (("electron", 0), ("muon", 1))   # (tag, species id: 0=electron, 1=muon)
+# (tag, species id), id = index into constants.SPECIES_NAMES.
+SPECIES_TAGS = tuple((name, i) for i, name in enumerate(SPECIES_NAMES))
 
 
 def load_species_fnn(species: str):
-    """Load one per-species surrogate (fnn_electron.pt / fnn_muon.pt) from
+    """Load one per-species surrogate (fnn_<species>.pt) from
     FNN_FOLDER. Uses build_surrogate_from_ckpt so flat-MLP or DeepSets configs
     both work, with the checkpoint's own per-species norm stats applied."""
     from modules.surrogates import build_surrogate_from_ckpt
@@ -922,9 +923,13 @@ def plot_recon_only(*, fnn=None, recon=None,
 # Per-species hexbin colour (count) limits for the dual FNN scatters:
 # (vmin_E, vmax_E, vmin_T, vmax_T). Muon signals are denser than electron.
 FNN_DUAL_VLIM = {
-    "electron": dict(vmin_E=0, vmax_E=2000,  vmin_T=0, vmax_T=2000),
+    "electron": dict(vmin_E=0, vmax_E=2000, vmin_T=0, vmax_T=2000),
     "muon":     dict(vmin_E=0, vmax_E=3000, vmin_T=0, vmax_T=1000),
 }
+# A species with no pinned entry falls back to _render_fnn_scatter's own
+# autoscaled defaults rather than borrowing another species' scale -- the count
+# densities differ by about an order of magnitude between components.
+FNN_DUAL_VLIM_DEFAULT: dict = {}
 
 
 def plot_fnn_dual(output_dir=None):
@@ -953,7 +958,7 @@ def plot_fnn_dual(output_dir=None):
         out = os.path.join(output_dir, f"fnn_{tag}_target_vs_pred.png")
         _render_fnn_scatter(fnn, primary[idx], xy[idx],
                             E_true[idx], T_true[idx], val_idx, out,
-                            **FNN_DUAL_VLIM[tag])
+                            **FNN_DUAL_VLIM.get(tag, FNN_DUAL_VLIM_DEFAULT))
         _render_fnn_conditional(
             fnn, primary[idx], xy[idx], E_true[idx], T_true[idx], val_idx,
             os.path.join(output_dir, f"fnn_{tag}_conditional.png"))

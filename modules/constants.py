@@ -95,9 +95,20 @@ BATCH_SIZE_TRAIN  = 20
 HOLDOUT_FRAC = 0.05
 HOLDOUT_SEED = 999
 
-# ── Dual-species (paired) pipeline ────────────────────────────────────────────
-# Step 0 samples NUM_SHOWERS primaries ONCE and generates both components: rows i
-# and N+i share one physical event's (energy, direction, EM/hadronic class).
+# ── Multi-species (paired) pipeline ───────────────────────────────────────────
+# The secondary-species components a physical shower is split into. Each has its
+# own AllShowers model; a complete event is the SUM of all of them (counts are
+# extensive, times count-weighted -- see modules/surrogates/dual.py).
+#
+# INDEX INTO THIS TUPLE IS THE SPECIES ID written to the Step-0 `_species.pt`
+# sidecar and read by Step 1/2 routing. Reordering it silently mislabels every
+# existing corpus, exactly as reordering _STRATEGIES invalidates strategy_ids.
+# APPEND ONLY. Corpus rows are species-major: block s occupies
+# [s*n_pairs, (s+1)*n_pairs), and row s*n_pairs + i is event i's s-component.
+SPECIES_NAMES = ("electron", "muon", "photon")
+
+# Step 0 samples NUM_SHOWERS primaries ONCE and generates every component: rows
+# i, N+i, 2N+i share one physical event's (energy, direction, EM/hadronic class).
 #
 # With USE_TAU_PRIMARIES, primaries come from tau_wholesky.h5 (energy, direction,
 # and a real ENU decay position) instead of the synthetic sampler. That file uses

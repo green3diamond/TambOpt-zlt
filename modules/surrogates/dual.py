@@ -19,77 +19,113 @@ import os
 import torch
 import torch.nn as nn
 
-from ..constants import N_DETECTORS, PRIMARY_DIM, T_LOG_SCALE
+from ..constants import N_DETECTORS, PRIMARY_DIM, SPECIES_NAMES, T_LOG_SCALE
 from .deepsets import build_surrogate_from_ckpt
 
-ELECTRON_CKPT = "fnn_electron.pt"
-MUON_CKPT     = "fnn_muon.pt"
+def species_ckpt_name(species: str) -> str:
+    """Checkpoint filename Step 2 writes for one species."""
+    return f"fnn_{species}.pt"
 
 
-def combine_species_outputs(pred_e: torch.Tensor,
-                            pred_mu: torch.Tensor) -> torch.Tensor:
+ELECTRON_CKPT = species_ckpt_name("electron")   # kept: named in older run logs
+MUON_CKPT     = species_ckpt_name("muon")
+
+
+def combine_species_outputs(*preds: torch.Tensor) -> torch.Tensor:
     """Physically combine per-species (B, n_det, 2) predictions into one event.
+
+    Counts are extensive so they add, and the kernel defines T as a
+    count-weighted mean, so both generalise to any number of components:
+
+        n_tot = Σ n_s              t_tot = Σ (n_s · t_s) / n_tot
 
     Differentiable everywhere; negative model outputs are clamped to zero
     counts / zero time before combining (a detector with no predicted signal
     contributes nothing, matching the kernel's behavior on empty clouds).
+
+    Variadic, and exactly equivalent to the old two-argument form for two
+    inputs — the sum is accumulated in the given order, so `(e, mu)` still
+    produces bit-identical results.
     """
-    n_e  = torch.expm1(pred_e[..., 0]).clamp(min=0.0)        # counts, electron
-    n_mu = torch.expm1(pred_mu[..., 0]).clamp(min=0.0)       # counts, muon
-    t_e  = torch.expm1(pred_e[..., 1]).clamp(min=0.0) / T_LOG_SCALE
-    t_mu = torch.expm1(pred_mu[..., 1]).clamp(min=0.0) / T_LOG_SCALE
+    if not preds:
+        raise ValueError("combine_species_outputs needs at least one prediction")
 
-    n_tot = n_e + n_mu
-    t_tot = (n_e * t_e + n_mu * t_mu) / n_tot.clamp(min=1e-12)
+    n_tot = None
+    nt_sum = None
+    for pred in preds:
+        n_s = torch.expm1(pred[..., 0]).clamp(min=0.0)                  # counts
+        t_s = torch.expm1(pred[..., 1]).clamp(min=0.0) / T_LOG_SCALE    # seconds
+        n_tot = n_s if n_tot is None else n_tot + n_s
+        nt_sum = n_s * t_s if nt_sum is None else nt_sum + n_s * t_s
 
+    t_tot = nt_sum / n_tot.clamp(min=1e-12)
     E_out = torch.log1p(n_tot)
     T_out = torch.log1p(t_tot * T_LOG_SCALE)
     return torch.stack([E_out, T_out], dim=-1)
 
 
-class DualSpeciesSurrogate(nn.Module):
-    """Two frozen per-species surrogates behind the single-surrogate contract.
+class MultiSpeciesSurrogate(nn.Module):
+    """N frozen per-species surrogates behind the single-surrogate contract.
 
-    forward(primary, xy) evaluates BOTH per-species models on the SAME primary
-    (whose pdg feature is the real EM/hadronic class each model was trained on)
-    and combines their outputs physically — a primary describes one complete
-    event, and both the electron and muon components are always part of it.
-    Routing is by model identity (electron vs muon), not by the pdg feature.
+    forward(primary, xy) evaluates EVERY per-species model on the SAME primary
+    (whose pdg feature is the real EM/hadronic class each was trained on) and
+    combines their outputs physically — a primary describes one complete event,
+    and every component is always part of it. Routing is by model identity, not
+    by the pdg feature.
+
+    Models are held in `constants.SPECIES_NAMES` order.
     """
 
-    def __init__(self, electron: nn.Module, muon: nn.Module):
+    def __init__(self, models, names=SPECIES_NAMES):
         super().__init__()
-        self.electron = electron
-        self.muon     = muon
-        self.n_det    = getattr(electron, "n_det", N_DETECTORS)
+        models = list(models)
+        if len(models) != len(names):
+            raise ValueError(f"got {len(models)} models for species {tuple(names)}")
+        self.species = tuple(names)
+        self.models = nn.ModuleList(models)
+        self.n_det = getattr(models[0], "n_det", N_DETECTORS)
+
+    def __getattr__(self, name):
+        """`self.electron` / `self.muon` / … resolve to that species' model.
+
+        nn.Module routes attribute lookup through its own _parameters/_modules
+        dicts, so this only runs for names it did not find -- the per-species
+        aliases older callers (and the paper-figure scripts) use by name.
+        """
+        try:
+            species = super().__getattribute__("species")
+            models = super().__getattribute__("_modules")["models"]
+        except (AttributeError, KeyError):
+            return super().__getattr__(name)
+        if name in species:
+            return models[species.index(name)]
+        return super().__getattr__(name)
 
     def forward(self, primary: torch.Tensor, xy: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            primary : (B, PRIMARY_DIM) — passed unchanged to both models; its
-                      pdg feature is the EM/hadronic class both were trained on.
+            primary : (B, PRIMARY_DIM) — passed unchanged to every model.
             xy      : (B, n_det, 2) — shared layout, stays in the autograd graph
-                      of BOTH branches.
+                      of ALL branches.
         Returns:
             (B, n_det, 2) combined event response — col 0 = log1p(N_tot),
             col 1 = log1p(t_tot * T_LOG_SCALE).
         """
-        pred_e  = self.electron(primary, xy)
-        pred_mu = self.muon(primary, xy)
-        return combine_species_outputs(pred_e, pred_mu)
+        return combine_species_outputs(*(m(primary, xy) for m in self.models))
 
     def forward_with_var(self, primary: torch.Tensor, xy: torch.Tensor):
-        """(mean, var) — mean is identical to forward(). var is an
-        approximate combination: electron + muon raw-unit variances summed
-        (independent noise sources); the two components' physical
-        combination (count-weighted average, log1p) is nonlinear, so this
-        is not a full delta-method propagation, just a reasonable per-
-        detector uncertainty signal for recon/optimizer consumption.
+        """(mean, var) — mean is identical to forward(). var sums the per-species
+        raw-unit variances (independent noise sources); the physical combination
+        (count-weighted average, log1p) is nonlinear, so this is not a full
+        delta-method propagation, just a reasonable per-detector uncertainty
+        signal for recon/optimizer consumption.
         """
-        mean   = self.forward(primary, xy)
-        var_e  = self.electron.forward_var(primary, xy)
-        var_mu = self.muon.forward_var(primary, xy)
-        return mean, var_e + var_mu
+        mean = self.forward(primary, xy)
+        var = None
+        for m in self.models:
+            v = m.forward_var(primary, xy)
+            var = v if var is None else var + v
+        return mean, var
 
     def forward_sample(self, primary: torch.Tensor, xy: torch.Tensor) -> torch.Tensor:
         """One stochastic draw from the predicted (mean, var) distribution,
@@ -105,24 +141,33 @@ class DualSpeciesSurrogate(nn.Module):
         return mean + eps * var.clamp(min=0.0).sqrt()
 
 
+# The pipeline ran on exactly two species for its first three generations, and
+# the name is in run logs, notebooks and plots/layouts/true_utility.py.
+DualSpeciesSurrogate = MultiSpeciesSurrogate
+
+
 def load_dual_surrogate(folder: str,
                         device: torch.device,
                         n_det: int = N_DETECTORS,
-                        primary_dim: int = PRIMARY_DIM) -> DualSpeciesSurrogate:
-    """Load fnn_electron.pt + fnn_muon.pt from `folder` into a frozen wrapper.
+                        primary_dim: int = PRIMARY_DIM,
+                        species=SPECIES_NAMES) -> MultiSpeciesSurrogate:
+    """Load one `fnn_<species>.pt` per entry in `species` into a frozen wrapper.
 
     Each checkpoint is built via `build_surrogate_from_ckpt` (flat-MLP or
     DeepSets, chosen by its saved config), gets its own norm stats from the
     checkpoint, and is frozen in eval mode.
+
+    Keeps its name across ~10 call sites even though it is no longer only dual.
     """
-    models = {}
-    for tag, fname in (("electron", ELECTRON_CKPT), ("muon", MUON_CKPT)):
+    models = []
+    for name in species:
+        fname = species_ckpt_name(name)
         path = os.path.join(folder, fname)
         ckpt = torch.load(path, map_location=device, weights_only=False)
-        models[tag] = build_surrogate_from_ckpt(ckpt, n_det, primary_dim, device)
+        models.append(build_surrogate_from_ckpt(ckpt, n_det, primary_dim, device))
         cfg = ckpt.get("config", {})
         print(f"[load] {fname}  model={cfg.get('model_type', 'fnn')}  "
               f"epoch={ckpt.get('epoch', '?')}  val={ckpt.get('val_total', '?')}")
-    dual = DualSpeciesSurrogate(models["electron"], models["muon"]).to(device)
+    dual = MultiSpeciesSurrogate(models, species).to(device)
     dual.eval()
     return dual

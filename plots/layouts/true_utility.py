@@ -56,7 +56,7 @@ from modules.constants import (
     N_DETECTORS, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, T_LOG_SCALE,
     HELDOUT_SHOWER_CACHE_PATH, HELDOUT_POSITIONS_PATH,
-    OPT_FOLDER,
+    OPT_FOLDER, SPECIES_NAMES,
 )
 
 # LAYOUT_PATH = os.path.join(OPT_FOLDER + "_lbfgs_ensemble_full_corpus_grid", "layout_best.pt")
@@ -85,12 +85,13 @@ class KernelDualLabels:
     event ever sees another. The utility statistics downstream still average over
     all B events -- unlike lowering --n-events, which shrinks the sample."""
 
-    def __init__(self, elec_clouds, muon_clouds, surface, device, chunk=0):
-        self.elec = elec_clouds.to(device)
-        self.muon = muon_clouds.to(device)
+    def __init__(self, species_clouds, surface, device, chunk=0):
+        """`species_clouds`: one placed (B, P, 5) tensor per species, in
+        constants.SPECIES_NAMES order — the components of the SAME B events."""
+        self.clouds = [c.to(device) for c in species_clouds]
         self.surface = surface
         # 0 / None -> whole batch at once (previous behaviour).
-        self.chunk = int(chunk) or int(self.elec.shape[0])
+        self.chunk = int(chunk) or int(self.clouds[0].shape[0])
 
     def _labels(self, clouds, e_det, n_det):
         E, T = compute_labels_batch(clouds, e_det, n_det, self.surface)
@@ -98,18 +99,17 @@ class KernelDualLabels:
 
     def __call__(self, primary_batch, xy_batch):
         e_det, n_det = xy_batch[0, :, 0], xy_batch[0, :, 1]      # layout shared across batch
-        B = int(self.elec.shape[0])
+        B = int(self.clouds[0].shape[0])
         out = []
         for lo in range(0, B, self.chunk):
             hi = min(lo + self.chunk, B)
-            pred_e  = self._labels(self.elec[lo:hi], e_det, n_det)
-            pred_mu = self._labels(self.muon[lo:hi], e_det, n_det)
-            out.append(combine_species_outputs(pred_e, pred_mu))
+            out.append(combine_species_outputs(
+                *(self._labels(c[lo:hi], e_det, n_det) for c in self.clouds)))
         return out[0] if len(out) == 1 else torch.cat(out, dim=0)
 
 
 def load_events(n_events, device, mountain):
-    """Load and PLACE the first `n_events` events' electron + muon clouds, and
+    """Load and PLACE the first `n_events` events' clouds for EVERY species, and
     build their matching `primary_batch` — all from the SAME heldout corpus.
 
     Reads the HELDOUT corpus (HOLDOUT_FRAC of physical events, split off by
@@ -125,30 +125,38 @@ def load_events(n_events, device, mountain):
     heldout clouds with the WRONG events' ground-truth direction/energy labels,
     not just reintroduce leakage.
 
-    The heldout corpus is [electron block | muon block] with event i at row i
-    and row n_pairs+i (paired, sharing the primary → same decay vertex +
-    direction). Placement uses the pipeline's C8 `place_clouds_enu` at the
-    real vertex."""
+    The heldout corpus is species-major -- event i is at rows i, n_pairs+i,
+    2*n_pairs+i ... one per entry of constants.SPECIES_NAMES, all sharing the
+    primary and so the same decay vertex + direction. Placement uses the
+    pipeline's C8 `place_clouds_enu` at the real vertex.
+
+    Returns (species_clouds, B, n_pairs, primary_batch) with `species_clouds` a
+    list in SPECIES_NAMES order."""
+    n_species = len(SPECIES_NAMES)
     positions_all = torch.load(HELDOUT_POSITIONS_PATH)           # (M, 3) ENU E,N,U
-    n_pairs = positions_all.shape[0] // 2
+    n_pairs = positions_all.shape[0] // n_species
     B = min(n_events, n_pairs)
 
-    e_sub = showerdata.load(HELDOUT_SHOWER_CACHE_PATH, start=0, stop=B)
-    m_sub = showerdata.load(HELDOUT_SHOWER_CACHE_PATH, start=n_pairs, stop=n_pairs + B)
-    elec = torch.as_tensor(e_sub.points, dtype=torch.float32)
-    muon = torch.as_tensor(m_sub.points, dtype=torch.float32)
-    dirs = torch.as_tensor(e_sub.directions, dtype=torch.float32)
+    # Metadata comes from the first block; every block shares the primary.
+    first = showerdata.load(HELDOUT_SHOWER_CACHE_PATH, start=0, stop=B)
+    dirs = torch.as_tensor(first.directions, dtype=torch.float32)
     dirs = dirs / dirs.norm(dim=1, keepdim=True).clamp(min=1e-12)
-    energies = torch.as_tensor(e_sub.energies, dtype=torch.float32)
-    pdg      = torch.as_tensor(e_sub.pdg,      dtype=torch.long)
+    energies = torch.as_tensor(first.energies, dtype=torch.float32)
+    pdg      = torch.as_tensor(first.pdg,      dtype=torch.long)
     pos = positions_all[:B].float()
 
-    place_clouds_enu(elec, pos, dirs, east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
-    place_clouds_enu(muon, pos, dirs, east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
+    species_clouds = []
+    for s_i in range(n_species):
+        lo = s_i * n_pairs
+        sub = first if s_i == 0 else showerdata.load(
+            HELDOUT_SHOWER_CACHE_PATH, start=lo, stop=lo + B)
+        c = torch.as_tensor(sub.points, dtype=torch.float32)
+        place_clouds_enu(c, pos, dirs, east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
+        species_clouds.append(c)
 
     array_center = torch.as_tensor(mountain.centroids_ENU, dtype=torch.float32).mean(dim=0)
     primary_batch = encode_primary(dirs, energies, pdg, pos, array_center).to(device)
-    return elec, muon, B, n_pairs, primary_batch
+    return species_clouds, B, n_pairs, primary_batch
 
 
 def _snap(mountain, e, n):
@@ -210,9 +218,9 @@ def main():
                                 east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX,
                                 n_planes=N_PLANES)
     surface = SurfaceUpMap.from_mountain(mountain).to(device)
-    elec, muon, B, n_pairs, prim = load_events(args.n_events, device, mountain)
+    species_clouds, B, n_pairs, prim = load_events(args.n_events, device, mountain)
     print(f"events      : {B} of {n_pairs} pairs")
-    kernel_fnn = KernelDualLabels(elec, muon, surface, device,
+    kernel_fnn = KernelDualLabels(species_clouds, surface, device,
                                   chunk=args.kernel_chunk)
     print(f"kernel chunk: {kernel_fnn.chunk} events/call")
 

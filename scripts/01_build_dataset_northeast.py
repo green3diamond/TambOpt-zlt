@@ -32,7 +32,7 @@ from modules.constants import (
     SHOWER_CACHE, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, NUM_SHOWERS,
     BATCH_SIZE, RUN_LOCATION,
-    DUAL_SHOWER_CACHE_PATH, DATASET_FRACTION,
+    DUAL_SHOWER_CACHE_PATH, DATASET_FRACTION, SPECIES_NAMES,
 )
 from modules.geometry    import load_tr_mountain
 from modules.geometry import SurfaceUpMap
@@ -52,7 +52,8 @@ TRAINING_DATASET_FOLDER = os.path.join(RUN_LOCATION, "test_v6_run_01_northeast")
 # in-comments scale, not the real event count (Step 0's holdout split makes the
 # exact count data-dependent); deriving the cap from it here risked silently
 # truncating the corpus back down whenever the real count ran ahead of NUM_SHOWERS.
-MAX_SHOWERS = 0 if DATASET_FRACTION >= 1.0 else int(DATASET_FRACTION * 2 * NUM_SHOWERS)
+MAX_SHOWERS = (0 if DATASET_FRACTION >= 1.0 else
+               int(DATASET_FRACTION * len(SPECIES_NAMES) * NUM_SHOWERS))
 SEED        = 0
 DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

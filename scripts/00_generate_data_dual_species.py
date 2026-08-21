@@ -1,14 +1,18 @@
-"""Generate a paired electron+muon shower corpus using per-species AllShowers checkpoints.
+"""Generate a paired multi-species shower corpus from per-species AllShowers checkpoints.
 
-Corpus layout: electron rows [0, N), muon rows [N, 2N); row i and row N+i share
-the same primary (same energy, direction, and EM/hadronic label). The corpus `pdg`
-field stores the EM/hadronic class (0 or 1) — the generator's conditioning input,
-NOT the e/µ species. Species (0=electron, 1=muon) is written to a separate sidecar
-`<corpus>_species.pt` for Step-1/2 routing.
+One physical shower is split by secondary species into the components listed in
+`constants.SPECIES_NAMES`; each has its own model, and a complete event is their
+sum. Corpus layout is species-major: component s occupies rows
+[s*N, (s+1)*N), so rows i, N+i, 2N+i … are one event's components and share a
+primary (energy, direction, EM/hadronic label).
+
+The corpus `pdg` field stores the EM/hadronic class (0 or 1) — the generator's
+conditioning input, NOT the species. Species is written to a separate sidecar
+`<corpus>_species.pt` (id = index into SPECIES_NAMES) for Step-1/2 routing.
 
 Key design decisions:
-- Per-species models have different point caps (electron 4096, muon 25088); electrons
-  are zero-padded to the muon cap so the file has a uniform shape.
+- Per-species models have different point caps (electron 4096, photon 8064,
+  muon 25088); every block is zero-padded to the largest so the file is uniform.
 - Generation streams in chunks; the file is preallocated once (`create_empty_file`)
   and each chunk appended at its row offset (`save_batch`) — peak RAM is one chunk.
 - `Generator`/`generate` are called directly (not the `GenerateShowers` wrapper)
@@ -47,6 +51,7 @@ from modules.constants import (
     SHOWER_CACHE, RUN_LOCATION, NUM_SHOWERS, BATCH_SIZE,
     USE_TAU_PRIMARIES, TAU_WHOLESKY_PATH, DUAL_SHOWER_CACHE_PATH,
     HOLDOUT_FRAC, HOLDOUT_SEED, HELDOUT_SHOWER_CACHE_PATH,
+    SPECIES_NAMES,
 )
 from modules.showers import load_tau_primaries
 
@@ -60,10 +65,11 @@ from allshowers.generator import Generator, generate
 # ── Config ───────────────────────────────────────────────────────────────────
 BEST = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/checkpoints"
 
-# Per-species model paths + point-cloud caps. The species id (electron=0,
-# muon=1) is the BLOCK INDEX in this dict (electron first, muon second) and is
-# written to the Step-0 species sidecar — it is no longer stored in the corpus
-# `pdg` field (which now carries the EM/hadronic class fed to the generator).
+# Per-species model paths + point-cloud caps, keyed by species name. The species
+# id is the BLOCK INDEX — defined by constants.SPECIES_NAMES, which this dict is
+# checked against below — and is written to the Step-0 species sidecar. It is not
+# in the corpus `pdg` field, which carries the EM/hadronic class fed to the
+# generator.
 SPECIES = {
     "electron": dict(
         allshower_run=os.path.join(BEST, "20260519_185649_Electron-Allshower"),
@@ -81,6 +87,16 @@ SPECIES = {
         max_points=8064,
     )
 }
+
+# SPECIES_NAMES (modules/constants.py) is the id order the corpus sidecar and
+# every downstream router use; this dict adds the model paths for each. Keeping
+# them as two objects that must agree is the point of the check -- the paths are
+# a Step-0 concern, the ORDER is a corpus-format concern.
+if tuple(SPECIES) != tuple(SPECIES_NAMES):
+    raise SystemExit(
+        f"SPECIES {tuple(SPECIES)} does not match constants.SPECIES_NAMES "
+        f"{tuple(SPECIES_NAMES)}.\nThe tuple's order IS the species id written to "
+        f"the corpus sidecar, so the two must agree exactly (same names, same order).")
 
 NUM_TIMESTEPS = 16
 SOLVER        = "midpoint"
@@ -246,7 +262,7 @@ def _gen_chunk(gen, pcfm, cfg, energies, directions, labels, shower_ids, target_
     `labels` is the per-event EM/hadronic primary class (0/1) — the generator's
     conditioning input (both per-species models were trained on both classes)
     and the value stored as the corpus `pdg` field. `shower_ids` is the
-    paired-event id, so the electron row e and muon row n_pairs+e share it."""
+    paired-event id, so every component row of one event shares it."""
     labels = labels.to(torch.int64)
 
     # Stage 1 — PointCountFM on CPU (TorchScript device-baked → CUDA mismatches).
@@ -294,7 +310,7 @@ def _gen_chunk(gen, pcfm, cfg, energies, directions, labels, shower_ids, target_
 
 
 def _load_progress(progress_path):
-    """{"electron": rows_done, "muon": rows_done}, or {} if no checkpoint yet."""
+    """{species_name: rows_done, ...}, or {} if no checkpoint yet."""
     if os.path.exists(progress_path):
         with open(progress_path) as f:
             return json.load(f)
@@ -318,22 +334,9 @@ def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
     counted done AFTER `showerdata.save_batch` returns, so a kill mid-chunk
     just re-does that one chunk on restart — no partial rows on disk get
     silently treated as complete."""
-    n_pairs = int(energies_all.shape[0])
-    # The corpus is TWO blocks. Everything below and downstream assumes it:
-    # the species sidecar labels 0/1, Step 1 derives per_sp = n_file // 2, and
-    # DualSpeciesSurrogate combines exactly an electron and a muon component.
-    # Adding a third entry to SPECIES therefore does not extend the corpus --
-    # the loop below would compute block_start = 2 * n_pairs for it and write
-    # past the end of a file preallocated for 2 * n_pairs rows. Fail here
-    # instead, where the message can say what actually needs changing.
-    if len(SPECIES) != 2:
-        raise SystemExit(
-            f"SPECIES has {len(SPECIES)} entries ({', '.join(SPECIES)}), but the corpus "
-            f"format is two blocks.\nTo generate only the paired e/mu corpus, restrict "
-            f"SPECIES to those two.\nTo genuinely support more, these all need updating "
-            f"together: `total` here, the species sidecar, Step 1's `per_sp = n_file // 2`, "
-            f"Step 2's SPECIES_TAGS, and modules/surrogates/dual.py.")
-    total   = 2 * n_pairs
+    n_pairs   = int(energies_all.shape[0])
+    n_species = len(SPECIES_NAMES)
+    total     = n_species * n_pairs
     progress_path = out_path + ".progress.json"
 
     if os.path.exists(out_path):
@@ -345,19 +348,23 @@ def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
         print(f"[{tag}] preallocated {out_path} ({total}x{target_P}x5, "
               f"≈{total * target_P * 5 * 4 / 1e9:.1f} GB)")
 
-    # e/µ species + real-position sidecars: cheap, derived purely from n_pairs/
+    # Species + real-position sidecars: cheap, derived purely from n_pairs/
     # positions_all, so always safe to (re)write regardless of resume state.
-    species_ids = torch.cat([torch.zeros(n_pairs, dtype=torch.int64),
-                             torch.ones(n_pairs, dtype=torch.int64)])
+    # Species-major, matching the block layout below: id s fills rows
+    # [s*n_pairs, (s+1)*n_pairs).
+    species_ids = torch.repeat_interleave(
+        torch.arange(n_species, dtype=torch.int64), n_pairs)
     species_path = os.path.splitext(out_path)[0] + "_species.pt"
     torch.save(species_ids, species_path)
     if positions_all is not None:
-        positions_dual = torch.cat([positions_all, positions_all], dim=0)
+        # Every component of an event decays at the same vertex, so the block is
+        # repeated once per species rather than stored per row.
+        positions_dual = torch.cat([positions_all] * n_species, dim=0)
         positions_path = os.path.splitext(out_path)[0] + "_positions.pt"
         torch.save(positions_dual, positions_path)
         print(f"[{tag}/positions] wrote sidecar {positions_path} {tuple(positions_dual.shape)}")
     print(f"[{tag}/species] wrote sidecar {species_path} "
-          f"({n_pairs} electron + {n_pairs} muon rows)")
+          f"({n_pairs} rows x {' + '.join(SPECIES_NAMES)})")
 
     t0 = time.time()
     for i, (name, cfg) in enumerate(SPECIES.items()):
@@ -394,8 +401,9 @@ def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
         del gen
         torch.cuda.empty_cache()
 
-    print(f"[{tag}/done] {total} rows = {n_pairs} paired events "
-          f"(electron rows 0..{n_pairs-1}, muon rows {n_pairs}..{total-1}) "
+    blocks = ", ".join(f"{nm} {i*n_pairs}..{(i+1)*n_pairs-1}"
+                       for i, nm in enumerate(SPECIES_NAMES))
+    print(f"[{tag}/done] {total} rows = {n_pairs} paired events ({blocks}) "
           f"in {time.time()-t0:.0f}s -> {out_path}")
     if os.path.exists(progress_path):
         os.remove(progress_path)

@@ -49,16 +49,18 @@ import modules  # noqa: F401 — package import; keeps modules on the path
 from modules.surrogates import DeepSetsSurrogate
 from modules.surrogates import compute_normalization
 from modules.constants import (
-    N_DETECTORS, PRIMARY_DIM, T_LOG_SCALE,
+    N_DETECTORS, PRIMARY_DIM, SPECIES_NAMES, T_LOG_SCALE,
     TRAINING_DATASET_FOLDER, FNN_FOLDER, TRAIN_FRACTION,
 )
 
 # ── Config ───────────────────────────────────────────────────────────────────
-# Species-tagged checkpoints (fnn_electron.pt / fnn_muon.pt) go straight into
+# Species-tagged checkpoints (fnn_<species>.pt) go straight into
 # FNN_FOLDER — they cannot clobber a legacy single-model fnn.pt, and stages 3-4
-# load the pair from there via surrogates.load_dual_surrogate.
+# load the set from there via surrogates.load_dual_surrogate.
 OUTPUT_FOLDER = FNN_FOLDER
-SPECIES_TAGS  = (("electron", 0), ("muon", 1))   # (tag, species id: 0=electron, 1=muon)
+# (tag, species id). The id is the index into constants.SPECIES_NAMES, which
+# is what Step 0 wrote to the species sidecar.
+SPECIES_TAGS  = tuple((name, i) for i, name in enumerate(SPECIES_NAMES))
 
 BATCH_SIZE          = 256
 N_EPOCHS            = 100
@@ -713,13 +715,14 @@ def main():
                     help="Adam epochs per species (default from config)")
     ap.add_argument("--lbfgs-iters", type=int, default=LBFGS_MAX_ITER,
                     help="L-BFGS max iterations per species (default from config)")
-    ap.add_argument("--species", type=str, default="electron,muon",
-                    help="comma-separated subset of {electron,muon} to (re)train")
+    ap.add_argument("--species", type=str, default=",".join(SPECIES_NAMES),
+                    help=f"comma-separated subset of {{{','.join(SPECIES_NAMES)}}} to (re)train")
     args = ap.parse_args()
     wanted = {s.strip() for s in args.species.split(",") if s.strip()}
     unknown = wanted - {tag for tag, _ in SPECIES_TAGS}
     if unknown:
-        raise SystemExit(f"unknown species {sorted(unknown)}; valid: electron, muon")
+        raise SystemExit(f"unknown species {sorted(unknown)}; "
+                         f"valid: {', '.join(SPECIES_NAMES)}")
 
     print("=" * 72)
     print("v6/02_train_fnn_deepsets.py — two parallel per-species DeepSets surrogates")
