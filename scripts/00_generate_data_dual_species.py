@@ -75,6 +75,11 @@ SPECIES = {
         pcfm_compiled=os.path.join(BEST, "20260521_043912_Muon-PointCountFM", "compiled.pt"),
         max_points=25088,
     ),
+    "photon": dict(
+        allshower_run=os.path.join(BEST, "20260724_074020_Photon-Allshower"),
+        pcfm_compiled=os.path.join(BEST, "20260727_041023_Photon-PointCountFM", "compiled.pt"),
+        max_points=8064,
+    )
 }
 
 NUM_TIMESTEPS = 16
@@ -314,6 +319,20 @@ def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
     just re-does that one chunk on restart — no partial rows on disk get
     silently treated as complete."""
     n_pairs = int(energies_all.shape[0])
+    # The corpus is TWO blocks. Everything below and downstream assumes it:
+    # the species sidecar labels 0/1, Step 1 derives per_sp = n_file // 2, and
+    # DualSpeciesSurrogate combines exactly an electron and a muon component.
+    # Adding a third entry to SPECIES therefore does not extend the corpus --
+    # the loop below would compute block_start = 2 * n_pairs for it and write
+    # past the end of a file preallocated for 2 * n_pairs rows. Fail here
+    # instead, where the message can say what actually needs changing.
+    if len(SPECIES) != 2:
+        raise SystemExit(
+            f"SPECIES has {len(SPECIES)} entries ({', '.join(SPECIES)}), but the corpus "
+            f"format is two blocks.\nTo generate only the paired e/mu corpus, restrict "
+            f"SPECIES to those two.\nTo genuinely support more, these all need updating "
+            f"together: `total` here, the species sidecar, Step 1's `per_sp = n_file // 2`, "
+            f"Step 2's SPECIES_TAGS, and modules/surrogates/dual.py.")
     total   = 2 * n_pairs
     progress_path = out_path + ".progress.json"
 

@@ -53,7 +53,7 @@ AZIMUTH_MIN  = 0.0   # degrees
 AZIMUTH_MAX  = 360.0 # degrees
 
 
-RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/07_750k_primaires_meanvar"
+RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/08_after_refactoring"
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are
