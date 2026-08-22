@@ -252,7 +252,8 @@ def resample_overclip(pcfm, energies, directions, labels, num_points, cap,
 
 
 def _gen_chunk(gen, pcfm, cfg, energies, directions, labels, shower_ids, target_P,
-               max_clip_frac=MAX_CLIP_FRAC, max_retries=MAX_PCFM_RETRIES):
+               max_clip_frac=MAX_CLIP_FRAC, max_retries=MAX_PCFM_RETRIES,
+               batch=BATCH_SIZE):
     """Generate one chunk of showers for a species from PRE-SAMPLED primaries
     → a showerdata.Showers, padded to target_P. Bounded memory (only this
     chunk is held). Primaries (energies, directions, labels, shower_ids) come in
@@ -279,10 +280,27 @@ def _gen_chunk(gen, pcfm, cfg, energies, directions, labels, shower_ids, target_
     )
 
     # Stage 2 — AllShowers on GPU (max_points already set on gen).
-    samples = generate(
-        generator=gen, energies=energies, num_points=num_points,
-        angles=directions, batch_size=BATCH_SIZE, device=str(DEVICE), labels=labels,
-    ).float().cpu()                                        # (n, sp_max_points, 5)
+    # Batch scaled by the species point cap: flex_attention's block mask is
+    # O(batch x cap^2), and the caps differ 6x (electron 4096, photon 8064, muon
+    # 25088). One flat batch either OOMs on muon or wastes the GPU on electron --
+    # at BATCH_SIZE=60 the muon mask alone asked for 20.35 GiB on a 19.6 GB card.
+    # `batch` is therefore the budget AT the electron cap. gpu_test also hands out
+    # mixed cards, so halve and retry rather than assume which one we got.
+    sp_batch = max(1, int(batch * 4096 / int(cfg["max_points"])))
+    while True:
+        try:
+            samples = generate(
+                generator=gen, energies=energies, num_points=num_points,
+                angles=directions, batch_size=sp_batch, device=str(DEVICE),
+                labels=labels,
+            ).float().cpu()                                # (n, sp_max_points, 5)
+            break
+        except torch.OutOfMemoryError:
+            if sp_batch == 1:
+                raise
+            torch.cuda.empty_cache()
+            sp_batch = max(1, sp_batch // 2)
+            print(f"  [oom] retrying generate at batch {sp_batch}", flush=True)
     samples = _pad_points(samples, target_P)
 
     # Underflow guard: the inverse energy trafo (exp of a latent) can emit
@@ -325,7 +343,8 @@ def _save_progress(progress_path, state):
 
 
 def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
-                     event_ids_all, positions_all, target_P, chunk_size):
+                     event_ids_all, positions_all, target_P, chunk_size,
+                     batch=BATCH_SIZE):
     """Generate one full paired electron+muon corpus at `out_path`, resuming
     automatically from `<out_path>.progress.json` if a prior attempt was
     preempted mid-run (gpu_requeue). `tag` is a log label ("train"/"holdout").
@@ -389,6 +408,7 @@ def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
                 gen, pcfm, cfg,
                 energies_all[done:done + c], directions_all[done:done + c],
                 labels_all[done:done + c], event_ids_all[done:done + c], target_P,
+                batch=batch,
             )
             showerdata.save_batch(sh, out_path, start=block_start + done)
             done += c
@@ -423,6 +443,11 @@ def main():
                     help="primary-sampling seed (deterministic corpus)")
     ap.add_argument("--chunk", type=int, default=CHUNK_SIZE,
                     help="showers per streamed write-batch (bounds peak RAM)")
+    ap.add_argument("--batch", type=int, default=BATCH_SIZE,
+                    help="GPU generation batch AT the electron cap (4096); scaled "
+                         "down per species by its own max_points, and halved on "
+                         "OOM. Lower it on a small card -- the default needed "
+                         "20.35 GiB for the muon block on a 19.6 GB GPU")
     ap.add_argument("--out", type=str, default=None,
                     help="MAIN (train-pool) output .pt path (default: "
                          "DUAL_SHOWER_CACHE_PATH from constants). The holdout "
@@ -505,8 +530,10 @@ def main():
     e_tr, d_tr, l_tr, id_tr, pos_tr = _slice(train_idx)
     e_ho, d_ho, l_ho, id_ho, pos_ho = _slice(holdout_idx)
 
-    _generate_corpus("train",   out_path,     e_tr, d_tr, l_tr, id_tr, pos_tr, target_P, args.chunk)
-    _generate_corpus("holdout", heldout_path, e_ho, d_ho, l_ho, id_ho, pos_ho, target_P, args.chunk)
+    _generate_corpus("train",   out_path,     e_tr, d_tr, l_tr, id_tr, pos_tr, target_P,
+                     args.chunk, batch=args.batch)
+    _generate_corpus("holdout", heldout_path, e_ho, d_ho, l_ho, id_ho, pos_ho, target_P,
+                     args.chunk, batch=args.batch)
 
 
 if __name__ == "__main__":
