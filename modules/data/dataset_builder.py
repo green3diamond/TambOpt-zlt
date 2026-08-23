@@ -23,6 +23,20 @@ from ..surrogates import encode_primary, compute_normalization  # noqa: F401  (r
 from ..surrogates.fnn import _load_species_sidecar
 
 
+def _batch_layout_rng(seed: int, s_idx: int, b_idx: int):
+    """Generator for one (strategy, batch) detector-layout draw.
+
+    Every species row of one event must land under the same layout, but the
+    builder streams one species block after another through a single loop body.
+    A shared running generator would have advanced by all the preceding blocks
+    before a later species starts, so the rows of one event would draw different
+    layouts. Keying the draw on (seed, strategy, batch index within the species
+    block) makes it a pure function of "where in the species block are we",
+    which is identical for every pass.
+    """
+    return np.random.default_rng((int(seed), int(s_idx), int(b_idx)))
+
+
 def _positions_sidecar_path(shower_cache_path: str) -> str:
     """Path of the Step-0 ENU decay-position sidecar paired with a dual corpus
     .pt (`…_dual.pt` -> `…_dual_positions.pt`). Written by
@@ -240,9 +254,9 @@ class _ResumeState:
     out_* set (~11.8 GB at 750k events), so a per-N policy would scale write
     volume with corpus size. See docs/THEORY.md §11.5.
 
-    The layout `rng` is NOT checkpointed, so a resumed run draws fresh layouts
-    for the remaining chunks — a valid draw from the same strategies, just not
-    bit-identical to an uninterrupted run.
+    The per-chunk layout draws are keyed on (seed, strategy, batch) rather
+    than taken from a running generator, so a resumed run reproduces the
+    layouts an uninterrupted run would have used for the remaining chunks.
     """
 
     def __init__(self, n_pairs: int, n_det: int,
@@ -316,14 +330,15 @@ class _ResumeState:
 
 
 def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
-                 mountain, surface, rng, *,
+                 mountain, surface, seed, *,
                  ds_start: int, c_lo: int, csz: int,
                  batch_size: int, n_det: int, device) -> None:
     """Label one loaded chunk under every strategy, writing into `state`.
 
-    One layout per (strategy, sub-batch), shared by that sub-batch. The rng is
-    threaded in from the caller: draw order is chunk -> strategy -> sub-batch,
-    and reordering it changes every label in the dataset.
+    One layout is drawn per (strategy, sub-batch) and shared by the whole
+    sub-batch. The draw is keyed on (seed, strategy, batch index) rather than
+    taken from a running generator, so every species row of one event receives
+    the same layout and a resumed run reproduces an uninterrupted one.
     """
     n_showers = meta.n_showers
     for s_idx, (s_name, fn_name, kwargs) in enumerate(_STRATEGIES):
@@ -332,7 +347,15 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
             sb_hi = min(sb_lo + batch_size, csz)
             B = sb_hi - sb_lo
 
-            e_det, n_det_xy = fn(mountain, n_det=n_det, rng=rng, **kwargs)  # (East, North)
+            # Batch index within the species block: every species block walks an
+            # identical (c_lo, sb_lo) grid because _build_chunk_list ranges c_lo
+            # over k_sp per species and carries the block offset in ds_start, and
+            # load_chunk is a whole number of sub-batches. So this lines every
+            # species pass onto the same draw.
+            b_idx = (c_lo + sb_lo) // batch_size
+            e_det, n_det_xy = fn(mountain, n_det=n_det,
+                                 rng=_batch_layout_rng(seed, s_idx, b_idx),
+                                 **kwargs)  # (East, North)
             e_det     = e_det.float().to(device)
             n_det_xy  = n_det_xy.float().to(device)
 
@@ -427,7 +450,6 @@ def build_training_pairs(mountain, surface,
                          path=resume_path, every_s=resume_every_s, verbose=verbose)
     state.restore(len(chunk_list))
 
-    rng = np.random.default_rng(seed)
     n_sanitized = 0
 
     for chunk_i, chunk in enumerate(chunk_list):
@@ -439,7 +461,7 @@ def build_training_pairs(mountain, surface,
                                            east_entry, layer_east_dx)
         n_sanitized += n_bad
 
-        _label_chunk(clouds_chunk, meta, state, mountain, surface, rng,
+        _label_chunk(clouds_chunk, meta, state, mountain, surface, seed,
                      ds_start=ds_start, c_lo=c_lo, csz=c_hi - c_lo,
                      batch_size=batch_size, n_det=n_det, device=device)
 
