@@ -26,6 +26,10 @@ layout is analysed and where results go. Neither is a script.
 | `detector_grid_scan_random_control.py` | control: is the flatness special to an optimum |
 | `full_space_2d_slice.py` | random 2D plane through the full 200-dim space |
 
+The scan scripts draw their own 3D companions and share one colour and z scale
+across panels, so a small wobble cannot be mistaken for structure next to a large
+one. Nothing needs replotting afterwards.
+
 `full_space_2d_slice.py` takes `--step-range`. The default 400m sweep pushes
 boundary detectors past the mesh snap tolerance (~160m), so part of what it
 measures is snapping; re-run with `--step-range 100 --out-prefix
@@ -41,8 +45,9 @@ full_space_2d_slice_fine` for a cleaner reading.
 
 ## Not landscape analysis, parked here
 
-`fired_val_check.py`, `finetune_regression_check.py`,
-`regenerate_3d_surface_plots.py`, `verify_seed_layout_extension.py`.
+`fired_val_check.py`, which scores the surrogate on detectors that actually
+fired against the fired-only aleatoric ceiling rather than the all-detector one
+that blends in the trivially easy dark detectors.
 
 ## Coordinates
 

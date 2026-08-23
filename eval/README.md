@@ -22,9 +22,6 @@ difference of sample.
 | file | question it answers |
 |---|---|
 | `eval_detection_stats.py` | which detectors light up, kernel vs surrogate, plus efficiency vs energy and vs decay distance |
-| `diag_fnn_vs_kernel.py` | does the surrogate reproduce the kernel's per-detector response |
-| `diag_recon_outputs.py` | what the reconstruction emits, for one batch, in physical units |
-| `diag_residual_bias_variance.py` | is the surrogate's error a bias or a spread, binned |
 
 ## Optimizer behaviour
 
