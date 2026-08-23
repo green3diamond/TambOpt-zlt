@@ -184,7 +184,11 @@ def _generate_repeated_showers(n_prim, m_real, seed, gen_batch):
         g = gen00.Generator(run_dir=staged_dir, num_timesteps=gen00.NUM_TIMESTEPS,
                             compile=True, solver=gen00.SOLVER)
         g.max_points = int(cfg["max_points"])
-        sh = gen00._gen_chunk(g, pcfm, cfg, energies, directions, labels, event_ids, target_P)
+        # Same blob re-roll as the corpus (gen00 defaults): the floor has to be
+        # measured on the distribution the surrogate is actually trained on, or
+        # it is inflated by degenerate showers the corpus no longer contains.
+        sh = gen00._gen_chunk(g, pcfm, cfg, name, energies, directions, labels,
+                              event_ids, target_P)
         samples = torch.as_tensor(sh.points, dtype=torch.float32)            # (n*m, target_P, 5)
         out[name] = samples.reshape(n_prim, m_real, target_P, 5)
         # Sanity: realizations of one primary must actually differ.
