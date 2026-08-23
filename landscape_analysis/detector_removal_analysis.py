@@ -28,7 +28,7 @@ sys.path.insert(0, _V6)
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 
 import layouts as _layouts  # noqa: E402  (layout paths live in one place)
-from common import Scorer, N_DETECTORS, TRAINING_DATASET_FOLDER
+from common import Scorer, N_DETECTORS, TRAINING_DATASET_FOLDER, load_layout
 
 
 DEFAULT_LAYOUT_PATH = _layouts.primary()
@@ -70,11 +70,6 @@ BATCHES = sc.batches
 
 
 eval_U = sc.U
-
-def load_layout(path):
-    d = torch.load(path, map_location="cpu", weights_only=False)
-    return d["x"].float().reshape(-1), d["y"].float().reshape(-1), float(d["U"])
-
 
 lbfgs_x, lbfgs_y, lbfgs_U_saved = load_layout(args.layout_path)
 full_U = eval_U(lbfgs_x, lbfgs_y)

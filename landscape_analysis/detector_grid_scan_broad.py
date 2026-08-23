@@ -20,6 +20,7 @@ sys.path.insert(0, _V6)
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 
 import layouts as _layouts  # noqa: E402  (layout paths live in one place)
+from common import load_layout
 import modules  # noqa: F401 — package import; keeps modules on the path
 
 from modules.constants import (
@@ -64,11 +65,6 @@ BATCHES = [fresh_batch(BATCH_SEED_BASE + b) for b in range(N_BATCHES)]
 def eval_U_mean(x, y):
     Us = [float(utility_of_xy(x.to(DEVICE), y.to(DEVICE), p, fnn, recon)[0].item()) for p in BATCHES]
     return float(np.mean(Us))
-
-
-def load_layout(path):
-    d = torch.load(path, map_location="cpu", weights_only=False)
-    return d["x"].float().reshape(-1), d["y"].float().reshape(-1), float(d["U"])
 
 
 lbfgs_x, lbfgs_y, lbfgs_U_saved = load_layout(
