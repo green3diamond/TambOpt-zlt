@@ -33,19 +33,11 @@ sys.path.insert(0, _V6)
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 
 import layouts as _layouts  # noqa: E402  (layout paths live in one place)
-import modules  # noqa: F401 — package import; keeps modules on the path
+from common import Scorer, N_DETECTORS, TRAINING_DATASET_FOLDER
 
-from modules.constants import (
-    N_DETECTORS, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
-    EAST_ENTRY, LAYER_EAST_DX, N_PLANES,
-    TRAINING_DATASET_FOLDER, FNN_FOLDER, RECON_FOLDER,
-)
-from modules.geometry import load_tr_mountain
-from modules.optimize import utility_of_xy, load_models
 from modules.geometry import project_to_mountain_ne
 from modules.layouts import layout_uniform_random
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEFAULT_LAYOUT_PATH = _layouts.primary()
 
 ap = argparse.ArgumentParser()
@@ -84,29 +76,20 @@ print("=" * 70)
 print(f"Random full-space 2D slice (all 100 detectors perturbed at once) -- layout: {LAYOUT_LABEL}")
 print("=" * 70)
 
-fnn, recon = load_models(DEVICE, fnn_folder=FNN_FOLDER, recon_dir=RECON_FOLDER + "_deepsets")
-mountain = load_tr_mountain(GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
-    east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX, n_planes=N_PLANES)
+sc = Scorer(n_batches=N_BATCHES, batch_size=BATCH_SIZE, seed_base=BATCH_SEED_BASE)
+fnn, recon = sc.fnn, sc.recon
+mountain = sc.mountain
 
 primary_all = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt"),
                          weights_only=False).float()
-n_total = primary_all.shape[0]
 
 
-def fresh_batch(seed):
-    g = torch.Generator().manual_seed(seed)
-    idx = torch.randint(0, n_total, (BATCH_SIZE,), generator=g)
-    return primary_all[idx].to(DEVICE)
+fresh_batch = sc.draw
+
+BATCHES = sc.batches
 
 
-BATCHES = [fresh_batch(BATCH_SEED_BASE + b) for b in range(N_BATCHES)]
-
-
-@torch.no_grad()
-def eval_U(x, y):
-    Us = [float(utility_of_xy(x.to(DEVICE), y.to(DEVICE), p, fnn, recon)[0].item()) for p in BATCHES]
-    return float(np.mean(Us))
-
+eval_U = sc.U
 
 def load_layout(path):
     d = torch.load(path, map_location="cpu", weights_only=False)

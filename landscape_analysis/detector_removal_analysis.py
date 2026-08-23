@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Redundancy analysis: how much does each detector matter?
+"""
+How much does each detector actually matter, and how much redundancy is there
+among the 100?
 
-Part 1 is a leave-one-out sweep: remove each detector in turn and measure the
-utility dip against the full layout. This is exact rather than approximate,
-because the surrogate and reconstruction pool over detectors and are therefore
-count-invariant, so evaluating with one fewer is a valid forward pass.
+Part 1, leave-one-out: remove each detector in turn and measure the utility dip
+against the full layout. Valid rather than approximate, because the DeepSets
+pooling is permutation- and count-invariant, so 99 detectors is a genuine
+forward pass.
 
-Part 2 removes detectors cumulatively in three orders, highest-dip-first,
-lowest-dip-first and random, to show how much of the array is redundant.
+Part 2, three removal sequences from 100 down to a floor of 20. "highest_dip
+first" strips the most critical remaining detector at each step, re-evaluated
+fresh rather than sorted once; "lowest_dip_first" strips the most redundant;
+"random" uses one fixed shuffle. If the plateau really comes from redundancy,
+lowest-first should strip many detectors before U moves while highest-first
+craters, which tests WHY the landscape is flat rather than restating that it is.
 
-Writes detector_removal_results.json, which several other scripts here read.
-Run it before them, not alongside them.
+--layout_path and --layout_tag select which saved layout to analyse; a tag sends
+output to other_optimizers/<tag>/.
 """
 import argparse
 import os, sys, json, time
@@ -22,12 +28,9 @@ sys.path.insert(0, _V6)
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 
 import layouts as _layouts  # noqa: E402  (layout paths live in one place)
-import modules  # noqa: F401 — package import; keeps modules on the path
+from common import Scorer, N_DETECTORS, TRAINING_DATASET_FOLDER
 
-from modules.constants import N_DETECTORS, TRAINING_DATASET_FOLDER, FNN_FOLDER, RECON_FOLDER
-from modules.optimize import utility_of_xy, load_models
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEFAULT_LAYOUT_PATH = _layouts.primary()
 
 ap = argparse.ArgumentParser()
@@ -54,29 +57,19 @@ print("=" * 70)
 print(f"Detector removal / redundancy analysis -- layout: {LAYOUT_LABEL}")
 print("=" * 70)
 
-fnn, recon = load_models(DEVICE, fnn_folder=FNN_FOLDER, recon_dir=RECON_FOLDER + "_deepsets")
+sc = Scorer(n_batches=N_BATCHES, batch_size=BATCH_SIZE, seed_base=BATCH_SEED_BASE)
+fnn, recon = sc.fnn, sc.recon
 
 primary_all = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt"),
                          weights_only=False).float()
-n_total = primary_all.shape[0]
 
 
-def fresh_batch(seed):
-    g = torch.Generator().manual_seed(seed)
-    idx = torch.randint(0, n_total, (BATCH_SIZE,), generator=g)
-    return primary_all[idx].to(DEVICE)
+fresh_batch = sc.draw
+
+BATCHES = sc.batches
 
 
-BATCHES = [fresh_batch(BATCH_SEED_BASE + b) for b in range(N_BATCHES)]
-
-
-@torch.no_grad()
-def eval_U(x, y):
-    """x, y are 1-D tensors of ANY length (not necessarily 100) -- DeepSets
-    pooling is count-invariant, this is a genuine forward pass, not a hack."""
-    Us = [float(utility_of_xy(x.to(DEVICE), y.to(DEVICE), p, fnn, recon)[0].item()) for p in BATCHES]
-    return float(np.mean(Us))
-
+eval_U = sc.U
 
 def load_layout(path):
     d = torch.load(path, map_location="cpu", weights_only=False)

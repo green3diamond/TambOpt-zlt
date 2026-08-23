@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Does the critical core transfer between layouts?
+"""
+Is the small critical core found by detector_removal_analysis.py a property of
+detector redundancy in general, or an artefact of the one layout it analysed?
 
-detector_removal_analysis.py finds a small set of detectors carrying most of the
-utility. This asks whether that is a general property of detector redundancy or
-an artefact of the one layout analysed, by repeating the leave-one-out sweep on
-a second, independently initialised optimum.
+Mode connectivity already showed that the grid and center schemes are genuinely
+different physical arrangements reaching equivalent utility. On a degenerate
+plateau a different arrangement could cover the same regions with an entirely
+different set of detectors, so neither the same index nor the same location need
+be critical in both.
 
-If the two layouts are genuinely different arrangements at equivalent utility,
-a core that survives both is a property of the problem rather than of one
-solution.
+This repeats the leave-one-out and removal-sequence experiment on the other
+layout, then asks two things: whether it also shows a concentrated, non-uniform
+dip distribution, and whether its critical detectors sit physically near the
+first layout's after Hungarian alignment. Close means a region needs coverage
+and any detector will do; far means criticality belongs to the arrangement.
 """
 import os, sys, json, time
 import numpy as np
@@ -19,12 +24,9 @@ sys.path.insert(0, _V6)
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 
 import layouts as _layouts  # noqa: E402  (layout paths live in one place)
-import modules  # noqa: F401 — package import; keeps modules on the path
+from common import Scorer, N_DETECTORS, TRAINING_DATASET_FOLDER, align_to_reference
 
-from modules.constants import N_DETECTORS, TRAINING_DATASET_FOLDER, FNN_FOLDER, RECON_FOLDER
-from modules.optimize import utility_of_xy, load_models, align_to_reference
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Results live beside the other run outputs, not next to the code.
 HERE = _layouts.results_dir()
 BATCH_SEED_BASE = 1000     # match the original detector_removal_analysis.py exactly
@@ -38,27 +40,19 @@ print("=" * 70)
 print("Cross-layout check: does grid-scheme have the SAME critical detectors as center-scheme?")
 print("=" * 70)
 
-fnn, recon = load_models(DEVICE, fnn_folder=FNN_FOLDER, recon_dir=RECON_FOLDER + "_deepsets")
+sc = Scorer(n_batches=N_BATCHES, batch_size=BATCH_SIZE, seed_base=BATCH_SEED_BASE)
+fnn, recon = sc.fnn, sc.recon
 
 primary_all = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt"),
                          weights_only=False).float()
-n_total = primary_all.shape[0]
 
 
-def fresh_batch(seed):
-    g = torch.Generator().manual_seed(seed)
-    idx = torch.randint(0, n_total, (BATCH_SIZE,), generator=g)
-    return primary_all[idx].to(DEVICE)
+fresh_batch = sc.draw
+
+BATCHES = sc.batches
 
 
-BATCHES = [fresh_batch(BATCH_SEED_BASE + b) for b in range(N_BATCHES)]
-
-
-@torch.no_grad()
-def eval_U(x, y):
-    Us = [float(utility_of_xy(x.to(DEVICE), y.to(DEVICE), p, fnn, recon)[0].item()) for p in BATCHES]
-    return float(np.mean(Us))
-
+eval_U = sc.U
 
 def load_layout(path):
     d = torch.load(path, map_location="cpu", weights_only=False)
