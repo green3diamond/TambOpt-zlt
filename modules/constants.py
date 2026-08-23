@@ -31,6 +31,22 @@ LAYER_EAST_DX  = 500.0
 # Set at dataset-build time; the trained surrogate inherits this resolution.
 SIGMA_SPATIAL  = 50.0
 
+# A shower point counts as DETECTED at a detector when its deposit there —
+# energy * kernel acceptance — clears this. It defines the T label: T is the
+# time of the earliest detected point (see showers/kernel.py), so the threshold
+# sets where the leading edge is read, exactly like a trigger discriminator.
+# Swept over 1e-1..1e-6 on the malata 3-species testset (center_gauss400): the
+# TIME barely moves — encoded median 7.078 -> 7.066, std 0.471 -> 0.503 — so the
+# leading edge is robust and this only sets how many detectors report at all
+# (T > 0 at 27% -> 44% of detectors, per species). 1e-3 gives 35%, which covers
+# the 23.6% of detectors carrying E > 1 with margin; looser values only add
+# detectors whose whole deposit is marginal.
+#
+# E > 0 is a WEAKER condition than T > 0 and always will be: E sums many
+# sub-threshold deposits, so ~40% of detectors have E > 0 with no single
+# detected point and therefore T == 0. Do not treat T == 0 as "E == 0".
+HIT_DEPOSIT_MIN = 1e-3
+
 # Fixed architecture constants
 N_DETECTORS = 100
 # [dir_x, dir_y, dir_z, log_e_norm, pdg, rel_E, rel_N, rel_U]

@@ -149,7 +149,8 @@ def compute_labels_batch(clouds:   torch.Tensor,
         e_det  : (n_det,) East  — defined; sets depth / z_cont.
         n_det  : (n_det,) North — the kernel's transverse axis.
     Returns:
-        E, T : (B, n_det) local intensities and weighted-average times.
+        E, T : (B, n_det) local intensities and leading-edge arrival times
+               (seconds; 0 where no point cleared the detection threshold).
     """
     up     = surface(n_det, e_det)                       # Up = g(North, East)
     z_cont = (east_entry - e_det) / layer_east_dx        # depth from defined East
