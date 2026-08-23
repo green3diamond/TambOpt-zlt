@@ -54,7 +54,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 # NOTE: seed=42 is the exact batch every optimizer script (04_optimize_*.py)
 # trains/scores against, so layouts are specifically overfit to it -- it reads
-# ~10-15pts high vs genuinely fresh batches (see landscape_analysis.py Q3:
+# ~10-15pts high vs genuinely fresh batches (measured against 5 fresh seeds:
 # fresh-batch std across 5 seeds is only ~0.66, but the seed=42 batch is a
 # clear outlier relative to that spread). Batch seeds here deliberately avoid
 # 42 so this scan measures the same thing Q3 already established is a stable,
