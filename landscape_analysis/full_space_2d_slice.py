@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Random 2D slice through the full layout space.
+"""
+Random 2D slice through the full 200-dim layout space: all 100 detectors moved
+at once along two random directions, around both an optimized layout and a
+random one for contrast. Complements the single-detector grid scans, which vary
+only the 2 dims of one detector.
 
-Perturbs every detector simultaneously along two random directions and maps
-utility over the resulting plane, around both an optimized and a random layout
-for contrast. This is the standard loss-landscape slice, without the filter
-normalization step, which corrects a weight-space pathology that does not apply
-to detector positions: they already share one homogeneous physical scale.
+Li et al. 2018 ("Visualizing the Loss Landscape of Neural Nets") without the
+filter-normalization step, which corrects a ReLU scale invariance that detector
+positions do not have: these are metres, already on one homogeneous scale. Each
+direction is drawn N(0,1) per detector and NOT globally L2-normalized, so
+alpha/beta read directly as typical per-detector displacement in metres.
 
-Points that fall off the mountain are projected back onto it, so a large mean
-projection correction means the reading is distorted and the finer step range
-should be trusted instead.
+The default 400m sweep pushes boundary detectors past the mesh snap tolerance
+(~160m), so part of what it measures is snapping rather than landscape: the snap
+correction ran 39-70m mean, 169m max. Re-run with --step-range 100 --out-prefix
+full_space_2d_slice_fine for a cleaner reading, matching the surrogate's own
+kernel scale. Everything else is identical, so the two are comparable.
+
+--layout_path and --layout_tag select which saved layout to analyse; a tag sends
+output to other_optimizers/<tag>/. The random-layout panel is always drawn.
 """
 import argparse
 import os, sys, json, time
@@ -31,8 +40,9 @@ from modules.constants import (
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES,
     TRAINING_DATASET_FOLDER, FNN_FOLDER, RECON_FOLDER,
 )
-from modules.geometry import load_tr_mountain, project_to_mountain_ne
+from modules.geometry import load_tr_mountain
 from modules.optimize import utility_of_xy, load_models
+from modules.geometry import project_to_mountain_ne
 from modules.layouts import layout_uniform_random
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,6 +51,16 @@ DEFAULT_LAYOUT_PATH = _layouts.primary()
 ap = argparse.ArgumentParser()
 ap.add_argument("--layout_path", type=str, default=DEFAULT_LAYOUT_PATH,
                 help="Path to a layout_best.pt to analyze (default: L-BFGS-best).")
+ap.add_argument("--step-range", dest="step_range", type=float, default=400.0,
+                help="alpha/beta sweep half-range in metres. 400 is the original "
+                     "run. Use 100 to stay below the mesh snap tolerance (~160m), "
+                     "which the 400m run exceeded on boundary-adjacent detectors "
+                     "(mean snap correction 39-70m, max 169m). Everything else is "
+                     "identical, so the two are directly comparable.")
+ap.add_argument("--out-prefix", dest="out_prefix", type=str,
+                default="full_space_2d_slice",
+                help="Filename stem for the results. Give the 100m run its own "
+                     "stem so it does not overwrite the 400m one.")
 ap.add_argument("--layout_tag", type=str, default=None,
                 help="Label for this layout. If given, outputs land in "
                      "other_optimizers/<tag>/; if omitted, outputs use the original "
@@ -56,7 +76,7 @@ BATCH_SEED_BASE = 1000
 BATCH_SIZE = 512
 N_BATCHES = 4
 GRID_N = 21
-STEP_RANGE = 400.0   # alpha, beta range: [-STEP_RANGE, +STEP_RANGE] meters
+STEP_RANGE = args.step_range   # sweep is [-STEP_RANGE, +STEP_RANGE] metres
 N_DIR_PAIRS = 2
 RANDOM_LAYOUT_SEED = 7
 
@@ -113,10 +133,10 @@ for layout_tag, (base_x, base_y, base_U) in (
     ("random", (rand_x, rand_y, base_U_rand)),
 ):
     for pair_idx in range(N_DIR_PAIRS):
-        dN1 = torch.randn(N_DETECTORS)
-        dE1 = torch.randn(N_DETECTORS)
-        dN2 = torch.randn(N_DETECTORS)
-        dE2 = torch.randn(N_DETECTORS)
+        de1 = torch.randn(N_DETECTORS)
+        dn1 = torch.randn(N_DETECTORS)
+        de2 = torch.randn(N_DETECTORS)
+        dn2 = torch.randn(N_DETECTORS)
 
         tag = f"{layout_tag}_pair{pair_idx}"
         print(f"\n[{tag}] sweeping {GRID_N}x{GRID_N} grid, step range +/-{STEP_RANGE:.0f}m ...")
@@ -129,11 +149,11 @@ for layout_tag, (base_x, base_y, base_U) in (
         disp_grid = np.zeros((GRID_N, GRID_N), dtype=np.float32)
         for i, alpha in enumerate(alphas):
             for j, beta in enumerate(betas):
-                N_new = base_x + alpha * dN1 + beta * dN2
-                E_new = base_y + alpha * dE1 + beta * dE2
-                N_proj, E_proj = project_to_mountain_ne(mountain, N_new, E_new)
-                disp_grid[i, j] = float(((N_proj - N_new) ** 2 + (E_proj - E_new) ** 2).sqrt().mean())
-                U_grid[i, j] = eval_U(N_proj, E_proj)
+                e_new = base_x + alpha * de1 + beta * de2
+                n_new = base_y + alpha * dn1 + beta * dn2
+                e_proj, n_proj = project_to_mountain_ne(mountain, e_new, n_new)
+                disp_grid[i, j] = float(((e_proj - e_new) ** 2 + (n_proj - n_new) ** 2).sqrt().mean())
+                U_grid[i, j] = eval_U(e_proj, n_proj)
             if (i + 1) % 5 == 0:
                 print(f"  row {i+1}/{GRID_N}  ({time.time()-t0:.0f}s elapsed)")
         dt = time.time() - t0
@@ -174,7 +194,7 @@ for tag, r in results.items():
     ax.set_title(f"Full-space random 2D slice ({LAYOUT_LABEL}): {tag}")
     ax.legend(loc="upper right", fontsize=8)
     fig.tight_layout()
-    out_png = os.path.join(OUT_DIR, f"full_space_2d_slice_{tag}.png")
+    out_png = os.path.join(OUT_DIR, f"{args.out_prefix}_{tag}.png")
     fig.savefig(out_png, dpi=150)
     plt.close(fig)
     print(f"[plot] wrote {out_png}")
@@ -193,12 +213,12 @@ for tag, r in results.items():
     ax3d.set_title(f"Full-space random 2D slice (3D, {LAYOUT_LABEL}): {tag}")
     ax3d.view_init(elev=25, azim=-60)
     fig3d.tight_layout()
-    out_png_3d = os.path.join(OUT_DIR, f"full_space_2d_slice_{tag}_3d.png")
+    out_png_3d = os.path.join(OUT_DIR, f"{args.out_prefix}_{tag}_3d.png")
     fig3d.savefig(out_png_3d, dpi=150)
     plt.close(fig3d)
     print(f"[plot] wrote {out_png_3d}")
 
-out_json = os.path.join(OUT_DIR, "full_space_2d_slice_results.json")
+out_json = os.path.join(OUT_DIR, f"{args.out_prefix}_results.json")
 with open(out_json, "w") as f:
     json.dump(results, f, indent=2)
 print(f"\nSaved to {out_json}")

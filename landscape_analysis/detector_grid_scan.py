@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Single-detector utility grid scan.
+"""
+Single-detector utility grid scan.
 
-Takes a near-optimal layout, moves ONE detector over a grid spanning the
-mountain, holds the other detectors fixed, and re-evaluates utility at each grid
-point with the frozen surrogate and reconstruction. No optimization, just
-repeated forward evaluation, so it sees the full neighbourhood rather than the
-infinitesimal one a curvature probe reports.
+Take a near-optimal layout, move ONE detector over a grid spanning the mountain,
+hold the other 99 fixed, and re-evaluate U at each grid point with the frozen
+surrogate. No optimization, just repeated forward evaluation. A curvature probe
+sees only the infinitesimal neighbourhood of the optimum; this sees the full,
+possibly non-quadratic and non-local, structure of U in one detector's position.
 
-The grid is absolute and shared across the detectors swept, so two detectors
-reaching their maximum at the same point means that point is the best place to
-put a detector, not that the sweep moved the same one twice.
+Two detectors are swept, the one closest to the mountain bbox centre and the one
+farthest from it, to compare interior against edge sensitivity.
+
+--layout_path and --layout_tag select which saved layout to analyse; a tag sends
+output to other_optimizers/<tag>/ so a per-optimizer study stays separate.
 """
 import argparse
 import sys, os, json, time
@@ -31,8 +34,9 @@ from modules.constants import (
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES,
     TRAINING_DATASET_FOLDER, FNN_FOLDER, RECON_FOLDER,
 )
-from modules.geometry import load_tr_mountain, project_to_mountain_ne
+from modules.geometry import load_tr_mountain
 from modules.optimize import utility_of_xy, load_models
+from modules.geometry import project_to_mountain_ne
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEFAULT_LAYOUT_PATH = _layouts.primary()
@@ -54,7 +58,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 # NOTE: seed=42 is the exact batch every optimizer script (04_optimize_*.py)
 # trains/scores against, so layouts are specifically overfit to it -- it reads
-# ~10-15pts high vs genuinely fresh batches (measured against 5 fresh seeds:
+# ~10-15pts high vs genuinely fresh batches (see landscape_analysis.py Q3:
 # fresh-batch std across 5 seeds is only ~0.66, but the seed=42 batch is a
 # clear outlier relative to that spread). Batch seeds here deliberately avoid
 # 42 so this scan measures the same thing Q3 already established is a stable,
@@ -108,7 +112,7 @@ print(f"[{LAYOUT_LABEL}] U (re-evaluated, {N_BATCHES} fresh batches): {base_U:.4
 # Pick two detectors: closest to bbox center, and farthest from it (edge).
 cn = 0.5 * (mountain.n_min + mountain.n_max)
 ce = 0.5 * (mountain.east_lo + mountain.east_hi)
-d2 = (lbfgs_x - cn) ** 2 + (lbfgs_y - ce) ** 2
+d2 = (lbfgs_x - ce) ** 2 + (lbfgs_y - cn) ** 2
 idx_center = int(d2.argmin())
 idx_edge = int(d2.argmax())
 print(f"idx_center={idx_center}  pos=({lbfgs_x[idx_center]:.1f},{lbfgs_y[idx_center]:.1f})  "
@@ -122,7 +126,7 @@ e_grid = np.linspace(mountain.east_lo, mountain.east_hi, GRID_N).astype(np.float
 NN, EE = np.meshgrid(n_grid, e_grid, indexing="ij")
 grid_N_flat = torch.as_tensor(NN.reshape(-1), dtype=torch.float32)
 grid_E_flat = torch.as_tensor(EE.reshape(-1), dtype=torch.float32)
-grid_N_proj, grid_E_proj = project_to_mountain_ne(mountain, grid_N_flat, grid_E_flat)
+grid_E_proj, grid_N_proj = project_to_mountain_ne(mountain, grid_E_flat, grid_N_flat)
 
 results = {}
 for tag, idx in [("center", idx_center), ("edge", idx_edge)]:
@@ -130,18 +134,18 @@ for tag, idx in [("center", idx_center), ("edge", idx_edge)]:
     t0 = time.time()
     n_pts = GRID_N * GRID_N
     U_grid = np.zeros(n_pts, dtype=np.float32)
-    orig_N, orig_E = float(lbfgs_x[idx]), float(lbfgs_y[idx])
+    orig_E, orig_N = float(lbfgs_x[idx]), float(lbfgs_y[idx])
     for k in range(n_pts):
         x_mod = lbfgs_x.clone()
         y_mod = lbfgs_y.clone()
-        x_mod[idx] = grid_N_proj[k]
-        y_mod[idx] = grid_E_proj[k]
+        x_mod[idx] = grid_E_proj[k]
+        y_mod[idx] = grid_N_proj[k]
         U_grid[k] = eval_U_mean(x_mod, y_mod)
         if (k + 1) % 200 == 0:
             print(f"  {k+1}/{n_pts}  ({time.time()-t0:.0f}s elapsed)")
     U_grid_2d = U_grid.reshape(GRID_N, GRID_N)
     argmax_k = int(U_grid.argmax())
-    argmax_N, argmax_E = float(grid_N_proj[argmax_k]), float(grid_E_proj[argmax_k])
+    argmax_E, argmax_N = float(grid_E_proj[argmax_k]), float(grid_N_proj[argmax_k])
     dt = time.time() - t0
     print(f"[{tag}] done in {dt:.0f}s. U range [{U_grid.min():.3f}, {U_grid.max():.3f}]  "
           f"orig U={base_U:.3f} at ({orig_N:.1f},{orig_E:.1f})  "
@@ -173,7 +177,7 @@ for tag, r in results.items():
     plt.colorbar(im, ax=ax, label="U (this detector swept, other 99 fixed)")
     other_mask = np.ones(N_DETECTORS, dtype=bool)
     other_mask[idx] = False
-    ax.scatter(lbfgs_y[other_mask], lbfgs_x[other_mask], s=8, c="white",
+    ax.scatter(lbfgs_x[other_mask], lbfgs_y[other_mask], s=8, c="white",
                edgecolor="black", linewidth=0.3, label="other 99 detectors (fixed)")
     ax.scatter([orig_E], [orig_N], marker="*", s=250, c="red",
                edgecolor="black", label=f"optimized position ({LAYOUT_LABEL})")

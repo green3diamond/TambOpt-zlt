@@ -18,14 +18,10 @@ from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 import layouts as _layouts  # noqa: E402  (input/output locations)
 import modules  # noqa: F401 — package import; keeps modules on the path
 
-from modules.constants import (
-    N_DETECTORS, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
-    EAST_ENTRY, LAYER_EAST_DX, N_PLANES,
-    TRAINING_DATASET_FOLDER, FNN_FOLDER, RECON_FOLDER,
-)
-from modules.geometry import load_tr_mountain, project_to_mountain_ne
-from modules.optimize import utility_of_xy, load_models
+from common import Scorer
+from modules.geometry import project_to_mountain_ne
 from modules.layouts import layout_grid, layout_uniform_random
+from modules.constants import N_DETECTORS
 
 
 def layout_edge_ring(mountain, n_det: int = N_DETECTORS, rng=None):
@@ -34,8 +30,8 @@ def layout_edge_ring(mountain, n_det: int = N_DETECTORS, rng=None):
     maximal boundary reach.
 
     Lives here rather than in `modules.layouts` because it is a probe, not a
-    generator any dataset build draws from. It exists to ask whether the utility
-    rewards full-area coverage or only the envelope of that area.
+    generator any dataset build should draw from. It exists to ask whether the
+    utility rewards full-area coverage or only the envelope of that area.
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -68,9 +64,7 @@ def layout_edge_ring(mountain, n_det: int = N_DETECTORS, rng=None):
                                   torch.as_tensor(E, dtype=torch.float32),
                                   torch.as_tensor(N, dtype=torch.float32))
 
-DEVICE = torch.device("cpu")
 SEED = 42
-BATCH_SIZE = 512
 N_SEEDS = 5     # independent layout instantiations per strategy (jitter/phase differs)
 N_BATCHES = 5   # independent fresh primary batches per layout (avoid batch-overfitting bias)
 
@@ -78,25 +72,12 @@ print("=" * 70)
 print("Q3 follow-up: edge-ring vs. uniform grid coverage")
 print("=" * 70)
 
-fnn, recon = load_models(DEVICE, fnn_folder=FNN_FOLDER, recon_dir=RECON_FOLDER + "_deepsets")
-mountain = load_tr_mountain(GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
-    east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX, n_planes=N_PLANES)
-
-primary_all = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt"),
-                         weights_only=False).float()
-n_total = primary_all.shape[0]
-
-
-def fresh_batch(seed):
-    g = torch.Generator().manual_seed(seed)
-    idx = torch.randint(0, n_total, (BATCH_SIZE,), generator=g)
-    return primary_all[idx].to(DEVICE)
-
-
-@torch.no_grad()
-def eval_U(x, y, primary):
-    U, r, _ = utility_of_xy(x.to(DEVICE), y.to(DEVICE), primary, fnn, recon)
-    return float(U.item()), float(r.mean().item())
+# Batches are drawn per (layout seed) below rather than held fixed, so ask the
+# scorer for none up front and use its draw() directly.
+sc = Scorer(n_batches=0, device=torch.device("cpu"))
+mountain = sc.mountain
+fresh_batch = sc.draw
+eval_U = sc.U_on
 
 
 strategies = {
