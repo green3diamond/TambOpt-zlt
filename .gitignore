@@ -24,3 +24,6 @@ plots/paper_figures/
 # Claude Code worktrees — never commit these (one was accidentally
 # recorded as a gitlink; the branch itself is the durable copy)
 .claude/worktrees/
+
+# Shower packs for tests/ live with the run outputs on holylfs05, not in git
+*.npz

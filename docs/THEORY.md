@@ -505,16 +505,12 @@ Search ran on a 10% subset; numbers are relative z-scored val-MSE within the sea
 
 ### 10.2 Path-c schedule de-risk (2026-06-04) — failed, reverted
 
-A controlled attempt to lift the *production flat MLP* by schedule/optimizer alone (LR-range test → AdamW + weight decay, dropout off, raised LR floor, L-BFGS capped, OneCycle `final_div_factor` fix) **regressed** (val 0.60 vs 0.40). The conditional metrics exposed the real failure mode:
-
-| metric | value | meaning |
-|--------|-------|---------|
-| E R² (all detectors) | 0.45 | flattering — dominated by empty detectors |
-| **E R² (fired only)** | **−0.14** | worse than predicting the fired-channel mean |
-| fire precision / recall | 0.42 / 0.99 | **over-fires**, leaking energy onto empty detectors |
-| fired pred/target std | 0.69 | magnitude compression — predict-the-mean |
-
-All path-c edits were reverted; the working tree matches §4.3.
+Lifting the production flat MLP by schedule/optimiser alone (AdamW + weight decay,
+dropout off, raised LR floor, capped L-BFGS, OneCycle `final_div_factor`) regressed
+val 0.40 → 0.60. All edits reverted. The lesson is §10.3: total val-MSE flattered
+the model while **E R² on fired detectors was −0.14** — worse than the fired-channel
+mean — with fire precision 0.42 against recall 0.99, i.e. over-firing energy onto
+empty detectors.
 
 ### 10.3 Standing recommendation
 
