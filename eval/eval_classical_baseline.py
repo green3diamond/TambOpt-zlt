@@ -1,31 +1,28 @@
-"""Non-learned baseline: how well does a plane-wave fit reconstruct direction?
+"""Classical baseline: how well does a plane-wave fit reconstruct direction?
 
-Fits the shower front as a plane across fired detectors and compares the
-resulting direction against truth, giving a floor that any learned
-reconstruction should beat. Because the fit treats T as a physical arrival
-time, it requires the kernel to return the kernel-weighted MEAN arrival time;
-an unnormalized time silently invalidates the linear model.
+Fits the shower front directly from detector positions and arrival times, with no
+network anywhere, so it bounds what the timing alone carries. The learned recon
+should beat it; if it does not, the network is not adding information.
 
-Scored on the same events and layout as the learned evaluators, so the numbers
-are directly comparable.
+    python eval/eval_classical_baseline.py --n-events 2000
 """
 import argparse, math, os, sys
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 
 import numpy as np, torch
+import common as _common  # noqa: E402  (shared eval setup)
 import modules  # noqa: F401 — package import; keeps modules on the path
 from modules.data import compute_labels_batch
-from modules.geometry import SurfaceUpMap, load_tr_mountain
+from modules.geometry import SurfaceUpMap
+from modules.geometry import load_tr_mountain
 from modules.constants import (
     GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES,
 )
-import importlib.util as _ilu
-_spec = _ilu.spec_from_file_location("_etu", os.path.join(_ROOT, "plots", "eval_true_utility.py"))
-_etu = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_etu)
+_etu = _common.load_true_utility()
 
 # Vacuum speed of light [m/s]. Documented for the model in the module docstring; the
 # fit itself never needs to divide by it, since normalizing beta[1:4] to a unit
@@ -37,12 +34,28 @@ BANDS = [(0, 4, "0-4"), (5, 14, "5-14"), (15, 29, "15-29"), (30, None, "30+")]
 
 
 def fit_plane_wave(positions, times, weights, min_detectors=4, ref_dir=None):
-    """Least-squares plane-wave fit to per-detector arrival times.
+    """Weighted least-squares plane-wave timing fit for a SINGLE event.
 
-    Solves for the shower-front normal from (x, y, t) over fired detectors and
-    returns the implied direction. Requires t to be a physical arrival time.
-    Events with too few fired detectors to constrain the plane are skipped.
+    Model t_i = t0 + (d . r_i) / c, linear in (t0, d/c). Design rows are
+    (1, East, North, Up), scaled by sqrt(weight) so brighter detectors dominate.
+    The direction is beta[1:4] renormalized; the common 1/c cancels.
+
+    `ref_dir` resolves the sign: the model is unambiguous in principle, but which
+    sign the corpus's stored directions use is worth checking against data rather
+    than assuming, so a caller can pin every event to one convention.
+
+    Args:
+        positions     : (n, 3) detector (East, North, Up) [m].
+        times         : (n,) combined arrival times [s].
+        weights       : (n,) nonnegative fit weights, typically detector counts.
+        min_detectors : below this the 4-unknown system is underdetermined and
+            None is returned rather than an unreliable fit.
+        ref_dir       : optional (3,) reference direction for sign resolution.
+
+    Returns:
+        (3,) unit direction tensor, or None if underdetermined or degenerate.
     """
+
     positions = torch.as_tensor(positions)
     times = torch.as_tensor(times)
     weights = torch.as_tensor(weights)
@@ -124,9 +137,9 @@ def main():
                            east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX, n_planes=N_PLANES)
     surf = SurfaceUpMap.from_mountain(mtn).to(dev)
 
-    corpus_path, _ = _etu._corpus_paths(args.corpus)
+    corpus_path, _ = _common._corpus_paths(args.corpus)
     elec, muon, B, n_pairs = _etu.load_events(args.n_events, dev, corpus_override=args.corpus)
-    prim = _etu.build_primaries(corpus_path, B, mtn).to(dev)
+    prim = _common.build_primaries(corpus_path, B, mtn).to(dev)
 
     if args.layout == "grid":
         e_l, n_l = _etu.grid_layout(mtn)

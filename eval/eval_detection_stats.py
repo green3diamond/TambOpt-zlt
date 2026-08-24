@@ -1,36 +1,30 @@
-"""Detection diagnostic: how many detectors light up, kernel vs surrogate.
+"""Detection statistics: which detectors light up, kernel against surrogate.
 
-Measures DETECTION, not reconstruction quality. On the same held-out events and
-layout, compares how many detectors cross the firing threshold under the
-ground-truth kernel against the learned surrogate that stands in for it during
-recon training and layout optimization. Compared in raw count units: the
-surrogate's log1p output is passed through expm1 first. A detector is "lit" if
-its count exceeds --threshold (default 1.0, the utility's firing threshold).
+Compares the two on the same showers and the same layout, where they should
+agree. Reports the lit-count distributions, the per-event pairing, a confusion
+breakdown over detector slots, and efficiency binned by energy and by decay
+distance.
 
-Reports the per-event n_lit distribution per source and their difference, total
-particles per event, where the surrogate's excess falls on kernel-dark slots,
-the per-detector confusion matrix with precision/recall/F1, and detection
-efficiency binned by primary energy and by decay-vertex distance.
-
-Chunked over events, so it scales without holding whole
-(events, points, detectors) intermediates; the chunked result is exact.
+    python eval/eval_detection_stats.py --n-events 8000 --layout grid
 """
 import argparse
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 
 import numpy as np
 import torch
 
+import common as _common  # noqa: E402  (shared eval setup)
 import modules  # noqa: F401 — package import; keeps modules on the path
 from modules.optimize import load_models
-from modules.data import compute_labels_batch
-from modules.geometry import SurfaceUpMap, load_tr_mountain
+from modules.data.dataset_builder import compute_labels_batch
+from modules.geometry import SurfaceUpMap
+from modules.geometry import load_tr_mountain
 from modules.constants import (
     GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, LOG_E_MIN, LOG_E_MAX,
@@ -38,9 +32,7 @@ from modules.constants import (
     FNN_FOLDER,
 )
 
-import importlib.util as _ilu
-_spec = _ilu.spec_from_file_location("_etu", os.path.join(_ROOT, "plots", "eval_true_utility.py"))
-_etu = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_etu)
+_etu = _common.load_true_utility()
 
 N_DET_THRESHOLDS = (1, 5, 10, 20)
 N_ENERGY_BINS = 8
@@ -572,9 +564,9 @@ def main():
                            east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX, n_planes=N_PLANES)
     surf = SurfaceUpMap.from_mountain(mtn).to(dev)
 
-    corpus_path, _ = _etu._corpus_paths(args.corpus)
+    corpus_path, _ = _common._corpus_paths(args.corpus)
     elec, muon, B, n_pairs = _etu.load_events(args.n_events, dev, corpus_override=args.corpus)
-    prim = _etu.build_primaries(corpus_path, B, mtn).to(dev)
+    prim = _common.build_primaries(corpus_path, B, mtn).to(dev)
 
     fnn, _recon = load_models(dev,
                               fnn_folder=args.fnn_folder or FNN_FOLDER,

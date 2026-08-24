@@ -11,23 +11,24 @@ what this diagnostic question needs.
     python eval/optimize_and_track.py --recon_dir <dir> --steps 5000
 """
 import argparse, json, os, sys, time
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 
 import numpy as np, torch
+import common as _common  # noqa: E402  (shared eval setup)
 import modules  # noqa: F401 — package import; keeps modules on the path
 from modules.optimize import load_models, utility_of_xy
-from modules.geometry import project_to_mountain_ne, SurfaceUpMap, load_tr_mountain
+from modules.geometry import project_to_mountain_ne
+from modules.geometry import SurfaceUpMap
+from modules.geometry import load_tr_mountain
 from modules.constants import (
     GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, TRAINING_DATASET_FOLDER,
     FNN_FOLDER, RECON_FOLDER,
 )
-import importlib.util as _ilu
-_spec = _ilu.spec_from_file_location("_etu", os.path.join(_ROOT, "plots", "eval_true_utility.py"))
-_etu = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_etu)
+_etu = _common.load_true_utility()
 
 
 def main():

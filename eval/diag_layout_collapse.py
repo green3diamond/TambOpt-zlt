@@ -1,23 +1,23 @@
 """How much of an optimized layout's gain survives a separation floor?
 
 Optimized layouts can place detectors arbitrarily close together, which is not
-buildable. This enforces a minimum pairwise separation, re-scores the layout,
-and reports how much utility is lost, against the grid and centre baselines for
-scale. Scoring reuses eval_true_utility so the numbers are comparable to it.
+buildable. This enforces a minimum pairwise separation, re-scores the layout, and
+reports the utility lost, against the grid and centre baselines for scale.
+Scoring reuses the shared scorer so the numbers stay comparable.
 
 A small loss means the near-coincident detectors are cosmetic; a large one means
-the reported gain depends on an unbuildable geometry.
+the reported gain depends on a geometry nobody can build.
 """
 import argparse
 import json
 import os
 import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # eval_true_utility stays in plots/ (it is shared with upstream), so reach it
 # through the repo root rather than through this script's own directory.
-_PLOTS = os.path.join(_ROOT, "plots")
-for _p in (_ROOT, _PLOTS):
+_PLOTS = os.path.join(_HERE, "plots")
+for _p in (_HERE, _PLOTS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
@@ -25,16 +25,18 @@ from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 import numpy as np
 import torch
 
+import common as _common  # noqa: E402  (shared eval setup)
 import modules  # noqa: F401 — package import; keeps modules on the path
 from modules.optimize import load_models
-from modules.geometry import load_tr_mountain, SurfaceUpMap
+from modules.geometry import load_tr_mountain
+from modules.geometry import SurfaceUpMap
 from modules.constants import (
     GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES,
     FNN_FOLDER, RECON_FOLDER,
 )
 
-import eval_true_utility as _etu
+_etu = _common.load_true_utility()
 
 
 def pair_stats(e, n):
@@ -121,9 +123,9 @@ def main():
                                 n_planes=N_PLANES)
     surf = SurfaceUpMap.from_mountain(mountain).to(dev)
 
-    corpus_path, _ = _etu._corpus_paths(args.corpus)
+    corpus_path, _ = _common._corpus_paths(args.corpus)
     elec, muon, B, n_pairs = _etu.load_events(args.n_events, dev, corpus_override=args.corpus)
-    prim = _etu.build_primaries(corpus_path, B, mountain).to(dev)
+    prim = _common.build_primaries(corpus_path, B, mountain).to(dev)
     kfn = _etu.KernelDualLabels(elec, muon, surf, dev, chunk=args.kernel_chunk)
     fnn, recon = load_models(dev,
                              fnn_folder=args.fnn_folder or FNN_FOLDER,
