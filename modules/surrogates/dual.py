@@ -3,18 +3,21 @@
 The per-species files are the same simulated events split by secondary species,
 so a physical event needs both models run on the same primary and layout.
 
-Combination happens in PHYSICAL space, not elementwise, because both channels
-are log-compressed (E = log1p(counts), T = log1p(T_phys * T_LOG_SCALE)):
+Combination follows the kernel's own definitions rather than being elementwise.
+Both channels are log-compressed (E = log1p(counts), T = log1p(T_phys *
+T_LOG_SCALE)):
 
-    N_tot = N_e + N_mu                        counts add
-    t_tot = (N_e*t_e + N_mu*t_mu) / N_tot     count-weighted, as the kernel defines T
+    N_tot = N_e + N_mu                        deposits add
+    t_tot = min(t_e, t_mu)                    leading edge: whoever arrived first
 
-then re-encoded to the same log channels. Keeps the single-surrogate contract
+E is decoded, summed and re-encoded; T's monotone encoding lets the min run in
+place. Keeps the single-surrogate contract
 `fnn(primary, xy) -> (B, n_det, 2)`, and both branches stay in the autograd
 graph so Step 4 backprops through both. See docs/THEORY.md §3.6 and §5.6.
 """
 
 import os
+import time
 
 import torch
 import torch.nn as nn
@@ -34,33 +37,45 @@ MUON_CKPT     = species_ckpt_name("muon")
 def combine_species_outputs(*preds: torch.Tensor) -> torch.Tensor:
     """Physically combine per-species (B, n_det, 2) predictions into one event.
 
-    Counts are extensive so they add, and the kernel defines T as a
-    count-weighted mean, so both generalise to any number of components:
+    Deposits are extensive so they add; T is a LEADING EDGE, so the event's
+    arrival is whichever species got there first. Both generalise to any number
+    of components:
 
-        n_tot = Σ n_s              t_tot = Σ (n_s · t_s) / n_tot
+        n_tot = Σ n_s              t_tot = min_s t_s   (over species that hit)
 
-    Differentiable everywhere; negative model outputs are clamped to zero
-    counts / zero time before combining (a detector with no predicted signal
-    contributes nothing, matching the kernel's behavior on empty clouds).
+    The min is what makes this species-count independent: `min` is associative
+    and idempotent, so splitting a shower into more components cannot move the
+    combined arrival. The count-weighted mean it replaced could — with three
+    comparable species it returned roughly a third of the kernel's own value,
+    because the kernel's T was additive, not a mean.
 
-    Variadic, and exactly equivalent to the old two-argument form for two
-    inputs — the sum is accumulated in the given order, so `(e, mu)` still
-    produces bit-identical results.
+    A species with no predicted signal at a detector (n_s <= 0, encoded T <= 0)
+    is EXCLUDED from the min rather than contributing t=0; it never arrived, and
+    letting its sentinel win would report an arrival the shower never produced.
+    Detectors no species hits keep the 0 sentinel.
+
+    `log1p(t * T_LOG_SCALE)` is strictly increasing, so the min commutes with it
+    and T needs no decode/re-encode round trip — only E does.
+
+    Differentiable a.e. (min is, at the selected branch); negative model outputs
+    are clamped to zero. Variadic; for two inputs the E sum still accumulates in
+    the given order, so `(e, mu)` is bit-identical to the old two-argument form.
     """
     if not preds:
         raise ValueError("combine_species_outputs needs at least one prediction")
 
     n_tot = None
-    nt_sum = None
+    t_enc = None                        # still log1p(t * T_LOG_SCALE)
     for pred in preds:
-        n_s = torch.expm1(pred[..., 0]).clamp(min=0.0)                  # counts
-        t_s = torch.expm1(pred[..., 1]).clamp(min=0.0) / T_LOG_SCALE    # seconds
+        n_s = torch.expm1(pred[..., 0]).clamp(min=0.0)                  # deposits
+        e_s = pred[..., 1].clamp(min=0.0)                               # encoded T
         n_tot = n_s if n_tot is None else n_tot + n_s
-        nt_sum = n_s * t_s if nt_sum is None else nt_sum + n_s * t_s
+        # Exclude non-hits from the min by sending them to +inf.
+        cand = torch.where(e_s > 0, e_s, torch.full_like(e_s, float("inf")))
+        t_enc = cand if t_enc is None else torch.minimum(t_enc, cand)
 
-    t_tot = nt_sum / n_tot.clamp(min=1e-12)
     E_out = torch.log1p(n_tot)
-    T_out = torch.log1p(t_tot * T_LOG_SCALE)
+    T_out = torch.where(torch.isinf(t_enc), torch.zeros_like(t_enc), t_enc)
     return torch.stack([E_out, T_out], dim=-1)
 
 
@@ -146,6 +161,21 @@ class MultiSpeciesSurrogate(nn.Module):
 DualSpeciesSurrogate = MultiSpeciesSurrogate
 
 
+def _ckpt_provenance(path: str) -> str:
+    """Absolute path + mtime of a checkpoint, for the load line.
+
+    The load line names only the FILE, which is identical in every run world, so
+    nothing in a log distinguishes one run's checkpoint from another's.
+    """
+    ap = os.path.abspath(path)
+    try:
+        st = os.stat(ap)
+    except OSError as e:
+        return f"{ap}  [UNREADABLE: {e.strerror}]"
+    return (f"{ap}  mtime="
+            f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(st.st_mtime))}")
+
+
 def load_dual_surrogate(folder: str,
                         device: torch.device,
                         n_det: int = N_DETECTORS,
@@ -167,7 +197,8 @@ def load_dual_surrogate(folder: str,
         models.append(build_surrogate_from_ckpt(ckpt, n_det, primary_dim, device))
         cfg = ckpt.get("config", {})
         print(f"[load] {fname}  model={cfg.get('model_type', 'fnn')}  "
-              f"epoch={ckpt.get('epoch', '?')}  val={ckpt.get('val_total', '?')}")
+              f"epoch={ckpt.get('epoch', '?')}  val={ckpt.get('val_total', '?')}\n"
+              f"       {_ckpt_provenance(path)}", flush=True)
     dual = MultiSpeciesSurrogate(models, species).to(device)
     dual.eval()
     return dual
