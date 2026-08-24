@@ -1,8 +1,12 @@
 # AllShowers muon model: rare degenerate showers ("blobs")
 
-The muon AllShowers checkpoint occasionally emits a shower that is wrong in both
-geometry and energy scale. They are rare, finite, and pass every guard currently
-in the pipeline, so they reach the training targets.
+The muon AllShowers checkpoint occasionally emits a shower wrong in both geometry
+and energy scale. Rare, finite, and they passed every guard in the pipeline, so
+they reached the training targets: a total deposit of 2e14 becomes a Step-2
+`log1p(counts)` target of ~33 where normal is single digits.
+
+Rates and the guard that now excludes them: `BLOB_GUARD_FINDINGS.md`.
+Ours vs upstream, and the suspected mechanism: `UPSTREAM_COMPARISON.md`.
 
 ## Reproduce
 
@@ -11,18 +15,16 @@ python repro_blob_showers.py                      # diagnostic table
 python repro_blob_showers.py --plot blobs.png     # + 3D comparison
 ```
 
-numpy + matplotlib only — no TambOpt, no showerdata, no GPU, no checkpoints.
-
-The three showers live in `blob_showers.npz` (1.1 MB), kept with the run outputs
-rather than in git because it is data:
+numpy + matplotlib only — no TambOpt, showerdata, GPU or checkpoints. The three
+showers live in `blob_showers.npz` (1.1 MB), kept with the run outputs rather than
+git because it is data; the script defaults to
 
 ```
 /n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/
     detector_optimization_v6/tests/blob_showers.npz
 ```
 
-That is the script's default. Off-cluster, copy the file next to the script and
-pass `--npz blob_showers.npz`.
+Off-cluster, copy it next to the script and pass `--npz blob_showers.npz`.
 
 ## What you should see
 
@@ -36,30 +38,26 @@ pass `--npz blob_showers.npz`.
 | top-100 points' share | 40% | 7.6% | 7.2% |
 
 In 3D the good shower is a **rod** with the 24 observation planes visible as
-discrete slabs; both blobs are structureless balls with no plane structure,
-spread over tens of km and sitting far off-axis.
+discrete slabs; both blobs are structureless balls, spread over tens of km and far
+off-axis.
 
 ## Why it is not the obvious things
 
-- **Not a single corrupt value.** A normal shower is spiky — its top 100 points
-  hold ~40% of the energy. The blobs hold ~7%, i.e. *more uniform* than normal.
-  A single bad number would give a top-1 share near 1.0; it is 0.002. Every one
-  of the ~23,000 points is inflated by the same factor.
-- **Not non-finite.** `np.isfinite` is True everywhere, so the existing
-  sanitization (which zeroes non-finite points) does not see them.
-- **Not only truncation.** `blob_at_cap` sits exactly at the 25,088 point cap, so
-  it is the known "rod → blob" truncation mode. But `blob_below_cap` has 23,240
-  points — under the cap, never truncated. The anti-clip re-roll could not have
-  prevented that one, so truncation is at most part of the story.
-- **Not a code difference.** All three rows come from the same corpus, the same
-  Step-0 invocation, the same checkpoint — rows 836, 996 and 1,299 of the muon
-  block. Same code, same weights, different random draw.
+- **Not one corrupt value.** A normal shower is spiky (top 100 points ≈ 40% of the
+  energy); the blobs hold ~7%, *more uniform* than normal, top-1 share 0.002. All
+  ~23,000 points are inflated by the same factor.
+- **Not non-finite.** `np.isfinite` is True everywhere, so sanitization that zeroes
+  non-finite points cannot see them.
+- **Not only truncation.** `blob_at_cap` sits exactly at the 25,088 cap (the known
+  rod→blob mode), but `blob_below_cap` has 23,240 points and was never truncated.
+- **Not a code difference.** All three rows: one corpus, one Step-0 invocation, one
+  checkpoint — muon rows 836, 996, 1,299. Same weights, different draw.
 
-The suspected mechanism is the inverse energy transform (an exp of a latent)
-landing far off for that sample. The generator already guards the *opposite*
-extreme — its own comment notes the transform "can emit EXACTLY 0.0 for extreme
-negative latents (float32 underflow)". This looks like the positive-latent
-counterpart, and nothing catches it.
+## Cheapest discriminator found
+
+Median point energy: **3.3 normal vs 1e8–4e9 corrupt**. One `np.median` per shower,
+better separated than any per-plane or total-energy ratio tried (those leave the two
+ranges nearly touching). This is what `BLOB_MEDIAN_E` uses.
 
 ## Provenance
 
@@ -71,24 +69,3 @@ model   checkpoints/20260520_160031_Muons-Allshower
         checkpoints/20260521_043912_Muon-PointCountFM/compiled.pt
         trained on h5_files_v3/combined_muons.h5
 ```
-
-## Rate
-
-Not yet established. In 4,000 scanned rows per species, 9 muon showers had
-total/primary > 100. A full-block scan of the electron half (572,164 rows) found
-409 rows above 10× on the max-plane statistic and 9 above 1000×, so **electron is
-affected too**, roughly 40× more rarely — rare enough that a 6,000-row sample
-contained none. The muon full-block scan was not completed.
-
-## Why it matters downstream
-
-Step 1 turns these into surrogate training targets as `log1p(counts)`. A total of
-2e14 becomes a target of ~33 where normal is single digits, so the per-species
-muon surrogate was fit against contaminated targets.
-
-## Cheapest discriminator found
-
-Median point energy: **3.3 normal vs 1e8–4e9 corrupt** — eight orders of
-magnitude of clean air, no threshold tuning needed, one `np.median` per shower.
-Better separated than any per-plane or total-energy ratio we tried (those leave
-normal and corrupt ranges nearly touching).
