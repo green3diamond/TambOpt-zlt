@@ -122,6 +122,8 @@ def flag_blob_showers(clouds: torch.Tensor,
     loaded cloud and replicated across strategies. Padding rows carry energy 0
     and are excluded from the median; a cloud with no energy-carrying point at
     all is not a blob (it is empty, which the E channel already reports as 0).
+    A shower carrying any non-finite energy is flagged too — see the comment on
+    the return.
 
     Args:
         clouds : (M, P, 5) point clouds — placed or native, either works, since
@@ -135,7 +137,13 @@ def flag_blob_showers(clouds: torch.Tensor,
     # drag the median down nor need a ragged gather.
     masked = torch.where(live, e, torch.full_like(e, float("nan")))
     med = masked.nanmedian(dim=1).values                  # NaN where no live point
-    return torch.nan_to_num(med, nan=0.0) > blob_median_e
+    hot = torch.nan_to_num(med, nan=0.0) > blob_median_e
+    # NaN energies would otherwise slip through: `live` rejects them (NaN > 0 is
+    # False) so they never reach the median, and the Step-0 underflow guard sorts
+    # on `e <= 0`, which is also False for NaN. Since the Step-0 ratio re-roll —
+    # the only other place non-finite points were tested — was removed, this is
+    # the last check that sees them. +inf needs no special case (inf > cut).
+    return hot | ~torch.isfinite(e).all(dim=1)
 
 
 # ── Label computation (batched over showers, one shared layout per batch) ────

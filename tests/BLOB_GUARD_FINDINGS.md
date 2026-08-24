@@ -1,5 +1,12 @@
 # The re-roll does not recover degenerate showers
 
+> **Resolved.** The re-roll was removed rather than set to 0. The Step-1
+> flag (`flag_blob_showers` / `BLOB_MEDIAN_E`) now carries the whole
+> defense, and picked up the non-finite test the ratio check used to own.
+> The open question below — what to do with a primary this model cannot
+> render — is still open; those rows are flagged and excluded from the
+> fit, not dropped from the corpus.
+
 `937ad26` added a Step-0 guard that re-generates a shower whose deposited/primary
 energy ratio is degenerate, reasoning that AllShowers draws fresh noise per call
 so a re-run redraws. The redraw is real. **The recovery is not.**
