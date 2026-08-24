@@ -117,37 +117,6 @@ DEVICE        = torch.device("cuda")
 MAX_CLIP_FRAC    = 0.10
 MAX_PCFM_RETRIES = 10
 
-# Degenerate-shower ("blob") re-generation. A rare draw comes back with EVERY
-# point's energy inflated by one common factor: the inverse energy transform is
-# an unguarded exp of a latent (allshowers/preprocessing.py Log.inverse), so a
-# latent landing high rescales the whole cloud. Such a shower is FINITE and its
-# point count is normal, so neither the underflow guard in _gen_chunk nor the
-# anti-clip re-roll above can see it — and left in, one shower totalling 2.06e14
-# reaches Step 2 as a log1p target of ~33 where normal is single digits.
-#
-# The discriminator is deposited energy / primary energy. There is NO gap
-# between the good and bad populations: measured over all 1,144,328 rows of the
-# 07 corpus the muon tail is continuously filled from ~10 up to 1e27. So each
-# cut is placed at its own species' KNEE, where the quantile curve stops being
-# smooth and starts escalating:
-#   muon      p99=6.0   p99.5=10.1  p99.7=41.9  p99.8=112  p99.9=665
-#   electron  p99.9=14.6  p99.95=19.2  p99.97=24.2  p99.99=58
-# The species need different numbers because their bulks differ (median ratio
-# 0.21 for muons, 3.15 for electrons). At these cuts 0.39% of muon and 0.022%
-# of electron showers are re-generated. Because there is no gap the cut does
-# clip some legitimate tail, but it is insensitive: moving the muon cut from 20
-# to 100 changes the re-generated fraction by only 0.18% of rows.
-#
-# photon was NOT in the corpus these were measured on — its value is inherited
-# from the electron knee and should be re-measured with tests/scan_corpus_blobs.py.
-#
-# MAX_BLOB_RETRIES = 3 because failures concentrate at high primary energy (the
-# muon top E_prim decile fails at 3.1%, the bottom at 0.03%), so the per-draw
-# probability for the showers that actually fail is ~3%, not the 0.39% average;
-# 3 retries leaves ~1e-6 residual there. Set to 0 to disable.
-MAX_TOTAL_OVER_PRIM = {"electron": 30.0, "muon": 20.0, "photon": 30.0}
-MAX_BLOB_RETRIES    = 3
-
 # State-dict wrapper keys to probe when checkpoints/best_epoch_*.pt is not already
 # a flat tensor dict (the Generator wants the raw flow state_dict).
 _WRAP_KEYS = ("model", "model_state_dict", "state_dict", "ema", "ema_model",
@@ -283,11 +252,7 @@ def resample_overclip(pcfm, energies, directions, labels, num_points, cap,
 
 
 def _generate_batched(gen, energies, num_points, directions, labels, sp_batch):
-    """AllShowers generate with OOM back-off, returning (samples, sp_batch).
-
-    The reduced batch is handed back so a caller that generates more than once
-    (the blob re-roll below) keeps the size this GPU was already shown to fit
-    instead of rediscovering it from scratch."""
+    """AllShowers generate with OOM back-off."""
     while True:
         try:
             samples = generate(
@@ -295,7 +260,7 @@ def _generate_batched(gen, energies, num_points, directions, labels, sp_batch):
                 angles=directions, batch_size=sp_batch, device=str(DEVICE),
                 labels=labels,
             ).float().cpu()                                # (n, sp_max_points, 5)
-            return samples, sp_batch
+            return samples
         except torch.OutOfMemoryError:
             if sp_batch == 1:
                 raise
@@ -304,80 +269,15 @@ def _generate_batched(gen, energies, num_points, directions, labels, sp_batch):
             print(f"  [oom] retrying generate at batch {sp_batch}", flush=True)
 
 
-def _deposited_over_primary(samples, energies):
-    """Deposited energy / primary energy, one value per shower.
-
-    Padding rows carry energy 0 and contribute nothing. Non-finite points
-    propagate through the sum into the ratio, so the single `isfinite` test in
-    the caller covers NaN/inf as well as the inflated-but-finite blobs (the 07
-    corpus holds one inf muon row alongside its 487 finite ones)."""
-    tot = samples[:, :, 3].clamp(min=0).sum(dim=1).to(torch.float64)
-    return tot / energies.reshape(-1).to(torch.float64).clamp(min=1e-30)
-
-
-def regenerate_degenerate(gen, name, samples, energies, num_points, directions,
-                          labels, sp_batch, max_ratio, max_retries=MAX_BLOB_RETRIES):
-    """Re-generate showers whose deposited/primary energy ratio is degenerate.
-
-    AllShowers draws fresh noise per call and Step 0 never seeds it, so simply
-    re-running the failed subset yields a different shower from the same
-    conditioning. Each pass REPLACES the previous draw for those rows only; a
-    shower that comes back clean stops being re-rolled, and one still bad after
-    the budget keeps its last draw and is reported. Mutates `samples` in place
-    and returns (samples, sp_batch). No-op when max_retries <= 0.
-
-    Re-rolling rather than dropping is required, not stylistic: corpus rows are
-    paired events with row-indexed species/position sidecars, so removing a row
-    would desynchronise the pairing and both sidecars.
-
-    See MAX_TOTAL_OVER_PRIM for where `max_ratio` comes from."""
-    if max_retries <= 0 or not max_ratio:
-        return samples, sp_batch
-
-    n = int(samples.shape[0])
-    ratio = _deposited_over_primary(samples, energies)
-    for attempt in range(1, max_retries + 1):
-        bad = ~torch.isfinite(ratio) | (ratio > max_ratio)
-        nbad = int(bad.sum())
-        if nbad == 0:
-            break
-        idx = torch.nonzero(bad, as_tuple=False).flatten()
-        worst = ratio[bad].max().item()
-        print(f"  [blob {attempt}/{max_retries}] re-generating {nbad}/{n} {name} "
-              f"shower(s) with deposited/primary > {max_ratio:g} "
-              f"(worst {worst:.4g})", flush=True)
-        new, sp_batch = _generate_batched(
-            gen, energies[idx], num_points[idx], directions[idx],
-            None if labels is None else labels[idx], sp_batch)
-        # gen.max_points is fixed per species, so this should always hold; check
-        # rather than let a silent broadcast corrupt the block.
-        if new.shape[1:] != samples.shape[1:]:
-            raise RuntimeError(
-                f"re-generated {name} showers have shape {tuple(new.shape)}, "
-                f"incompatible with the chunk {tuple(samples.shape)}")
-        samples[idx] = new                                 # keep the latest draw
-        ratio = _deposited_over_primary(samples, energies)
-
-    still = int((~torch.isfinite(ratio) | (ratio > max_ratio)).sum())
-    if still:
-        print(f"  [blob] {still}/{n} {name} shower(s) still degenerate after "
-              f"{max_retries} retries — kept last draw", flush=True)
-    return samples, sp_batch
-
-
 def _gen_chunk(gen, pcfm, cfg, species_name, energies, directions, labels,
                shower_ids, target_P,
                max_clip_frac=MAX_CLIP_FRAC, max_retries=MAX_PCFM_RETRIES,
-               max_blob_retries=MAX_BLOB_RETRIES, batch=BATCH_SIZE):
+               batch=BATCH_SIZE):
     """Generate one chunk of showers for a species from PRE-SAMPLED primaries
     → a showerdata.Showers, padded to target_P. Bounded memory (only this
     chunk is held). Primaries (energies, directions, labels, shower_ids) come in
     as slices of the corpus-wide arrays so both species blocks share them (paired
     events).
-
-    `species_name` is the SPECIES key (electron/muon/photon) — it selects the
-    per-species degenerate-shower threshold, so it must be the dict key rather
-    than a display name.
 
     `labels` is the per-event EM/hadronic primary class (0/1) — the generator's
     conditioning input (both per-species models were trained on both classes)
@@ -406,18 +306,8 @@ def _gen_chunk(gen, pcfm, cfg, species_name, energies, directions, labels,
     # `batch` is therefore the budget AT the electron cap. gpu_test also hands out
     # mixed cards, so halve and retry rather than assume which one we got.
     sp_batch = max(1, int(batch * 4096 / int(cfg["max_points"])))
-    samples, sp_batch = _generate_batched(
+    samples = _generate_batched(
         gen, energies, num_points, directions, labels, sp_batch)
-
-    # Degenerate-shower re-roll: rare draws come back with every point's energy
-    # inflated by a common factor. Finite and normally-sized, so this is the
-    # only guard that sees them. Before _pad_points, so the ratio is computed on
-    # the species-cap tensor the generator actually returned.
-    samples, sp_batch = regenerate_degenerate(
-        gen, species_name, samples, energies, num_points, directions, labels,
-        sp_batch, max_ratio=MAX_TOTAL_OVER_PRIM.get(species_name),
-        max_retries=max_blob_retries,
-    )
 
     samples = _pad_points(samples, target_P)
 
