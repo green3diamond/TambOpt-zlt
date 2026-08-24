@@ -31,6 +31,37 @@ LAYER_EAST_DX  = 500.0
 # Set at dataset-build time; the trained surrogate inherits this resolution.
 SIGMA_SPATIAL  = 50.0
 
+# A shower point counts as DETECTED at a detector when its deposit there —
+# energy * kernel acceptance — clears this. It defines the T label: T is the
+# time of the earliest detected point (see showers/kernel.py), so the threshold
+# sets where the leading edge is read, exactly like a trigger discriminator.
+# Swept over 1e-1..1e-6 on the malata 3-species testset (center_gauss400): the
+# TIME barely moves — encoded median 7.078 -> 7.066, std 0.471 -> 0.503 — so the
+# leading edge is robust and this only sets how many detectors report at all
+# (T > 0 at 27% -> 44% of detectors, per species). 1e-3 gives 35%, which covers
+# the 23.6% of detectors carrying E > 1 with margin; looser values only add
+# detectors whose whole deposit is marginal.
+#
+# E > 0 is a WEAKER condition than T > 0 and always will be: E sums many
+# sub-threshold deposits, so ~40% of detectors have E > 0 with no single
+# detected point and therefore T == 0. Do not treat T == 0 as "E == 0".
+HIT_DEPOSIT_MIN = 1e-3
+
+# Degenerate ("blob") showers: the muon AllShowers checkpoint occasionally emits
+# a shower wrong in both geometry and energy scale — a diffuse cloud spanning
+# ~20 km with median per-point energy orders of magnitude too high, instead of a
+# rod. They are RARE and FINITE, so `isfinite`/`nan_to_num` never catch them, and
+# a total deposit of 2.06e14 becomes a Step-2 target of ~33 where normal is
+# single digits.
+#
+# A shower is degenerate when the median energy of its energy-carrying points
+# exceeds this. Median (not max/total) because the failure is the whole cloud
+# being hot, not one outlier point. Measured with tests/compare_upstream_
+# generator.py on the eda/degenerate-muon-showers branch: 0.53% of muon showers,
+# 0.00% of electron, and bit-identical between our generator fork and upstream —
+# so this is intrinsic to the checkpoint, not something the pipeline introduced.
+BLOB_MEDIAN_E = 1e3
+
 # Fixed architecture constants
 N_DETECTORS = 100
 # [dir_x, dir_y, dir_z, log_e_norm, pdg, rel_E, rel_N, rel_U]

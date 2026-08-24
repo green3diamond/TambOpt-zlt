@@ -85,7 +85,7 @@ def main():
 
     # Build training pairs
     t0 = time.time()
-    primary, xy, E, T, strat, species = build_training_pairs(
+    primary, xy, E, T, strat, species, blob = build_training_pairs(
         mountain=mountain,
         surface=surface,
         shower_cache_path=DUAL_SHOWER_CACHE_PATH,
@@ -110,6 +110,8 @@ def main():
     print(f"  T       : {tuple(T.shape)}        dtype={T.dtype}")
     print(f"  strat   : {tuple(strat.shape)}    unique={sorted(strat.unique().tolist())}")
     print(f"  species : {tuple(species.shape)}  unique={sorted(species.unique().tolist())}")
+    print(f"  blob    : {tuple(blob.shape)}    flagged={int(blob.sum())} "
+          f"({100 * blob.float().mean():.2f}%)")
 
     # Log-scale E for better FNN training (compresses heavy right tail)
     E = torch.log1p(E)
@@ -121,8 +123,11 @@ def main():
     n_nonzero = int((E.abs().sum(dim=1) > 0).sum())
     print(f"  samples with any nonzero E : {n_nonzero}/{E.shape[0]}")
 
-    # Z-score stats over the whole training corpus
-    stats = compute_normalization(primary, xy, E, T)
+    # Z-score stats over the whole training corpus, degenerate showers excluded —
+    # one blob's log1p(counts) of ~33 against single-digit normals would set
+    # out_std for every detector. Step 2 drops the same rows from its own stats.
+    _clean = ~blob.bool()
+    stats = compute_normalization(primary[_clean], xy[_clean], E[_clean], T[_clean])
     print(f"[norm] in_mean[:5]  = {stats['in_mean'][:5].tolist()}")
     print(f"[norm] in_std[:5]   = {stats['in_std'][:5].tolist()}")
     print(f"[norm] out_mean (E) = {stats['out_mean'][:5].tolist()} ...")
@@ -136,6 +141,7 @@ def main():
     torch.save(T,       os.path.join(TRAINING_DATASET_FOLDER, "T.pt"))
     torch.save(strat,   os.path.join(TRAINING_DATASET_FOLDER, "strategy_ids.pt"))
     torch.save(species, os.path.join(TRAINING_DATASET_FOLDER, "species_ids.pt"))
+    torch.save(blob,    os.path.join(TRAINING_DATASET_FOLDER, "blob_ids.pt"))
     torch.save(stats,   os.path.join(TRAINING_DATASET_FOLDER, "norm_stats.pt"))
     print(f"[save] tensors in {time.time() - t0:.1f}s  ->  {TRAINING_DATASET_FOLDER}")
 

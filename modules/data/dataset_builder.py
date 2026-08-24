@@ -16,8 +16,8 @@ import torch
 
 from ..showers import GetCounts_planeaware
 
-from ..constants import (EAST_ENTRY, LAYER_EAST_DX, N_DETECTORS, PRIMARY_DIM,
-                         SPECIES_NAMES, SIGMA_SPATIAL)
+from ..constants import (BLOB_MEDIAN_E, EAST_ENTRY, LAYER_EAST_DX, N_DETECTORS,
+                         PRIMARY_DIM, SPECIES_NAMES, SIGMA_SPATIAL)
 from ..layouts.strategies import (_STRATEGIES, _STRATEGY_FNS)
 from ..surrogates import encode_primary, compute_normalization  # noqa: F401  (re-export)
 from ..surrogates.fnn import _load_species_sidecar
@@ -112,6 +112,30 @@ def cloud_to_enu(clouds:        torch.Tensor,
     north, up = c[m, 0], c[m, 1]
     east = east_entry - c[m, 2] * layer_east_dx
     return np.stack([east, north, up], axis=1)
+
+
+def flag_blob_showers(clouds: torch.Tensor,
+                      blob_median_e: float = BLOB_MEDIAN_E) -> torch.Tensor:
+    """Per-shower degenerate-cloud flag: median point energy > `blob_median_e`.
+
+    A property of the SHOWER, not of any layout, so it is computed once per
+    loaded cloud and replicated across strategies. Padding rows carry energy 0
+    and are excluded from the median; a cloud with no energy-carrying point at
+    all is not a blob (it is empty, which the E channel already reports as 0).
+
+    Args:
+        clouds : (M, P, 5) point clouds — placed or native, either works, since
+                 `place_clouds_enu` rewrites only the position columns.
+    Returns:
+        (M,) bool.
+    """
+    e = clouds[..., 3]
+    live = e > 0
+    # nan-median over the live points: dead entries become NaN so they neither
+    # drag the median down nor need a ragged gather.
+    masked = torch.where(live, e, torch.full_like(e, float("nan")))
+    med = masked.nanmedian(dim=1).values                  # NaN where no live point
+    return torch.nan_to_num(med, nan=0.0) > blob_median_e
 
 
 # ── Label computation (batched over showers, one shared layout per batch) ────
@@ -265,6 +289,7 @@ class _ResumeState:
                 self.primary, self.xy = ckpt["out_primary"], ckpt["out_xy"]
                 self.E, self.T = ckpt["out_E"], ckpt["out_T"]
                 self.strat, self.species = ckpt["out_strat"], ckpt["out_species"]
+                self.blob = ckpt["out_blob"]
                 self.chunks_done = int(ckpt["chunks_done"])
                 if self.verbose:
                     print(f"[resume] {self.path}: {self.chunks_done}/{n_chunks} chunks "
@@ -280,6 +305,7 @@ class _ResumeState:
             self.T       = torch.empty((self.n_pairs, self.n_det),    dtype=torch.float32)
             self.strat   = torch.empty((self.n_pairs,), dtype=torch.int64)
             self.species = torch.empty((self.n_pairs,), dtype=torch.int64)
+            self.blob    = torch.zeros((self.n_pairs,), dtype=torch.bool)
 
         self._last_t = time.time()
 
@@ -299,6 +325,7 @@ class _ResumeState:
             "out_primary": self.primary, "out_xy": self.xy,
             "out_E": self.E, "out_T": self.T,
             "out_strat": self.strat, "out_species": self.species,
+            "out_blob": self.blob,
         }, tmp)
         os.replace(tmp, self.path)
         self._last_t = time.time()
@@ -312,7 +339,8 @@ class _ResumeState:
             os.remove(self.path)
 
     def tensors(self):
-        return self.primary, self.xy, self.E, self.T, self.strat, self.species
+        return (self.primary, self.xy, self.E, self.T, self.strat,
+                self.species, self.blob)
 
 
 def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
@@ -326,6 +354,9 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
     and reordering it changes every label in the dataset.
     """
     n_showers = meta.n_showers
+    # Degeneracy is a property of the cloud, so it is evaluated once here and
+    # written under every strategy — the same shower is a blob in all of them.
+    blob = flag_blob_showers(clouds_chunk)
     for s_idx, (s_name, fn_name, kwargs) in enumerate(_STRATEGIES):
         fn = _STRATEGY_FNS[fn_name]
         for sb_lo in range(0, csz, batch_size):
@@ -351,6 +382,7 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
             state.T[dst] = T.cpu()
             state.strat[dst] = s_idx
             state.species[dst] = meta.species[ds_lo:ds_hi]
+            state.blob[dst] = blob[sb_lo:sb_hi]
 
 
 def _load_clouds(shower_cache_path: str, meta: _CorpusMeta, chunk, east_entry, layer_east_dx):
@@ -411,6 +443,8 @@ def build_training_pairs(mountain, surface,
         T         : (N_pairs, 100) float32
         strategy_ids : (N_pairs,)  int64 — index into `_STRATEGIES`
         species_ids  : (N_pairs,)  int64 — index into `constants.SPECIES_NAMES`
+        blob_ids     : (N_pairs,)  bool  — degenerate shower, excluded by Step 2
+                       (see `flag_blob_showers` / `constants.BLOB_MEDIAN_E`)
     """
     meta    = _load_corpus_metadata(mountain, shower_cache_path, max_showers)
     n_strat = len(_STRATEGIES)
@@ -457,5 +491,10 @@ def build_training_pairs(mountain, surface,
               f"east_entry={east_entry:g}, dx={layer_east_dx:g})")
     if verbose and n_sanitized:
         print(f"[sanitize] zeroed {n_sanitized} non-finite points (float32 energy overflow)")
+    if verbose:
+        n_blob_rows = int(state.blob.sum())
+        print(f"[blob] flagged {n_blob_rows}/{state.n_pairs} pairs "
+              f"({100 * n_blob_rows / max(state.n_pairs, 1):.2f}%) as degenerate "
+              f"(median point energy > {BLOB_MEDIAN_E:g}); Step 2 excludes them")
 
     return state.tensors()

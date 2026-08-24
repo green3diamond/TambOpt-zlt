@@ -265,6 +265,7 @@ def train_species(tag:        str,
                   E_all:      torch.Tensor,
                   T_all:      torch.Tensor,
                   strat_ids:  torch.Tensor,
+                  blob_ids:   torch.Tensor,
                   n_epochs:   int,
                   lbfgs_max_iter: int) -> None:
     """Train one per-species DeepSets surrogate on its (already filtered) rows.
@@ -272,6 +273,14 @@ def train_species(tag:        str,
     Norm stats are computed on the SUBSET — per-species E/T scales differ —
     and the log-T transform mutates the T slots exactly as the single-model
     trainer did; the per-model stats ship inside the checkpoint.
+
+    `blob_ids` marks degenerate showers (constants.BLOB_MEDIAN_E). They are
+    dropped from train AND val, and from the norm stats — a single blob's
+    log1p(counts) target of ~33 against single-digit normals would otherwise set
+    out_std for every detector, and a blob in val would corrupt the metric that
+    selects the checkpoint. They are dropped AFTER `shower_level_split`, never
+    from the row index: the split relies on contiguous strategy-major blocks of
+    equal size, which removing rows beforehand would break.
     """
     ckpt_name   = f"fnn_{tag}.pt"
     log_name    = f"fnn_{tag}_train_log.json"
@@ -299,8 +308,11 @@ def train_species(tag:        str,
     print(f"[{tag}] DeepSets surrogate on {primary.shape[0]} rows")
     print("=" * 72)
 
-    # Per-species z-score stats (NOT the corpus-wide norm_stats.pt).
-    norm_stats = compute_normalization(primary, xy, E_all, T_all)
+    # Per-species z-score stats (NOT the corpus-wide norm_stats.pt), over the
+    # clean rows only — see the blob note in the docstring.
+    keep = ~blob_ids.bool()
+    norm_stats = compute_normalization(primary[keep], xy[keep],
+                                       E_all[keep], T_all[keep])
 
     # log-T canonical target (mirrors 02_train_fnn.py); ship modified stats in ckpt.
     T_all = torch.log1p(T_all * T_LOG_SCALE)
@@ -312,6 +324,11 @@ def train_species(tag:        str,
 
     train_idx, val_idx = shower_level_split(strat_ids, VAL_FRAC, SEED)
     print(f"[split] train pairs={len(train_idx)}  val pairs={len(val_idx)}")
+    n_tr0, n_va0 = len(train_idx), len(val_idx)
+    train_idx = train_idx[keep[train_idx]]
+    val_idx   = val_idx[keep[val_idx]]
+    print(f"[blob] dropped {n_tr0 - len(train_idx)} train / {n_va0 - len(val_idx)} val "
+          f"degenerate pairs ({100 * (~keep).float().mean():.2f}% of this species)")
     if 0.0 < TRAIN_FRACTION < 1.0:
         _n_orig = int(train_idx.shape[0])
         _n_keep = max(1, int(round(TRAIN_FRACTION * _n_orig)))
@@ -746,6 +763,14 @@ def main():
     T_all     = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "T.pt")).float()
     strat_ids = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "strategy_ids.pt")).long()
     species_ids = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "species_ids.pt")).long()
+    _blob_path = os.path.join(TRAINING_DATASET_FOLDER, "blob_ids.pt")
+    if not os.path.exists(_blob_path):
+        raise SystemExit(
+            f"blob_ids.pt not found in {TRAINING_DATASET_FOLDER}.\n"
+            "This dataset predates the degenerate-shower filter, so its E/T labels "
+            "still contain blobs (and, if older still, the pre-leading-edge T "
+            "definition). Re-run 01_build_dataset_northeast.py.")
+    blob_ids  = torch.load(_blob_path).bool()
     print(f"[load] corpus in {time.time()-t0:.1f}s  primary={tuple(primary.shape)}")
 
     n_strat = int(strat_ids.max().item() + 1)
@@ -768,6 +793,7 @@ def main():
         train_species(
             tag,
             primary[idx], xy[idx], E_all[idx], T_all[idx], strat_ids[idx],
+            blob_ids[idx],
             n_epochs=args.epochs, lbfgs_max_iter=args.lbfgs_iters,
         )
 
