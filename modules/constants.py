@@ -92,7 +92,7 @@ AZIMUTH_MIN  = 0.0   # degrees
 AZIMUTH_MAX  = 360.0 # degrees
 
 
-RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/09_logemax8"
+RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/09_logemax8_64k"
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are
@@ -154,7 +154,7 @@ SPECIES_NAMES = ("electron", "muon", "photon")
 # the same site-local ENU frame as the mesh, so showers and mountain share the
 # origin. Energies are filtered to [10**LOG_E_MIN, 10**LOG_E_MAX] in the loader.
 USE_TAU_PRIMARIES = True
-TAU_WHOLESKY_PATH = "/n/home05/zdimitrov/tambo/TambOpt/decay_locations/tau_wholesky_n750k.h5"
+TAU_WHOLESKY_PATH = "/n/home05/zdimitrov/tambo/TambOpt/decay_locations/tau_wholesky_balanced_1e5_1e8_max.h5"
 
 # TAU_WHOLESKY_PATH = ".../decay_locations/tau_wholesky_n2M_83k.h5"  # built the current corpus
 TAU_CORPUS_PATH   = os.path.join(SHOWER_CACHE, "cashed_showers_tau_dual.pt")
