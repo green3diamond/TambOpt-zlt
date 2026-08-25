@@ -60,9 +60,9 @@ from modules.constants import (
 )
 
 # LAYOUT_PATH = os.path.join(OPT_FOLDER + "_lbfgs_ensemble_full_corpus_grid", "layout_best.pt")
-# LAYOUT_PATH = os.path.join(OPT_FOLDER + "_lbfgs_ensemble_full_corpus_center", "layout_best.pt")
+LAYOUT_PATH = os.path.join(OPT_FOLDER + "_lbfgs_ensemble_full_corpus_center", "layout_best.pt")
 # LAYOUT_PATH = os.path.join(OPT_FOLDER + "_lbfgs_activation_center", "layout_best.pt")
-LAYOUT_PATH = os.path.join(OPT_FOLDER + "_lbfgs_activation_grid", "layout_best.pt")
+# LAYOUT_PATH = os.path.join(OPT_FOLDER + "_lbfgs_activation_grid", "layout_best.pt")
 
 class KernelDualLabels:
     """Drop-in for the dual surrogate: same ``(primary_batch, xy_batch) -> (B, n_det, 2)``
@@ -164,8 +164,8 @@ def _snap(mountain, e, n):
     return e.float(), n.float()
 
 
-def load_layout(mountain):
-    raw = torch.load(LAYOUT_PATH, map_location="cpu", weights_only=False)
+def load_layout(mountain, path=None):
+    raw = torch.load(path or LAYOUT_PATH, map_location="cpu", weights_only=False)
     e, n = (raw["x"], raw["y"]) if isinstance(raw, dict) else (raw[:, 0], raw[:, 1])
     return _snap(mountain, e, n)
 
@@ -200,6 +200,11 @@ def main():
                          "4.79 GiB at 512 — lower this, not --n-events, when the "
                          "GPU OOMs, so the utility keeps its full sample.")
     ap.add_argument("--seed", type=int, default=42)
+    # Matches true_activation.py's flag of the same name. Defaults to the
+    # LAYOUT_PATH constant above, so hand-runs that edit that line still work;
+    # run_all_script_batch.sh passes it explicitly instead of editing the file.
+    ap.add_argument("--layout", default=None,
+                    help="optimized layout_best.pt to score (default: LAYOUT_PATH)")
     ap.add_argument("--grid-layout", action="store_true",
                     help="use grid layout as baseline")
     args = ap.parse_args()
@@ -212,7 +217,7 @@ def main():
     print("=" * 72)
     print(f"device      : {device}")
     print(f"corpus      : {HELDOUT_SHOWER_CACHE_PATH}  (held-out, unseen by Steps 1-4)")
-    print(f"layout(opt) : {LAYOUT_PATH}")
+    print(f"layout(opt) : {args.layout or LAYOUT_PATH}")
 
     mountain = load_tr_mountain(GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
                                 east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX,
@@ -226,7 +231,7 @@ def main():
 
     fnn, recon = load_models(device)
 
-    e_o, n_o = load_layout(mountain)
+    e_o, n_o = load_layout(mountain, args.layout)
     if args.grid_layout:
         e_g, n_g = grid_layout(mountain)
     else:

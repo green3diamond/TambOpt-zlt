@@ -64,11 +64,6 @@ from modules.optimize.utility import _soft_cap
 from true_utility import load_events, utility_of_xy
 
 
-# log10(1e9): GeV -> eV shift applied to the plotted x-values (not a label
-# annotation) -- see score_run's comment where it's used.
-GEV_TO_EV_LOG10 = 9.0
-
-
 def _snap(mountain, e, n):
     e, n = project_to_mountain_ne(mountain, e.float().reshape(-1), n.float().reshape(-1))
     return e.float(), n.float()
@@ -152,10 +147,10 @@ def _plot(ax, log_e, U, title, n_bins=40, min_count=20):
             label="mean U per energy-bin  (±1 std)")
 
     ax.set_xlim(lo, hi); ax.set_ylim(0.0, y_hi)
-    # `log_e` already has GEV_TO_EV_LOG10 added in by the caller, so these tick
-    # numbers ARE log10(E/eV) -- the label states what the numbers already are,
-    # not a conversion still owed.
-    ax.set_xlabel(r"$\log_{10}(E_\tau \,/\, \mathrm{eV})$")
+    # `log_e` is log10 of the caller's GeV energies with no unit shift applied,
+    # so these tick numbers ARE log10(E/GeV) -- the label states what the numbers
+    # already are, not a conversion still owed.
+    ax.set_xlabel(r"$\log_{10}(E_\tau \,/\, \mathrm{GeV})$")
     ax.set_ylabel("per-event utility U")
     ax.set_title(title, fontsize=11)
     ax.legend(loc="upper left", fontsize=8, framealpha=0.9)
@@ -169,11 +164,10 @@ def score_run(run_dir, prim, fnn, recon, mountain, device, formats=("png",)):
     U_i, E_true, r = utility_per_event(x, y, prim, fnn, recon)
     U_i_np = U_i.cpu().numpy()
     # E_true is in GeV (objective.primary_to_physical_labels' own docstring names
-    # its return E_GeV). +GEV_TO_EV_LOG10 shifts the plotted numbers into eV --
-    # log10(E/eV) is the convention this field actually quotes cosmic-ray-scale
-    # energies in (this corpus spans ~1e14-1e17 eV) -- so the axis ticks are the
-    # log of E in eV directly, not GeV relabelled.
-    log_e = torch.log10(E_true).cpu().numpy() + GEV_TO_EV_LOG10
+    # its return E_GeV) and is plotted in GeV unshifted, matching the units the
+    # rest of the pipeline states its energy band in (constants.LOG_E_MIN/MAX are
+    # log10(E/GeV), and this corpus spans ~1e5-1e8 GeV).
+    log_e = torch.log10(E_true).cpu().numpy()
 
     # Correctness guard: mean is linear, so this must reproduce utility_of_xy's
     # own scalar U to floating-point precision. A mismatch means the per-event
