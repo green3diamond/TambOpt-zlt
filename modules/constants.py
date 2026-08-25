@@ -73,9 +73,17 @@ N_DETECTORS = 100
 # unchanged. Bumping this invalidates every checkpoint — rebuild from Step 1.
 PRIMARY_DIM = 8
 
-# Primary energy bounds (log10 GeV) for min-max normalization
+# Primary energy bounds (log10 GeV) for min-max normalization, and the band
+# load_tau_primaries filters the whole-sky throw down to.
+#
+# Raised 7.0 -> 8.0 to open the top decade (the old value's comment claimed 1e8
+# but 10**7.0 is 1e7, so the decade was never in the corpus). Note the top decade
+# is where the AllShowers generator extrapolates: its training set ran out at
+# 4.9e7, and a 1e7-1e8 stress run still had the anti-clip retry failing on
+# 53/486 electron, 27/486 muon and 52/486 photon showers after 10 attempts.
+# Anything trained across it should be checked against those guards.
 LOG_E_MIN = 5.0   # log10(1e5 GeV)
-LOG_E_MAX = 7.0   # log10(1e8 GeV)
+LOG_E_MAX = 8.0   # log10(1e8 GeV)
 
 # Direction bounds for sampling primaries
 ZENITH_MIN   = 60.0  # degrees
