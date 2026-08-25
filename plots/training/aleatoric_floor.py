@@ -81,7 +81,7 @@ _spec00 = _ilu.spec_from_file_location(
 gen00 = _ilu.module_from_spec(_spec00); _spec00.loader.exec_module(gen00)
 sample_primary_particles = gen00.sample_primary_particles   # re-export
 
-T_LOG_SCALE = 1.0e8          # must match 02_train_fnn*.py
+T_LOG_SCALE = 1.0e6          # must match 02_train_fnn*.py
 FIRE_EPS    = 1.0e-3         # log1p(E) above this ⇒ detector "fired" this shower
 DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

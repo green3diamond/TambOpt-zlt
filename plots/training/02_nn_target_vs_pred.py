@@ -112,7 +112,7 @@ BATCH          = 1024
 # trained with log1p(T * 1e8) as its canonical T target, so the ground-truth
 # T tensor must be passed through the same transform before the FNN scatter
 # is apples-to-apples.
-T_LOG_SCALE = 1.0e8
+T_LOG_SCALE = 1.0e6
 
 
 def shower_level_val_idx(strategy_ids: torch.Tensor,
@@ -428,10 +428,22 @@ def _conditional_panel(ax, target, pred, channel: str,
         ax.set_title(f"{channel}: too few samples ({target.size})")
         return None
 
-    lo = 0.0 if lo is None else lo
+    # A hit-only target can have a hard floor far above zero: the FNN's T channel
+    # is log1p(T*T_LOG_SCALE) of a light-travel time, so its fastest hit sits at
+    # p0.1 = 0.93 and NO sample can fall below it. Anchoring at 0 spent half the
+    # axis -- and half the n_bins columns -- on a region the data cannot occupy,
+    # which is what left the T panel a stub with min_count blanks. Mirror `hi`'s
+    # percentile at the bottom. The E channel is unaffected: its p0.1 is 0.0.
+    if lo is None:
+        lo = float(np.percentile(target, 100.0 - AXIS_PERCENTILE)) if hit_only else 0.0
     hi = float(np.percentile(target, AXIS_PERCENTILE)) if hi is None else hi
     edges = np.linspace(lo, hi, n_bins + 1)
-    ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+    # The target window bins the target, but the PREDICTION axis keeps whatever
+    # the model emits: predictions below the target's physical floor are the tell
+    # that an MSE fit is interpolating across the dark/hit gap, so they must stay
+    # visible rather than be clipped out of frame by a shared limit.
+    y_lo = min(lo, float(np.percentile(pred, 100.0 - AXIS_PERCENTILE)))
+    ax.set_xlim(lo, hi); ax.set_ylim(y_lo, hi)
 
     _draw_column_density(ax, target, pred, edges, min_count)
     profile = profile_by_bin(key=target, value=pred,

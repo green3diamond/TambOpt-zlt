@@ -181,4 +181,20 @@ HELDOUT_POSITIONS_PATH    = os.path.splitext(HELDOUT_SHOWER_CACHE_PATH)[0] + "_p
 
 # 02 log-compresses T targets as log1p(T*T_LOG_SCALE); surrogates/dual.py must
 # invert the same transform, so the scale lives here.
-T_LOG_SCALE = 1.0e8
+#
+# Lowered 1e8 -> 1e6. Hit arrival times span only 127x (1.11e-6 s to 1.41e-4 s),
+# so at 1e8 log1p mapped them to [4.72, 9.55]: half the target's dynamic range
+# was a constant offset carrying no information, and the net had to emit ~6.9
+# just to reach the mean. 1e6 gives [0.75, 4.95] -- the dead offset drops from
+# 49% of the range to 15%.
+#
+# It also shrinks, but does not close, the gap that is the real difficulty here:
+# 64% of detector-samples are exactly dark (T = 0) and every hit is above the
+# light-travel floor, so the target is bimodal with nothing in between and an
+# MSE fit must place predictions inside that empty gap. Separating the hit/dark
+# decision from the time regression is the actual fix; this only narrows the gap
+# from 4.72 to 0.75.
+#
+# NOTE: plots/training/02_nn_target_vs_pred.py and plots/training/aleatoric_floor.py
+# keep their own literal copies of this value -- change all three together.
+T_LOG_SCALE = 1.0e6
