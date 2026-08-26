@@ -156,6 +156,28 @@ def load_events(n_events, device, mountain):
 
     array_center = torch.as_tensor(mountain.centroids_ENU, dtype=torch.float32).mean(dim=0)
     primary_batch = encode_primary(dirs, energies, pdg, pos, array_center).to(device)
+
+    # The AllShowers generator can diverge to a fully-inf point cloud on rare
+    # high-energy primaries (seen on muon showers once LOG_E_MAX opened the
+    # 1e7-1e8 GeV decade the generator was never trained on) -- one inf point
+    # is enough to turn every downstream mean(), including the reported
+    # scalar U, into nan with no warning. Drop the WHOLE event (every species'
+    # block, row i) rather than just the offending species' cloud: species
+    # blocks are paired by row (one primary per row across all blocks), so
+    # dropping only one species' row would misalign the rest against the
+    # wrong primary.
+    bad = torch.zeros(B, dtype=torch.bool)
+    for c in species_clouds:
+        bad |= ~torch.isfinite(c).all(dim=(1, 2))
+    if bad.any():
+        print(f"[load_events] dropping {int(bad.sum())}/{B} events with a "
+              f"non-finite point cloud in some species (rows "
+              f"{torch.nonzero(bad).squeeze(-1).tolist()})")
+        keep = ~bad
+        species_clouds = [c[keep] for c in species_clouds]
+        primary_batch = primary_batch[keep]
+        B = int(keep.sum())
+
     return species_clouds, B, n_pairs, primary_batch
 
 
