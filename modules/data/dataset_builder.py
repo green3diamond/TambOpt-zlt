@@ -369,7 +369,8 @@ class _ResumeState:
 def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
                  mountain, surface, seed, *,
                  ds_start: int, c_lo: int, csz: int,
-                 batch_size: int, n_det: int, device) -> None:
+                 batch_size: int, n_det: int, device,
+                 was_corrupted: torch.Tensor) -> None:
     """Label one loaded chunk under every strategy, writing into `state`.
 
     One layout is drawn per (strategy, sub-batch) and shared by the whole
@@ -380,7 +381,10 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
     n_showers = meta.n_showers
     # Degeneracy is a property of the cloud, so it is evaluated once here and
     # written under every strategy — the same shower is a blob in all of them.
-    blob = flag_blob_showers(clouds_chunk)
+    # `was_corrupted` is OR'd in because a fully-inf shower gets zeroed by
+    # _load_clouds before this call, which makes flag_blob_showers alone see an
+    # indistinguishable "legitimate empty shower" — see _load_clouds's docstring.
+    blob = flag_blob_showers(clouds_chunk) | was_corrupted
     for s_idx, (s_name, fn_name, kwargs) in enumerate(_STRATEGIES):
         fn = _STRATEGY_FNS[fn_name]
         for sb_lo in range(0, csz, batch_size):
@@ -420,8 +424,23 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
 def _load_clouds(shower_cache_path: str, meta: _CorpusMeta, chunk, east_entry, layer_east_dx):
     """Stream one chunk of point clouds and place it at its real decay vertices.
 
-    Returns the placed clouds and the count of non-finite points zeroed
-    (float32 energy overflow in the corpus).
+    Returns (clouds, n_bad, was_corrupted):
+        clouds        : placed, with non-finite points zeroed (see below)
+        n_bad         : count of non-finite POINTS zeroed (float32 energy
+                        overflow in the corpus)
+        was_corrupted : (csz,) bool, one per SHOWER, true if any of its points
+                        needed zeroing
+
+    The AllShowers generator can diverge to a fully-inf point cloud on rare
+    high-energy primaries (seen on muon showers past its trained energy range —
+    ~0.5% of the muon block once LOG_E_MAX opened 1e7-1e8 GeV). Zeroing those
+    points makes the shower's energy column all-zero, i.e. indistinguishable
+    from a genuine "detector never triggered" empty shower to `flag_blob_showers`
+    downstream, which explicitly treats an all-zero shower as legitimate — so a
+    fully-corrupted shower would silently enter training as a normal zero-
+    deposit event instead of being excluded. `was_corrupted` is computed BEFORE
+    zeroing so the caller can fold it into the blob flag directly; it is not
+    recoverable from the zeroed cloud after this function returns.
     """
     import showerdata
 
@@ -433,6 +452,7 @@ def _load_clouds(shower_cache_path: str, meta: _CorpusMeta, chunk, east_entry, l
 
     bad = ~torch.isfinite(clouds_chunk).all(dim=-1)
     n_bad = int(bad.sum())
+    was_corrupted = bad.any(dim=1)
     if n_bad:
         clouds_chunk[bad] = 0.0
 
@@ -442,7 +462,7 @@ def _load_clouds(shower_cache_path: str, meta: _CorpusMeta, chunk, east_entry, l
         meta.positions[ds_start + c_lo: ds_start + c_hi],   # (csz,3) decay E,N,U
         meta.dirs[ds_start + c_lo: ds_start + c_hi],        # (csz,3) unit dir
         east_entry=east_entry, layer_east_dx=layer_east_dx)
-    return clouds_chunk, n_bad
+    return clouds_chunk, n_bad, was_corrupted
 
 
 def build_training_pairs(mountain, surface,
@@ -500,13 +520,14 @@ def build_training_pairs(mountain, surface,
             continue
         tag, _file_start, ds_start, c_lo, c_hi = chunk
 
-        clouds_chunk, n_bad = _load_clouds(shower_cache_path, meta, chunk,
-                                           east_entry, layer_east_dx)
+        clouds_chunk, n_bad, was_corrupted = _load_clouds(
+            shower_cache_path, meta, chunk, east_entry, layer_east_dx)
         n_sanitized += n_bad
 
         _label_chunk(clouds_chunk, meta, state, mountain, surface, seed,
                      ds_start=ds_start, c_lo=c_lo, csz=c_hi - c_lo,
-                     batch_size=batch_size, n_det=n_det, device=device)
+                     batch_size=batch_size, n_det=n_det, device=device,
+                     was_corrupted=was_corrupted)
 
         del clouds_chunk
         if verbose:
