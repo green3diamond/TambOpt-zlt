@@ -4,8 +4,8 @@
 #SBATCH -c 4
 #SBATCH --mem 48G
 #SBATCH -t 4:00:00
-#SBATCH -o slurm/logs/scan_blobs_%j.out
-#SBATCH -e slurm/logs/scan_blobs_%j.out
+#SBATCH -o slurm_logs/slurm-%j-%x.out
+
 # Full-corpus scan of total_deposited/E_primary, to site the Step-0 blob cut.
 # CPU only: the corpus is already on disk, nothing is generated here.
 set -euo pipefail
