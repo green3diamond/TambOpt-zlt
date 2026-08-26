@@ -204,14 +204,22 @@ def _surrogate_predict(x_det: torch.Tensor,
     xy_per_det = torch.stack([x_det, y_det], dim=-1)                       # (n_det, 2)
     xy_batch   = xy_per_det.unsqueeze(0).expand(B, -1, -1)                 # (B, n_det, 2)
 
-    # Deterministic mean prediction. The layout optimizers (Adam warm-start's
-    # argmax-over-epochs best-tracking, L-BFGS's strong_wolfe line search, DE's
-    # fitness comparison) all select on this value, so a fresh stochastic
-    # sample per call would let them cherry-pick lucky noise draws instead of
-    # real improvement — verified: every Adam chain's "best" collapsed by a
-    # uniform ~10 points once refined/re-evaluated when this called
-    # forward_sample(). Sampling stays confined to stage 3 (recon training).
-    pred_ET = fnn(primary_batch, xy_batch)
+    # Uncertainty-aware recon input: a fresh stochastic draw from the
+    # surrogate's predicted (mean, var) distribution each call, matching what
+    # recon was actually trained on (03_train_recon_deepsets.py samples too).
+    # Reparameterized, so the gradient into (x_det, y_det) still flows through
+    # mean and var alike. A single-sample version of this was reverted in
+    # f9d688b (2026-07-28) because every Adam chain's "best" collapsed ~10
+    # points on re-eval — but that was at PRIMARIES_PER_STEP=256; per-primary
+    # noise is iid and u_theta/u_E average over the batch (torch.mean), so the
+    # batch has since grown to 5-50k primaries (~20-200x), which should average
+    # the noise out well below what fooled the optimizers back then. Callers
+    # without a variance head (e.g. true_utility.py's kernel-label stand-in,
+    # which IS ground truth — nothing to sample) fall back to the mean.
+    if hasattr(fnn, "forward_sample"):
+        pred_ET = fnn.forward_sample(primary_batch, xy_batch)              # (B, n_det, 2)
+    else:
+        pred_ET = fnn(primary_batch, xy_batch)
     return xy_batch, pred_ET
 
 
