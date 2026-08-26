@@ -109,7 +109,7 @@ VAL_FRAC       = 0.10
 BATCH          = 1024
 
 # Mirror the log-T transform applied inside 02_train_fnn.py — the FNN was
-# trained with log1p(T * 1e8) as its canonical T target, so the ground-truth
+# trained with log1p(T * T_LOG_SCALE) as its canonical T target, so the ground-truth
 # T tensor must be passed through the same transform before the FNN scatter
 # is apples-to-apples.
 T_LOG_SCALE = 1.0e6
@@ -490,7 +490,7 @@ def _render_fnn_conditional(fnn, primary, xy, E_true, T_true, val_idx,
     E_pred, T_pred = (a.flatten().numpy() for a in fnn_predict(fnn, p, x))
     channels = (
         Channel("E", "log1p(E)", E_true[val_idx].flatten().numpy(), E_pred),
-        Channel("T", "log1p(T·1e8)", T_true[val_idx].flatten().numpy(), T_pred),
+        Channel("T", f"log1p(T·{T_LOG_SCALE:.0e})", T_true[val_idx].flatten().numpy(), T_pred),
     )
 
     fig, axes = plt.subplots(1, 2, figsize=FIGSIZE_CONDITIONAL)
@@ -589,7 +589,7 @@ def _render_fnn_calibration(fnn, primary, xy, E_true, T_true, val_idx,
 
     fig, axes = plt.subplots(2, 1, figsize=FIGSIZE_CALIBRATION)
     _calibration_panel(axes[0], E_sig, E_err, "log1p(E)  [z]", legend=False)
-    _calibration_panel(axes[1], T_sig, T_err, "log1p(T·1e8)  [z]", legend=False)
+    _calibration_panel(axes[1], T_sig, T_err, f"log1p(T·{T_LOG_SCALE:.0e})  [z]", legend=False)
     fig.suptitle(f"Predicted σ vs error (N={E_err.size:,})", fontsize=FS_SUPTITLE)
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", fontsize=FS_LEGEND_DENSE,
@@ -703,7 +703,7 @@ def _render_fnn_scatter(fnn, primary, xy, E_true, T_true, val_idx, output_path,
                         formats=("png",)):
     """Pure rendering — no I/O for models or corpus. Caller supplies a loaded
     FNN in eval mode plus the in-memory tensors. T_true must already be
-    log1p(T*1e8)-transformed (matching what the FNN was trained against).
+    log1p(T*T_LOG_SCALE)-transformed (matching what the FNN was trained against).
     vmin/vmax_{E,T} pin each panel's hexbin colour (count) scale (per species)."""
     p   = primary[val_idx]
     x   = xy[val_idx]
@@ -716,7 +716,7 @@ def _render_fnn_scatter(fnn, primary, xy, E_true, T_true, val_idx, output_path,
              f"log1p(E)",
              vmin=vmin_E, vmax=vmax_E, legend=False)
     _scatter(axes[1], T_t.flatten().numpy(), T_p.flatten().numpy(),
-             f"log1p(T·1e8)",
+             f"log1p(T·{T_LOG_SCALE:.0e})",
              vmin=vmin_T, vmax=vmax_T, legend=False)
     fig.suptitle(f"Target vs prediction (N={T_t.numel():,})", fontsize=FS_SUPTITLE_SCATTER)
     handles, labels = axes[0].get_legend_handles_labels()
@@ -836,7 +836,7 @@ def _render_recon_conditional(fnn, recon, primary, xy, val_idx, output_path,
 
 
 def _load_corpus():
-    """Load shared tensors + strategy ids. Applies log1p(T*1e8) so T_true
+    """Load shared tensors + strategy ids. Applies log1p(T*T_LOG_SCALE) so T_true
     matches the FNN's training target space (see 02_train_fnn.py).
 
     Only used by the standalone CLI / when training scripts call into the
