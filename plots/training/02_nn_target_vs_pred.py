@@ -434,16 +434,18 @@ def _conditional_panel(ax, target, pred, channel: str,
     # axis -- and half the n_bins columns -- on a region the data cannot occupy,
     # which is what left the T panel a stub with min_count blanks. Mirror `hi`'s
     # percentile at the bottom. The E channel is unaffected: its p0.1 is 0.0.
+    #
+    # x and y MUST share this one (lo, hi) window: _draw_column_density clips
+    # pred into it before histogramming (np.clip(pred, lo, hi)), so any point
+    # outside already lands in the edge row/column of the image. A wider ylim
+    # here previously left that region blank -- the image has no data to show
+    # there -- while the clipped mass still piled onto a bright line at y=lo,
+    # which read as a fake density stripe sitting above an empty gap.
     if lo is None:
         lo = float(np.percentile(target, 100.0 - AXIS_PERCENTILE)) if hit_only else 0.0
     hi = float(np.percentile(target, AXIS_PERCENTILE)) if hi is None else hi
     edges = np.linspace(lo, hi, n_bins + 1)
-    # The target window bins the target, but the PREDICTION axis keeps whatever
-    # the model emits: predictions below the target's physical floor are the tell
-    # that an MSE fit is interpolating across the dark/hit gap, so they must stay
-    # visible rather than be clipped out of frame by a shared limit.
-    y_lo = min(lo, float(np.percentile(pred, 100.0 - AXIS_PERCENTILE)))
-    ax.set_xlim(lo, hi); ax.set_ylim(y_lo, hi)
+    ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
 
     _draw_column_density(ax, target, pred, edges, min_count)
     profile = profile_by_bin(key=target, value=pred,
