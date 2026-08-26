@@ -428,21 +428,13 @@ def _conditional_panel(ax, target, pred, channel: str,
         ax.set_title(f"{channel}: too few samples ({target.size})")
         return None
 
-    # A hit-only target can have a hard floor far above zero: the FNN's T channel
-    # is log1p(T*T_LOG_SCALE) of a light-travel time, so its fastest hit sits at
-    # p0.1 = 0.93 and NO sample can fall below it. Anchoring at 0 spent half the
-    # axis -- and half the n_bins columns -- on a region the data cannot occupy,
-    # which is what left the T panel a stub with min_count blanks. Mirror `hi`'s
-    # percentile at the bottom. The E channel is unaffected: its p0.1 is 0.0.
-    #
     # x and y MUST share this one (lo, hi) window: _draw_column_density clips
     # pred into it before histogramming (np.clip(pred, lo, hi)), so any point
     # outside already lands in the edge row/column of the image. A wider ylim
     # here previously left that region blank -- the image has no data to show
     # there -- while the clipped mass still piled onto a bright line at y=lo,
     # which read as a fake density stripe sitting above an empty gap.
-    if lo is None:
-        lo = float(np.percentile(target, 100.0 - AXIS_PERCENTILE)) if hit_only else 0.0
+    lo = 0.0 if lo is None else lo
     hi = float(np.percentile(target, AXIS_PERCENTILE)) if hi is None else hi
     edges = np.linspace(lo, hi, n_bins + 1)
     ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
