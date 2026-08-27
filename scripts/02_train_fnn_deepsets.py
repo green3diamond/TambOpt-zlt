@@ -100,15 +100,21 @@ NLL_WARMUP_FRAC = 0.3
 # var.detach()**NLL_BETA counteracts this (0 = plain NLL, 1 = fully
 # de-weighted; 0.5 is the paper's commonly-used middle ground).
 #
-# A diagnostic run (electron, full 100 epochs) found beta=0.5 concentrating
-# almost all mean-gradient weight onto the small tail of predictions pinned at
-# the variance floor, whose calibration (err^2/var) blew up from ~2 to ~87
-# over the NLL phase -- self-reinforcing collapse, not convergence. Raised to
-# 1.0: ∂L/∂mean becomes exactly the plain MSE gradient and ∂L/∂logvar =
-# 0.5(var - r^2), bounded and zero at var=r^2 -- no runaway amplification of
-# the collapsed tail. Combined with the softplus variance floor below
-# (VAR_PARAM) rather than relied on alone.
-NLL_BETA  = 1.0
+# A pre-fix diagnostic run found beta=0.5 concentrating almost all mean-
+# gradient weight onto the small tail of predictions pinned at the (then
+# hard-clamped) variance floor, whose calibration blew up from ~2 to ~87 over
+# the NLL phase. The floor itself -- not beta -- turned out to be the root
+# cause: switching to a smooth softplus floor (VAR_PARAM below) removes the
+# dead-gradient zone that made that amplification self-reinforcing. An
+# ablation with the softplus floor + the other fixes below (zero-init head,
+# optimizer/LR reset at the switch, proper val_nll_plain-based selection)
+# showed beta=0.5 selects the same-quality checkpoint as beta=1 (calib_E
+# 1.08 either way at the selected epoch), so beta is kept at the paper's own
+# default rather than raised to 1 -- 1.0 would fully remove the mean
+# gradient's dependence on predicted variance, discarding heteroscedastic
+# NLL's intended down-weighting of genuinely noisy points for no measured
+# benefit here.
+NLL_BETA  = 0.5
 VAR_PARAM = "softplus_offset"   # (1e) — was "clamp"; see deepsets.py _forward_z
 VAR_MIN_Z = 1e-3                # sigma_z ~= 0.032: ~300x below the measured
                                  # aleatoric floor (docs/THEORY.md 10.4: E=0.306,
