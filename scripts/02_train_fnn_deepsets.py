@@ -99,7 +99,25 @@ NLL_WARMUP_FRAC = 0.3
 # getting confidently wrong, not converging. Weighting each term by
 # var.detach()**NLL_BETA counteracts this (0 = plain NLL, 1 = fully
 # de-weighted; 0.5 is the paper's commonly-used middle ground).
-NLL_BETA = 0.5
+#
+# A diagnostic run (electron, full 100 epochs) found beta=0.5 concentrating
+# almost all mean-gradient weight onto the small tail of predictions pinned at
+# the variance floor, whose calibration (err^2/var) blew up from ~2 to ~87
+# over the NLL phase -- self-reinforcing collapse, not convergence. Raised to
+# 1.0: ∂L/∂mean becomes exactly the plain MSE gradient and ∂L/∂logvar =
+# 0.5(var - r^2), bounded and zero at var=r^2 -- no runaway amplification of
+# the collapsed tail. Combined with the softplus variance floor below
+# (VAR_PARAM) rather than relied on alone.
+NLL_BETA  = 1.0
+VAR_PARAM = "softplus_offset"   # (1e) — was "clamp"; see deepsets.py _forward_z
+VAR_MIN_Z = 1e-3                # sigma_z ~= 0.032: ~300x below the measured
+                                 # aleatoric floor (docs/THEORY.md 10.4: E=0.306,
+                                 # T=0.414 in z-MSE units), so it cannot bias
+                                 # genuinely-lit detectors, but high enough to
+                                 # keep exp() well-conditioned.
+
+ADAM_PATIENCE = 15   # (1f) Adam epochs with no NLL-phase checkpoint improvement
+                      # before stopping early. Never counted during warm-up.
 
 # ── L-BFGS fine-tuning (full-batch, chunked closure) ─────────────
 LBFGS_LR            = 1.0
@@ -200,6 +218,28 @@ def gaussian_nll_normalized(mean_raw, logvar_z, E_tgt, T_tgt, out_mean, out_std)
     return 0.5 * (nll_E + nll_T), nll_E, nll_T
 
 
+@torch.no_grad()
+def _val_select_metrics(mean_raw, logvar_z, E_tgt, T_tgt, out_mean, out_std):
+    """(val_nll_plain, val_mse): the two metrics (1c)'s checkpoint selection
+    needs. val_nll_plain is beta=0 NLL, a proper scoring rule (unlike the
+    beta-weighted training loss, which can be driven down by miscalibration
+    alone); val_mse is the plain mean-only z-MSE, comparable to the warm-up
+    phase's loss and used as (1c)'s guard against a regressed mean. Same
+    (mean, mean) return shape as mse_mean_only's (total, E, T) siblings, but
+    collapsed to one number each since selection only needs the combined value.
+    """
+    mean_flat   = torch.cat([mean_raw[..., 0], mean_raw[..., 1]], dim=1)
+    target_flat = torch.cat([E_tgt, T_tgt], dim=1)
+    mean_n   = (mean_flat   - out_mean) / out_std
+    target_n = (target_flat - out_mean) / out_std
+    logvar_flat = torch.cat([logvar_z[..., 0], logvar_z[..., 1]], dim=1)
+    var = logvar_flat.exp()
+
+    r2 = (target_n - mean_n) ** 2
+    nll_plain = 0.5 * (r2 / var + logvar_flat)
+    return nll_plain.mean().item(), r2.mean().item()
+
+
 def _plot_curves(log, path, adam_epochs=0, lbfgs_iter_log=None):
     try:
         import matplotlib
@@ -256,6 +296,7 @@ def _ckpt_config(tag: str):
         n_det=N_DETECTORS, primary_dim=PRIMARY_DIM,
         hidden=DS_HIDDEN, context=DS_CONTEXT, n_enc=DS_N_ENC, n_dec=DS_N_DEC,
         dropout=DS_DROPOUT,
+        var_param=VAR_PARAM, var_min=VAR_MIN_Z,
     )
 
 
@@ -267,7 +308,8 @@ def train_species(tag:        str,
                   strat_ids:  torch.Tensor,
                   blob_ids:   torch.Tensor,
                   n_epochs:   int,
-                  lbfgs_max_iter: int) -> None:
+                  lbfgs_max_iter: int,
+                  out_suffix: str = "") -> None:
     """Train one per-species DeepSets surrogate on its (already filtered) rows.
 
     Norm stats are computed on the SUBSET — per-species E/T scales differ —
@@ -282,10 +324,14 @@ def train_species(tag:        str,
     from the row index: the split relies on contiguous strategy-major blocks of
     equal size, which removing rows beforehand would break.
     """
-    ckpt_name   = f"fnn_{tag}.pt"
-    log_name    = f"fnn_{tag}_train_log.json"
-    curves_name = f"fnn_{tag}_train_curves.png"
-    tvp_name    = f"fnn_{tag}_target_vs_pred.png"
+    # (1h) --out-suffix lets an experimental run land beside the production
+    # checkpoints instead of silently overwriting fnn_{tag}.pt (see the plan's
+    # safety note — the fixed name used to have no escape hatch for an A/B).
+    tag_out     = f"{tag}{out_suffix}"
+    ckpt_name   = f"fnn_{tag_out}.pt"
+    log_name    = f"fnn_{tag_out}_train_log.json"
+    curves_name = f"fnn_{tag_out}_train_curves.png"
+    tvp_name    = f"fnn_{tag_out}_target_vs_pred.png"
 
     # Resume state, read once here and applied to the model further down (the
     # model/optimizer/scheduler don't exist yet at this point).
@@ -296,7 +342,7 @@ def train_species(tag:        str,
     #     pipeline_status.json: delete the file to force a retrain.
     #   {"adam_done": True}    -> Adam finished, jump straight to L-BFGS.
     #   full state             -> mid-Adam; resume at ["epoch"].
-    resume_path = os.path.join(OUTPUT_FOLDER, f"fnn_{tag}_resume.pt")
+    resume_path = os.path.join(OUTPUT_FOLDER, f"fnn_{tag_out}_resume.pt")
     resume_state = (torch.load(resume_path, map_location=DEVICE)
                     if os.path.exists(resume_path) else None)
     if resume_state is not None and resume_state.get("species_done"):
@@ -352,27 +398,43 @@ def train_species(tag:        str,
         n_det=N_DETECTORS, primary_dim=PRIMARY_DIM,
         hidden=DS_HIDDEN, context=DS_CONTEXT,
         n_enc=DS_N_ENC, n_dec=DS_N_DEC, dropout=DS_DROPOUT,
+        var_param=VAR_PARAM, var_min=VAR_MIN_Z,
     ).to(DEVICE)
     model.set_normalization(norm_stats)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[model] DeepSets params={n_params:,}  (flat MLP was ~6.7M)")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     steps_per_epoch = len(train_loader)
-    total_steps = n_epochs * steps_per_epoch
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, 
-        max_lr=LR_MAX, 
-        total_steps=total_steps,
-        pct_start=ONECYCLE_PCT_START,
-        anneal_strategy="cos",
-        div_factor=LR_MAX / LR, # OneCycle: min_lr = initial_lr / final_div_factor (relative to INITIAL lr).
-        final_div_factor=LR / LR_MIN,
-    )
+
+    def _build_optim_sched(n_sched_epochs: int):
+        """Fresh Adam + OneCycleLR sized for exactly `n_sched_epochs` epochs.
+
+        (1b) Used both for the warm-up phase and, separately, for the NLL
+        phase: at the switch a NEW optimizer/scheduler is built rather than
+        letting Adam's second moments (calibrated to MSE-scale gradients) and
+        OneCycle's continuing anneal (near its LR peak at the switch) carry
+        over. Phase-0 evidence: with the single continuous schedule, val blew
+        up within ~6 epochs of the switch and never recovered even as LR
+        decayed to 1e-6 — the damage was front-loaded right when the
+        optimizer was least prepared for the new loss landscape.
+        """
+        opt = torch.optim.Adam(model.parameters(), lr=LR)
+        sched = torch.optim.lr_scheduler.OneCycleLR(
+            opt,
+            max_lr=LR_MAX,
+            total_steps=max(n_sched_epochs, 1) * steps_per_epoch,
+            pct_start=ONECYCLE_PCT_START,
+            anneal_strategy="cos",
+            div_factor=LR_MAX / LR,  # OneCycle: min_lr = initial_lr / final_div_factor (relative to INITIAL lr).
+            final_div_factor=LR / LR_MIN,
+        )
+        return opt, sched
 
     log = []
-    best_val   = float("inf")
+    best_val   = float("inf")   # best (guarded) val_nll_plain seen in the NLL phase
     best_epoch = -1
+    warmup_val_mse   = None   # (1c) captured at the last warm-up epoch
+    adam_no_improve  = 0      # (1f) NLL-phase epochs since the last checkpoint save
 
     # Warm-start: mean-only MSE for the first fraction of Adam epochs, then
     # full Gaussian NLL. Clamp so at least one post-warmup epoch always runs
@@ -380,6 +442,9 @@ def train_species(tag:        str,
     n_warmup_epochs = min(int(round(NLL_WARMUP_FRAC * n_epochs)), max(0, n_epochs - 1))
     print(f"[{tag}] NLL warm-start: {n_warmup_epochs} mean-only epochs, "
           f"then {n_epochs - n_warmup_epochs} full-NLL epochs")
+
+    optimizer, scheduler = _build_optim_sched(
+        n_warmup_epochs if n_warmup_epochs > 0 else n_epochs)
 
     # Apply the resume state read at the top of this function (mirrors
     # 03_train_recon_deepsets.py's recon_resume.pt pattern).
@@ -390,11 +455,19 @@ def train_species(tag:        str,
             adam_done = True
             print(f"[{tag} resume] Adam done, jumping to L-BFGS")
         else:
+            # If we'd already switched to the NLL phase's own schedule before
+            # the preemption, rebuild that (not the warm-up) schedule shape
+            # before loading its state — total_steps must match what produced
+            # the saved optimizer/scheduler state_dicts.
+            if resume_state.get("nll_schedule_active"):
+                optimizer, scheduler = _build_optim_sched(n_epochs - n_warmup_epochs)
             model.load_state_dict(resume_state["state_dict"])
             optimizer.load_state_dict(resume_state["optimizer"])
             scheduler.load_state_dict(resume_state["scheduler"])
             start_epoch, log = resume_state["epoch"], resume_state["log"]
             best_val, best_epoch = resume_state["best_val"], resume_state["best_epoch"]
+            warmup_val_mse  = resume_state.get("warmup_val_mse")
+            adam_no_improve = resume_state.get("adam_no_improve", 0)
             print(f"[{tag} resume] epoch {start_epoch}  best_val={best_val:.6f}")
 
     # ── Phase 1: Adam (no permutation augmentation) ──────────────────────
@@ -402,6 +475,7 @@ def train_species(tag:        str,
         is_warmup = epoch < n_warmup_epochs
         if epoch == n_warmup_epochs and n_warmup_epochs > 0:
             print(f"[{tag}] warm-start done — switching to full Gaussian NLL")
+            optimizer, scheduler = _build_optim_sched(n_epochs - n_warmup_epochs)
         t_epoch = time.time()
         model.train()
         tr_tot, tr_E, tr_T, n_tr = 0.0, 0.0, 0.0, 0
@@ -441,12 +515,14 @@ def train_species(tag:        str,
 
         model.eval()
         va_tot, va_E, va_T, n_va = 0.0, 0.0, 0.0, 0
+        va_nll_plain, va_mse = 0.0, 0.0
         with torch.no_grad():
             for p_b, xy_b, E_b, T_b in val_loader:
                 p_b  = p_b.to(DEVICE, non_blocking=True)
                 xy_b = xy_b.to(DEVICE, non_blocking=True)
                 E_b  = E_b.to(DEVICE, non_blocking=True)
                 T_b  = T_b.to(DEVICE, non_blocking=True)
+                B = p_b.shape[0]
                 mean_pred, logvar_pred = model.forward_dist(p_b, xy_b)
                 if is_warmup:
                     loss, mE, mT = mse_mean_only(
@@ -456,7 +532,15 @@ def train_species(tag:        str,
                     loss, mE, mT = gaussian_nll_normalized(
                         mean_pred, logvar_pred, E_b, T_b, model.out_mean, model.out_std,
                     )
-                B = p_b.shape[0]
+                    # (1c) selection metrics only make sense once the variance
+                    # head is in the objective; during warm-up logvar is
+                    # untrained noise.
+                    nll_plain_b, mse_b = _val_select_metrics(
+                        mean_pred, logvar_pred, E_b, T_b,
+                        model.out_mean, model.out_std,
+                    )
+                    va_nll_plain += nll_plain_b * B
+                    va_mse       += mse_b * B
                 va_tot += loss.item() * B
                 va_E   += mE.item()   * B
                 va_T   += mT.item()   * B
@@ -464,6 +548,8 @@ def train_species(tag:        str,
         va_tot /= max(n_va, 1)
         va_E   /= max(n_va, 1)
         va_T   /= max(n_va, 1)
+        va_nll_plain /= max(n_va, 1)
+        va_mse       /= max(n_va, 1)
 
         dt = time.time() - t_epoch
         lr_now = optimizer.param_groups[0]["lr"]
@@ -481,19 +567,38 @@ def train_species(tag:        str,
 
         # Warmup losses (plain MSE) and NLL losses live on different scales —
         # never compare them, and never checkpoint a warmup-only model (its
-        # variance head hasn't been trained yet).
-        if not is_warmup and va_tot < best_val - 1e-5:
-            best_val   = va_tot
-            best_epoch = epoch + 1
-            torch.save({
-                "state_dict": model.state_dict(),
-                "epoch": epoch + 1,
-                "val_total": va_tot,
-                "val_E": va_E,
-                "val_T": va_T,
-                "norm_stats": norm_stats,
-                "config": _ckpt_config(tag)
-                }, os.path.join(OUTPUT_FOLDER, ckpt_name))
+        # variance head hasn't been trained yet). Last warm-up epoch's val_tot
+        # IS the plain mean MSE (mse_mean_only is the warm-up loss), so it's
+        # exactly what (1c)'s guard below needs to compare against.
+        if is_warmup and epoch == n_warmup_epochs - 1:
+            warmup_val_mse = va_tot
+
+        # (1c) Select on val_nll_plain (beta=0, a proper scoring rule — unlike
+        # the beta-weighted training loss, which can be driven down by
+        # miscalibration alone). Lexicographic guard: only accept a
+        # checkpoint whose mean hasn't regressed >2% from the warm-up's final
+        # value, so a NLL improvement bought by degrading the mean can never
+        # ship.
+        if not is_warmup:
+            val_mse_ok = (warmup_val_mse is None
+                          or va_mse <= 1.02 * warmup_val_mse)
+            if val_mse_ok and va_nll_plain < best_val - 1e-5:
+                best_val   = va_nll_plain
+                best_epoch = epoch + 1
+                adam_no_improve = 0
+                torch.save({
+                    "state_dict": model.state_dict(),
+                    "epoch": epoch + 1,
+                    "val_total": va_tot,
+                    "val_E": va_E,
+                    "val_T": va_T,
+                    "val_nll_plain": va_nll_plain,
+                    "val_mse": va_mse,
+                    "norm_stats": norm_stats,
+                    "config": _ckpt_config(tag)
+                    }, os.path.join(OUTPUT_FOLDER, ckpt_name))
+            else:
+                adam_no_improve += 1
 
         if (epoch + 1) % RESUME_CKPT_INTERVAL == 0:
             torch.save({
@@ -501,7 +606,20 @@ def train_species(tag:        str,
                 "scheduler": scheduler.state_dict(),
                 "epoch": epoch + 1, "log": log,
                 "best_val": best_val, "best_epoch": best_epoch,
+                "warmup_val_mse": warmup_val_mse,
+                "adam_no_improve": adam_no_improve,
+                "nll_schedule_active": not is_warmup,
             }, resume_path)
+
+        # (1f) Adam early stopping, NLL phase only — never during warm-up
+        # (the variance head hasn't switched on yet, so there's nothing to
+        # plateau against). Phase-0 measured Adam spending 34 of 50 minutes
+        # past its best epoch on all three species.
+        if not is_warmup and adam_no_improve >= ADAM_PATIENCE:
+            print(f"[{tag}] Adam early stop: {ADAM_PATIENCE} NLL epochs with no "
+                  f"checkpoint improvement (best val_nll_plain={best_val:.6f} "
+                  f"at epoch {best_epoch})")
+            break
 
     if not adam_done:
         with open(os.path.join(OUTPUT_FOLDER, log_name), "w") as f:
@@ -524,7 +642,9 @@ def train_species(tag:        str,
     print("=" * 72)
     adam_ckpt = torch.load(os.path.join(OUTPUT_FOLDER, ckpt_name), map_location=DEVICE)
     model.load_state_dict(adam_ckpt["state_dict"])
-    adam_best_val = adam_ckpt["val_total"]
+    # (1c) Same selection key as the Adam phase (val_nll_plain) so "best" means
+    # the same thing across both phases; .get falls back for pre-fix checkpoints.
+    adam_best_val = adam_ckpt.get("val_nll_plain", adam_ckpt["val_total"])
     print(f"[lbfgs] loaded Adam best epoch={adam_ckpt['epoch']} val={adam_best_val:.6f}")
     model.eval()
 
@@ -589,30 +709,38 @@ def train_species(tag:        str,
         # Validation (no_grad — does not affect L-BFGS gradients)
         with torch.no_grad():
             va_tot, va_E, va_T, n_va = 0.0, 0.0, 0.0, 0
+            va_nll_plain, va_mse = 0.0, 0.0
             for p_b, xy_b, E_b, T_b in val_loader:
                 p_b  = p_b.to(DEVICE, non_blocking=True)
                 xy_b = xy_b.to(DEVICE, non_blocking=True)
                 E_b  = E_b.to(DEVICE, non_blocking=True)
                 T_b  = T_b.to(DEVICE, non_blocking=True)
+                B = p_b.shape[0]
                 v_mean, v_logvar = model.forward_dist(p_b, xy_b)
                 v_loss, v_mE, v_mT = gaussian_nll_normalized(
                     v_mean, v_logvar, E_b, T_b, model.out_mean, model.out_std,
                 )
-                B = p_b.shape[0]
+                nll_plain_b, mse_b = _val_select_metrics(
+                    v_mean, v_logvar, E_b, T_b, model.out_mean, model.out_std,
+                )
                 va_tot += v_loss.item() * B
                 va_E   += v_mE.item()   * B
                 va_T   += v_mT.item()   * B
+                va_nll_plain += nll_plain_b * B
+                va_mse       += mse_b * B
                 n_va   += B
             va_tot /= max(n_va, 1)
             va_E   /= max(n_va, 1)
             va_T   /= max(n_va, 1)
+            va_nll_plain /= max(n_va, 1)
+            va_mse       /= max(n_va, 1)
         it = len(lbfgs_iter_log)
         lbfgs_iter_log.append(dict(
             iter=it, loss=loss.item(), mse_E=mE.item(), mse_T=mT.item(),
             val=va_tot, val_E=va_E, val_T=va_T,
         ))
-        if va_tot < lbfgs_best_val - 1e-5:
-            lbfgs_best_val = va_tot
+        if va_nll_plain < lbfgs_best_val - 1e-5:
+            lbfgs_best_val = va_nll_plain
             lbfgs_best_iter = it
             lbfgs_no_improve = 0
             torch.save({
@@ -623,6 +751,8 @@ def train_species(tag:        str,
                 "val_total": va_tot,
                 "val_E": va_E,
                 "val_T": va_T,
+                "val_nll_plain": va_nll_plain,
+                "val_mse": va_mse,
                 "norm_stats": norm_stats,
                 "config": _ckpt_config(tag)
             }, os.path.join(OUTPUT_FOLDER, ckpt_name))
@@ -727,6 +857,7 @@ def train_species(tag:        str,
 
 
 def main():
+    global NLL_BETA, VAR_PARAM, VAR_MIN_Z, ADAM_PATIENCE
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=N_EPOCHS,
                     help="Adam epochs per species (default from config)")
@@ -734,12 +865,31 @@ def main():
                     help="L-BFGS max iterations per species (default from config)")
     ap.add_argument("--species", type=str, default=",".join(SPECIES_NAMES),
                     help=f"comma-separated subset of {{{','.join(SPECIES_NAMES)}}} to (re)train")
+    ap.add_argument("--out-suffix", type=str, default="",
+                    help="appended to output filenames (fnn_<species><suffix>.pt, etc) "
+                         "so an experimental run cannot clobber production checkpoints")
+    ap.add_argument("--nll-beta", type=float, default=NLL_BETA,
+                    help="beta-NLL reweighting exponent (default from config)")
+    ap.add_argument("--var-param", type=str, default=VAR_PARAM,
+                    choices=("clamp", "softplus_offset"),
+                    help="variance parameterization (default from config)")
+    ap.add_argument("--var-min", type=float, default=VAR_MIN_Z,
+                    help="z-space variance floor for --var-param=softplus_offset "
+                         "(default from config)")
+    ap.add_argument("--adam-patience", type=int, default=ADAM_PATIENCE,
+                    help="NLL-phase Adam epochs with no checkpoint improvement "
+                         "before stopping early (default from config)")
     args = ap.parse_args()
     wanted = {s.strip() for s in args.species.split(",") if s.strip()}
     unknown = wanted - {tag for tag, _ in SPECIES_TAGS}
     if unknown:
         raise SystemExit(f"unknown species {sorted(unknown)}; "
                          f"valid: {', '.join(SPECIES_NAMES)}")
+
+    NLL_BETA      = args.nll_beta
+    VAR_PARAM     = args.var_param
+    VAR_MIN_Z     = args.var_min
+    ADAM_PATIENCE = args.adam_patience
 
     print("=" * 72)
     print("v6/02_train_fnn_deepsets.py — two parallel per-species DeepSets surrogates")
@@ -754,6 +904,10 @@ def main():
     print(f"lr              : {LR} -> {LR_MAX} -> {LR_MIN} OneCycleLR (pct_start={ONECYCLE_PCT_START})")
     print(f"deepsets        : hidden={DS_HIDDEN} context={DS_CONTEXT} "
           f"enc={DS_N_ENC} dec={DS_N_DEC} dropout={DS_DROPOUT}")
+    print(f"nll-beta        : {NLL_BETA}   var-param: {VAR_PARAM}   var-min: {VAR_MIN_Z}   "
+          f"adam-patience: {ADAM_PATIENCE}")
+    if args.out_suffix:
+        print(f"out-suffix      : {args.out_suffix!r} (checkpoints will NOT overwrite production)")
     print(f"augmentation    : NONE (equivariant by construction)")
 
     t0 = time.time()
@@ -795,6 +949,7 @@ def main():
             primary[idx], xy[idx], E_all[idx], T_all[idx], strat_ids[idx],
             blob_ids[idx],
             n_epochs=args.epochs, lbfgs_max_iter=args.lbfgs_iters,
+            out_suffix=args.out_suffix,
         )
 
 

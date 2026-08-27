@@ -24,6 +24,7 @@ flows through. The logvar head stays in z-scored space.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..constants import N_DETECTORS, PRIMARY_DIM
 from .blocks import _mlp
@@ -51,18 +52,37 @@ class DeepSetsSurrogate(nn.Module):
                  context:     int = 64,
                  n_enc:       int = 3,
                  n_dec:       int = 3,
-                 dropout:     float = 0.0):
+                 dropout:     float = 0.0,
+                 var_param:   str = "clamp",
+                 var_min:     float = 1e-3):
         super().__init__()
         self.n_det       = n_det
         self.primary_dim = primary_dim
         self.hidden      = hidden
         self.context     = context
+        if var_param not in ("clamp", "softplus_offset"):
+            raise ValueError(f"var_param must be 'clamp' or 'softplus_offset', got {var_param!r}")
+        self.var_param = var_param
+        self.var_min_z = var_min
 
         token_dim = primary_dim + 2                      # [q, x_i, y_i]
         self.encoder = _mlp(token_dim, hidden, hidden, n_enc, dropout)
         self.context_proj = nn.Linear(hidden, context)
         # 4 outputs per detector: mu_E, mu_T, logvar_E, logvar_T (all z-scored).
         self.decoder = _mlp(hidden + context, hidden, 4, n_dec, dropout)
+
+        # Zero-init the logvar readout (rows 2,3 of the final linear) so
+        # logvar_z = 0 (var = 1) at t=0 REGARDLESS of the trunk's scale, instead
+        # of an arbitrary default-init row. Matters most when the mean branch
+        # gets pretrained (MSE warm-start) before the variance head's loss term
+        # is ever switched on: without this the logvar readout at switch-time is
+        # `random_row . pretrained_trunk`, already extreme enough to saturate
+        # the floor immediately (see scripts/02_train_fnn_deepsets.py Phase-0
+        # diagnostics, M2).
+        final_linear = self.decoder[-1]
+        with torch.no_grad():
+            final_linear.weight[2:].zero_()
+            final_linear.bias[2:].zero_()
 
         # SAME buffer layout as FNNSurrogate so set_normalization is identical
         # and the trainer's log-T stat mutation (out_mean[n_det:]) flows through.
@@ -85,8 +105,16 @@ class DeepSetsSurrogate(nn.Module):
 
         Returns:
             mu_z     : (B, nd, 2) z-scored per-channel mean.
-            logvar_z : (B, nd, 2) z-scored per-channel log-variance, clamped
-                       to [-10, 10] (var in [4.5e-5, 2.2e4]) for exp() safety.
+            logvar_z : (B, nd, 2) z-scored per-channel log-variance.
+                       `var_param="clamp"` (legacy): hard-clamped to [-10, 10]
+                       (var in [4.5e-5, 2.2e4]). This has zero gradient at the
+                       bound (torch.clamp's backward masks out pinned elements),
+                       which combined with beta-NLL's var**(beta-1) reweighting
+                       created a self-reinforcing dead zone (Phase-0 diagnostics:
+                       wfrac_floor >> floor_frac). `var_param="softplus_offset"`
+                       (default for new training runs) replaces this with
+                       `var = softplus(raw) + var_min_z`, which has no dead zone
+                       and only floors variance from below, never above.
         """
         B = primary.shape[0]
         nd = self.n_det
@@ -110,8 +138,13 @@ class DeepSetsSurrogate(nn.Module):
         c = c.unsqueeze(1).expand(B, nd, -1)                          # (B, nd, context)
         out_n = self.decoder(torch.cat([h, c], dim=-1))              # (B, nd, 4)  z-scored
 
-        mu_z     = out_n[..., :2]                                     # (B, nd, 2): mu_E, mu_T
-        logvar_z = out_n[..., 2:].clamp(min=-10.0, max=10.0)          # (B, nd, 2): logvar_E, logvar_T
+        mu_z = out_n[..., :2]                                         # (B, nd, 2): mu_E, mu_T
+        raw_logvar = out_n[..., 2:]                                   # (B, nd, 2): logvar_E, logvar_T
+        if self.var_param == "clamp":
+            logvar_z = raw_logvar.clamp(min=-10.0, max=10.0)
+        else:  # "softplus_offset"
+            var_z = F.softplus(raw_logvar) + self.var_min_z
+            logvar_z = var_z.log()
         return mu_z, logvar_z
 
     def _unnorm_mean(self, mu_z: torch.Tensor) -> torch.Tensor:
@@ -183,6 +216,10 @@ def build_surrogate_from_ckpt(ckpt: dict, n_det: int, primary_dim: int, device=N
             n_enc=int(cfg.get("n_enc", 3)),
             n_dec=int(cfg.get("n_dec", 3)),
             dropout=float(cfg.get("dropout", 0.0)),
+            # Defaults reproduce every checkpoint saved before var_param/var_min
+            # existed in the config (hard clamp) — see deepsets.py _forward_z.
+            var_param=cfg.get("var_param", "clamp"),
+            var_min=float(cfg.get("var_min", 1e-3)),
         )
     else:
         model = FNNSurrogate(
