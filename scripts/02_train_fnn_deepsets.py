@@ -29,9 +29,16 @@ Run:
     python 02_train_fnn_deepsets.py                         # both species
     python 02_train_fnn_deepsets.py --species muon          # retrain one
     python 02_train_fnn_deepsets.py --epochs 2 --lbfgs-iters 3   # smoke run
+
+This branch (diagnostics-nll-phase) adds Phase-0 diagnostic instrumentation
+(val_diagnostics/_reduce_diagnostics, the per-epoch [diag] print line,
+train_mse tracking) on top of master's practical fix, for characterizing the
+NLL-phase variance collapse. It is not needed for the fix to function and is
+kept separate so production training stays lean.
 """
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -100,21 +107,22 @@ NLL_WARMUP_FRAC = 0.3
 # var.detach()**NLL_BETA counteracts this (0 = plain NLL, 1 = fully
 # de-weighted; 0.5 is the paper's commonly-used middle ground).
 #
-# A diagnostic run (electron, full 100 epochs) found beta=0.5 concentrating
-# almost all mean-gradient weight onto the small tail of predictions pinned at
-# the variance floor, whose calibration (err^2/var) blew up from ~2 to ~87
-# over the NLL phase -- self-reinforcing collapse, not convergence. Raised to
-# 1.0: ∂L/∂mean becomes exactly the plain MSE gradient and ∂L/∂logvar =
-# 0.5(var - r^2), bounded and zero at var=r^2 -- no runaway amplification of
-# the collapsed tail. Combined with the softplus variance floor below
-# (VAR_PARAM) rather than relied on alone.
+# Phase-0 diagnostics (job 42042148, electron) measured wfrac_floor >>
+# floor_frac from the FIRST NLL epoch (wfrac_floor_E=0.67 vs floor_frac_E=
+# 17.2% at epoch 31, climbing to 0.92 vs 46.0% by epoch 100), with a real LIT
+# component in the pinned tail (floor_frac_lit_E: 14.1% -> 31.8%) and calib_E
+# blowing up from 2.12 to 86.6. beta=0.5 was concentrating gradient mass on
+# exactly the points that (under the old hard clamp) could not move. Raised
+# to 1.0 per the plan's gated decision table: ∂L/∂mean becomes exactly the
+# plain MSE gradient and ∂L/∂logvar = 0.5(var - r^2), bounded and zero at
+# var=r^2 -- no runaway amplification of the collapsed tail. Combined with
+# the softplus variance floor below (VAR_PARAM) rather than relied on alone.
 NLL_BETA  = 1.0
 VAR_PARAM = "softplus_offset"   # (1e) — was "clamp"; see deepsets.py _forward_z
 VAR_MIN_Z = 1e-3                # sigma_z ~= 0.032: ~300x below the measured
-                                 # aleatoric floor (docs/THEORY.md 10.4: E=0.306,
-                                 # T=0.414 in z-MSE units), so it cannot bias
-                                 # genuinely-lit detectors, but high enough to
-                                 # keep exp() well-conditioned.
+                                 # aleatoric floor (ALEATORIC_FLOOR_Z below), so
+                                 # it cannot bias genuinely-lit detectors, but
+                                 # high enough to keep exp() well-conditioned.
 
 ADAM_PATIENCE = 15   # (1f) Adam epochs with no NLL-phase checkpoint improvement
                       # before stopping early. Never counted during warm-up.
@@ -167,7 +175,7 @@ def permute_detectors_batch(xy: torch.Tensor,
     E_p  = torch.gather(E,  1, perms)
     T_p  = torch.gather(T,  1, perms)
     return xy_p, E_p, T_p
-    
+
 
 def mse_mean_only(mean_raw, E_tgt, T_tgt, out_mean, out_std):
     """Plain z-scored MSE on the mean channel, ignoring variance entirely.
@@ -218,15 +226,49 @@ def gaussian_nll_normalized(mean_raw, logvar_z, E_tgt, T_tgt, out_mean, out_std)
     return 0.5 * (nll_E + nll_T), nll_E, nll_T
 
 
+# Mirrors modules/surrogates/deepsets.py::_forward_z's achievable floor for the
+# ACTIVE VAR_PARAM. Under "clamp" this is a hard, exactly-reachable bound
+# (dead gradient zone). Under "softplus_offset" var only asymptotes to var_min
+# as raw -> -inf and never exactly reaches it, so `at_floor` below uses a
+# tolerance band (FLOOR_TOL_Z) rather than requiring exact equality.
+LOGVAR_FLOOR_Z = -10.0 if VAR_PARAM == "clamp" else math.log(VAR_MIN_Z)
+FLOOR_TOL_Z    = 1e-6 if VAR_PARAM == "clamp" else 0.1
+
+# docs/THEORY.md 10.4, "Measured floor" table (z-MSE units): the irreducible
+# within-primary label variance. A prediction claiming LESS variance than this
+# is claiming a precision the data cannot contain. exp(LOGVAR_FLOOR_Z)=4.5e-5 is
+# ~6700x below the E entry, so today's clamp permits exactly that.
+ALEATORIC_FLOOR_Z = {"E": 0.306, "T": 0.414}
+
+
 @torch.no_grad()
-def _val_select_metrics(mean_raw, logvar_z, E_tgt, T_tgt, out_mean, out_std):
-    """(val_nll_plain, val_mse): the two metrics (1c)'s checkpoint selection
-    needs. val_nll_plain is beta=0 NLL, a proper scoring rule (unlike the
-    beta-weighted training loss, which can be driven down by miscalibration
-    alone); val_mse is the plain mean-only z-MSE, comparable to the warm-up
-    phase's loss and used as (1c)'s guard against a regressed mean. Same
-    (mean, mean) return shape as mse_mean_only's (total, E, T) siblings, but
-    collapsed to one number each since selection only needs the combined value.
+def val_diagnostics(mean_raw, logvar_z, E_tgt, T_tgt, out_mean, out_std):
+    """Per-batch diagnostic SUMS (not means) for the NLL phase. Read-only.
+
+    Returns sums plus counts so callers accumulate across batches exactly like
+    the existing `va_tot += loss.item() * B` pattern, then divide once at the
+    end. Consumes no RNG and touches no autograd graph, so adding it cannot
+    perturb training — that non-invasiveness is the whole point of Phase 0 and
+    is verified by diffing the warm-up epochs against the previous run's log.
+
+    The quantities answer three separate questions:
+
+      * is the MEAN degrading?          -> `mse_*` (plain, unweighted z-MSE,
+        the same formula as `mse_mean_only`, so it is comparable both to the
+        warm-up epochs and to ALEATORIC_FLOOR_Z)
+      * is the VARIANCE miscalibrated?  -> `calib_*` (mean err^2/var; 1.0 is
+        calibrated, >1 over-confident) and `nll_plain_*` (beta=0, a proper
+        scoring rule, unlike the beta-weighted training loss)
+      * WHERE is the collapsed tail?    -> `floor_*` split by dark/lit, and
+        `wfrac_floor`, the share of total mean-gradient weight carried by
+        floor-pinned points. Points at the clamp get var^(beta-1) = 149x the
+        weight of a var=1 point AND receive zero gradient of their own (clamp
+        backward is grad * (min <= x <= max)), so a large wfrac_floor means the
+        objective has been taken over by points that cannot themselves improve.
+
+    `dark` is tested on the RAW targets, never the z-scored ones: E is
+    log1p(counts) and T is log1p(T*T_LOG_SCALE), so "no hit" is exactly 0 in
+    both, but z-scoring moves 0 off 0.
     """
     mean_flat   = torch.cat([mean_raw[..., 0], mean_raw[..., 1]], dim=1)
     target_flat = torch.cat([E_tgt, T_tgt], dim=1)
@@ -234,10 +276,57 @@ def _val_select_metrics(mean_raw, logvar_z, E_tgt, T_tgt, out_mean, out_std):
     target_n = (target_flat - out_mean) / out_std
     logvar_flat = torch.cat([logvar_z[..., 0], logvar_z[..., 1]], dim=1)
     var = logvar_flat.exp()
+    n = E_tgt.shape[1]
 
-    r2 = (target_n - mean_n) ** 2
-    nll_plain = 0.5 * (r2 / var + logvar_flat)
-    return nll_plain.mean().item(), r2.mean().item()
+    r2       = (target_n - mean_n) ** 2
+    nll_plain = 0.5 * (r2 / var + logvar_flat)          # beta = 0
+    calib     = r2 / var
+    at_floor  = logvar_flat <= (LOGVAR_FLOOR_Z + FLOOR_TOL_Z)
+    dark      = target_flat == 0
+    lit       = ~dark
+    # Effective mean-gradient weight per element under the training loss.
+    w = var ** (NLL_BETA - 1.0)
+
+    out = {}
+    for ch, sl in (("E", slice(None, n)), ("T", slice(n, None))):
+        floor_v = ALEATORIC_FLOOR_Z[ch]
+        out[f"mse_{ch}"]        = r2[:, sl].sum().item()
+        out[f"nll_plain_{ch}"]  = nll_plain[:, sl].sum().item()
+        out[f"calib_{ch}"]      = calib[:, sl].sum().item()
+        out[f"floor_{ch}"]      = at_floor[:, sl].sum().item()
+        out[f"floor_dark_{ch}"] = (at_floor & dark)[:, sl].sum().item()
+        out[f"floor_lit_{ch}"]  = (at_floor & lit)[:, sl].sum().item()
+        # Lit predictions claiming less noise than the measured floor allows.
+        out[f"subfloor_lit_{ch}"] = ((var < floor_v) & lit)[:, sl].sum().item()
+        out[f"logvar_{ch}"]     = logvar_flat[:, sl].sum().item()
+        out[f"n_dark_{ch}"]     = dark[:, sl].sum().item()
+        out[f"n_lit_{ch}"]      = lit[:, sl].sum().item()
+        out[f"n_{ch}"]          = r2[:, sl].numel()
+        out[f"w_{ch}"]          = w[:, sl].sum().item()
+        out[f"w_floor_{ch}"]    = (w * at_floor)[:, sl].sum().item()
+    return out
+
+
+def _reduce_diagnostics(acc):
+    """Turn accumulated `val_diagnostics` sums into the per-epoch log entry."""
+    if not acc:
+        return {}
+    out = {}
+    for ch in ("E", "T"):
+        n     = max(acc[f"n_{ch}"], 1)
+        n_lit = max(acc[f"n_lit_{ch}"], 1)
+        out[f"val_mse_{ch}"]       = acc[f"mse_{ch}"] / n
+        out[f"val_nll_plain_{ch}"] = acc[f"nll_plain_{ch}"] / n
+        out[f"calib_{ch}"]         = acc[f"calib_{ch}"] / n
+        out[f"floor_frac_{ch}"]    = acc[f"floor_{ch}"] / n
+        out[f"floor_frac_dark_{ch}"] = acc[f"floor_dark_{ch}"] / max(acc[f"n_dark_{ch}"], 1)
+        out[f"floor_frac_lit_{ch}"]  = acc[f"floor_lit_{ch}"] / n_lit
+        out[f"subfloor_lit_{ch}"]  = acc[f"subfloor_lit_{ch}"] / n_lit
+        out[f"mean_logvar_{ch}"]   = acc[f"logvar_{ch}"] / n
+        out[f"wfrac_floor_{ch}"]   = acc[f"w_floor_{ch}"] / max(acc[f"w_{ch}"], 1e-12)
+    out["val_mse"]       = 0.5 * (out["val_mse_E"] + out["val_mse_T"])
+    out["val_nll_plain"] = 0.5 * (out["val_nll_plain_E"] + out["val_nll_plain_T"])
+    return out
 
 
 def _plot_curves(log, path, adam_epochs=0, lbfgs_iter_log=None):
@@ -268,7 +357,7 @@ def _plot_curves(log, path, adam_epochs=0, lbfgs_iter_log=None):
         if adam_epochs > 0:
             for ax in axes:
                 ax.axvline(adam_epochs, color="gray", linestyle="--", alpha=0.5,
-                           label="Adam\u2192L-BFGS")
+                           label="Adam→L-BFGS")
 
         axes[0].set_xlabel("epoch / iter"); axes[0].set_ylabel("MSE (z-scored)")
         axes[0].set_title("total");  axes[0].grid(alpha=0.3); axes[0].legend(fontsize=9)
@@ -479,6 +568,7 @@ def train_species(tag:        str,
         t_epoch = time.time()
         model.train()
         tr_tot, tr_E, tr_T, n_tr = 0.0, 0.0, 0.0, 0
+        tr_mse_E, tr_mse_T = 0.0, 0.0
         for p_b, xy_b, E_b, T_b in train_loader:
             p_b  = p_b.to(DEVICE, non_blocking=True)
             xy_b = xy_b.to(DEVICE, non_blocking=True)
@@ -509,20 +599,32 @@ def train_species(tag:        str,
             tr_E   += mE.item()   * B
             tr_T   += mT.item()   * B
             n_tr   += B
+            # Plain MSE of the mean on the TRAIN batch, on detached tensors.
+            # Separates "the shared trunk is being reshaped" (this rises too)
+            # from "val-only artifact" (only the val number moves). Costs one
+            # extra elementwise reduction on tensors already on device.
+            if not is_warmup:
+                with torch.no_grad():
+                    _, _tmE, _tmT = mse_mean_only(
+                        mean_pred.detach(), E_b, T_b, model.out_mean, model.out_std,
+                    )
+                tr_mse_E += _tmE.item() * B
+                tr_mse_T += _tmT.item() * B
         tr_tot /= max(n_tr, 1)
         tr_E   /= max(n_tr, 1)
         tr_T   /= max(n_tr, 1)
+        tr_mse_E /= max(n_tr, 1)
+        tr_mse_T /= max(n_tr, 1)
 
         model.eval()
         va_tot, va_E, va_T, n_va = 0.0, 0.0, 0.0, 0
-        va_nll_plain, va_mse = 0.0, 0.0
+        diag_acc = {}
         with torch.no_grad():
             for p_b, xy_b, E_b, T_b in val_loader:
                 p_b  = p_b.to(DEVICE, non_blocking=True)
                 xy_b = xy_b.to(DEVICE, non_blocking=True)
                 E_b  = E_b.to(DEVICE, non_blocking=True)
                 T_b  = T_b.to(DEVICE, non_blocking=True)
-                B = p_b.shape[0]
                 mean_pred, logvar_pred = model.forward_dist(p_b, xy_b)
                 if is_warmup:
                     loss, mE, mT = mse_mean_only(
@@ -532,15 +634,14 @@ def train_species(tag:        str,
                     loss, mE, mT = gaussian_nll_normalized(
                         mean_pred, logvar_pred, E_b, T_b, model.out_mean, model.out_std,
                     )
-                    # (1c) selection metrics only make sense once the variance
-                    # head is in the objective; during warm-up logvar is
-                    # untrained noise.
-                    nll_plain_b, mse_b = _val_select_metrics(
+                    # Diagnostics only make sense once the variance head is in
+                    # the objective; during warm-up logvar is untrained noise.
+                    for k, v in val_diagnostics(
                         mean_pred, logvar_pred, E_b, T_b,
                         model.out_mean, model.out_std,
-                    )
-                    va_nll_plain += nll_plain_b * B
-                    va_mse       += mse_b * B
+                    ).items():
+                        diag_acc[k] = diag_acc.get(k, 0) + v
+                B = p_b.shape[0]
                 va_tot += loss.item() * B
                 va_E   += mE.item()   * B
                 va_T   += mT.item()   * B
@@ -548,8 +649,7 @@ def train_species(tag:        str,
         va_tot /= max(n_va, 1)
         va_E   /= max(n_va, 1)
         va_T   /= max(n_va, 1)
-        va_nll_plain /= max(n_va, 1)
-        va_mse       /= max(n_va, 1)
+        diag = _reduce_diagnostics(diag_acc)
 
         dt = time.time() - t_epoch
         lr_now = optimizer.param_groups[0]["lr"]
@@ -558,11 +658,22 @@ def train_species(tag:        str,
               f"train={tr_tot:.4f} (E={tr_E:.4f} T={tr_T:.4f})  "
               f"val={va_tot:.4f} (E={va_E:.4f} T={va_T:.4f})  "
               f"lr={lr_now:.1e}  {dt:.1f}s")
+        if diag:
+            print(f"  [diag] val_mse={diag['val_mse']:.4f} "
+                  f"(E={diag['val_mse_E']:.4f} T={diag['val_mse_T']:.4f})  "
+                  f"train_mse=(E={tr_mse_E:.4f} T={tr_mse_T:.4f})  "
+                  f"calib=(E={diag['calib_E']:.2f} T={diag['calib_T']:.2f})  "
+                  f"floor=(E={100*diag['floor_frac_E']:.1f}% "
+                  f"dark={100*diag['floor_frac_dark_E']:.1f}% "
+                  f"lit={100*diag['floor_frac_lit_E']:.1f}%)  "
+                  f"wfrac_floor=(E={diag['wfrac_floor_E']:.2f} T={diag['wfrac_floor_T']:.2f})")
         log.append(dict(
             epoch=epoch + 1, phase=phase_tag,
             train=tr_tot, train_E=tr_E, train_T=tr_T,
             val=va_tot,   val_E=va_E,   val_T=va_T,
             lr=lr_now, dt=dt,
+            train_mse_E=tr_mse_E, train_mse_T=tr_mse_T,
+            **diag,
         ))
 
         # Warmup losses (plain MSE) and NLL losses live on different scales —
@@ -574,16 +685,16 @@ def train_species(tag:        str,
             warmup_val_mse = va_tot
 
         # (1c) Select on val_nll_plain (beta=0, a proper scoring rule — unlike
-        # the beta-weighted training loss, which can be driven down by
-        # miscalibration alone). Lexicographic guard: only accept a
-        # checkpoint whose mean hasn't regressed >2% from the warm-up's final
-        # value, so a NLL improvement bought by degrading the mean can never
-        # ship.
+        # the beta-weighted training loss, which epoch-100's runaway calib_E
+        # (86.6x overconfident) showed can be driven down by miscalibration
+        # alone). Lexicographic guard: only accept a checkpoint whose mean
+        # hasn't regressed >2% from the warm-up's final value, so a NLL
+        # improvement bought by degrading the mean can never ship.
         if not is_warmup:
             val_mse_ok = (warmup_val_mse is None
-                          or va_mse <= 1.02 * warmup_val_mse)
-            if val_mse_ok and va_nll_plain < best_val - 1e-5:
-                best_val   = va_nll_plain
+                          or diag["val_mse"] <= 1.02 * warmup_val_mse)
+            if val_mse_ok and diag["val_nll_plain"] < best_val - 1e-5:
+                best_val   = diag["val_nll_plain"]
                 best_epoch = epoch + 1
                 adam_no_improve = 0
                 torch.save({
@@ -592,8 +703,8 @@ def train_species(tag:        str,
                     "val_total": va_tot,
                     "val_E": va_E,
                     "val_T": va_T,
-                    "val_nll_plain": va_nll_plain,
-                    "val_mse": va_mse,
+                    "val_nll_plain": diag["val_nll_plain"],
+                    "val_mse": diag["val_mse"],
                     "norm_stats": norm_stats,
                     "config": _ckpt_config(tag)
                     }, os.path.join(OUTPUT_FOLDER, ckpt_name))
@@ -709,38 +820,37 @@ def train_species(tag:        str,
         # Validation (no_grad — does not affect L-BFGS gradients)
         with torch.no_grad():
             va_tot, va_E, va_T, n_va = 0.0, 0.0, 0.0, 0
-            va_nll_plain, va_mse = 0.0, 0.0
+            diag_acc = {}
             for p_b, xy_b, E_b, T_b in val_loader:
                 p_b  = p_b.to(DEVICE, non_blocking=True)
                 xy_b = xy_b.to(DEVICE, non_blocking=True)
                 E_b  = E_b.to(DEVICE, non_blocking=True)
                 T_b  = T_b.to(DEVICE, non_blocking=True)
-                B = p_b.shape[0]
                 v_mean, v_logvar = model.forward_dist(p_b, xy_b)
                 v_loss, v_mE, v_mT = gaussian_nll_normalized(
                     v_mean, v_logvar, E_b, T_b, model.out_mean, model.out_std,
                 )
-                nll_plain_b, mse_b = _val_select_metrics(
+                for k, v in val_diagnostics(
                     v_mean, v_logvar, E_b, T_b, model.out_mean, model.out_std,
-                )
+                ).items():
+                    diag_acc[k] = diag_acc.get(k, 0) + v
+                B = p_b.shape[0]
                 va_tot += v_loss.item() * B
                 va_E   += v_mE.item()   * B
                 va_T   += v_mT.item()   * B
-                va_nll_plain += nll_plain_b * B
-                va_mse       += mse_b * B
                 n_va   += B
             va_tot /= max(n_va, 1)
             va_E   /= max(n_va, 1)
             va_T   /= max(n_va, 1)
-            va_nll_plain /= max(n_va, 1)
-            va_mse       /= max(n_va, 1)
+            lbfgs_diag = _reduce_diagnostics(diag_acc)
         it = len(lbfgs_iter_log)
         lbfgs_iter_log.append(dict(
             iter=it, loss=loss.item(), mse_E=mE.item(), mse_T=mT.item(),
             val=va_tot, val_E=va_E, val_T=va_T,
+            **lbfgs_diag,
         ))
-        if va_nll_plain < lbfgs_best_val - 1e-5:
-            lbfgs_best_val = va_nll_plain
+        if lbfgs_diag["val_nll_plain"] < lbfgs_best_val - 1e-5:
+            lbfgs_best_val = lbfgs_diag["val_nll_plain"]
             lbfgs_best_iter = it
             lbfgs_no_improve = 0
             torch.save({
@@ -751,8 +861,8 @@ def train_species(tag:        str,
                 "val_total": va_tot,
                 "val_E": va_E,
                 "val_T": va_T,
-                "val_nll_plain": va_nll_plain,
-                "val_mse": va_mse,
+                "val_nll_plain": lbfgs_diag["val_nll_plain"],
+                "val_mse": lbfgs_diag["val_mse"],
                 "norm_stats": norm_stats,
                 "config": _ckpt_config(tag)
             }, os.path.join(OUTPUT_FOLDER, ckpt_name))
@@ -857,7 +967,7 @@ def train_species(tag:        str,
 
 
 def main():
-    global NLL_BETA, VAR_PARAM, VAR_MIN_Z, ADAM_PATIENCE
+    global NLL_BETA, VAR_PARAM, VAR_MIN_Z, LOGVAR_FLOOR_Z, FLOOR_TOL_Z, ADAM_PATIENCE
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=N_EPOCHS,
                     help="Adam epochs per species (default from config)")
@@ -889,6 +999,8 @@ def main():
     NLL_BETA      = args.nll_beta
     VAR_PARAM     = args.var_param
     VAR_MIN_Z     = args.var_min
+    LOGVAR_FLOOR_Z = -10.0 if VAR_PARAM == "clamp" else math.log(VAR_MIN_Z)
+    FLOOR_TOL_Z    = 1e-6 if VAR_PARAM == "clamp" else 0.1
     ADAM_PATIENCE = args.adam_patience
 
     print("=" * 72)
