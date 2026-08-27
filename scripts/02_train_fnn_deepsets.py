@@ -16,8 +16,11 @@ magnitude, so shared stats would mis-weight the smaller component's loss); the
 per-model stats ship inside each checkpoint.
 
 Architecture note (THEORY.md §10): DeepSets — a shared per-detector
-encoder/decoder with a pooled context, permutation-equivariant BY CONSTRUCTION,
-so no permutation augmentation is used.
+encoder/decoder with a pooled context, permutation-equivariant BY CONSTRUCTION.
+Per-batch detector-permutation augmentation (`permute_detectors_batch`) is
+still applied during Adam training as a no-op regularizer on an equivariant
+model — it changes nothing the architecture doesn't already guarantee, but
+costs one `argsort` per batch.
 
 Checkpoints land DIRECTLY in FNN_FOLDER as `fnn_electron.pt` / `fnn_muon.pt`
 (species-tagged names cannot clobber a legacy single-model fnn.pt); stages 3-4
@@ -161,8 +164,11 @@ def permute_detectors_batch(xy: torch.Tensor,
                             ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Apply an independent random permutation of the 100 detectors per sample.
 
-    Augmentation for approximate permutation equivariance. Since we permute
-    xy and (E, T) with the SAME permutation, the label mapping stays correct.
+    Left over from the flat-MLP trainer, where this taught APPROXIMATE
+    permutation equivariance by example. DeepSets is equivariant BY
+    CONSTRUCTION (see module docstring), so this is a no-op regularizer here,
+    not a correctness requirement. Since we permute xy and (E, T) with the
+    SAME permutation, the label mapping stays correct either way.
     """
     B, n_det, _ = xy.shape
     # argsort of uniform noise produces a different permutation per row
@@ -178,10 +184,14 @@ def permute_detectors_batch(xy: torch.Tensor,
 def mse_mean_only(mean_raw, E_tgt, T_tgt, out_mean, out_std):
     """Plain z-scored MSE on the mean channel, ignoring variance entirely.
 
-    Used only during the warm-start phase (NLL_WARMUP_FRAC): the variance
-    head's weights get zero gradient here since they don't appear in this
-    loss, so warm-start only shapes the mean branch. Same (total, E, T)
-    shape as gaussian_nll_normalized so callers don't need to branch on it.
+    Used only during the warm-start phase (NLL_WARMUP_FRAC): only the final
+    decoder layer's two logvar output rows get zero gradient here, since they
+    don't appear in this loss. The shared trunk feeding BOTH outputs (encoder,
+    context_proj, and every decoder layer before the last) still gets shaped
+    by the mean loss the whole warm-start -- (1a)'s zero-init on the logvar
+    rows is what keeps that trunk drift from mattering at the NLL switch,
+    not this function. Same (total, E, T) shape as gaussian_nll_normalized so
+    callers don't need to branch on it.
     """
     mean_flat   = torch.cat([mean_raw[..., 0], mean_raw[..., 1]], dim=1)
     target_flat = torch.cat([E_tgt, T_tgt], dim=1)
@@ -276,9 +286,11 @@ def _plot_curves(log, path, adam_epochs=0, lbfgs_iter_log=None):
                 ax.axvline(adam_epochs, color="gray", linestyle="--", alpha=0.5,
                            label="Adam\u2192L-BFGS")
 
-        axes[0].set_xlabel("epoch / iter"); axes[0].set_ylabel("MSE (z-scored)")
+        # Not "MSE" past the warm-up/adam_epochs boundary -- those epochs plot
+        # the beta-NLL loss (mse_mean_only only runs during warm-up).
+        axes[0].set_xlabel("epoch / iter"); axes[0].set_ylabel("loss (z-scored MSE warm-up, beta-NLL after)")
         axes[0].set_title("total");  axes[0].grid(alpha=0.3); axes[0].legend(fontsize=9)
-        axes[1].set_xlabel("epoch / iter"); axes[1].set_ylabel("MSE (z-scored)")
+        axes[1].set_xlabel("epoch / iter"); axes[1].set_ylabel("loss (z-scored MSE warm-up, beta-NLL after)")
         axes[1].set_title("per-channel"); axes[1].grid(alpha=0.3)
         # Proxy legend: 2 color entries (train/val) + 2 style entries (E/T).
         axes[1].legend(handles=[
@@ -476,7 +488,7 @@ def train_species(tag:        str,
             adam_no_improve = resume_state.get("adam_no_improve", 0)
             print(f"[{tag} resume] epoch {start_epoch}  best_val={best_val:.6f}")
 
-    # ── Phase 1: Adam (no permutation augmentation) ──────────────────────
+    # ── Phase 1: Adam ──────────────────────────────────────────────────
     for epoch in range(start_epoch if not adam_done else n_epochs, n_epochs):
         is_warmup = epoch < n_warmup_epochs
         if epoch == n_warmup_epochs and n_warmup_epochs > 0:
@@ -914,7 +926,8 @@ def main():
           f"adam-patience: {ADAM_PATIENCE}")
     if args.out_suffix:
         print(f"out-suffix      : {args.out_suffix!r} (checkpoints will NOT overwrite production)")
-    print(f"augmentation    : NONE (equivariant by construction)")
+    print(f"augmentation    : per-batch detector permutation (no-op regularizer; "
+          f"equivariant by construction)")
 
     t0 = time.time()
     primary   = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt")).float()

@@ -192,7 +192,8 @@ def _apply_offmesh_penalty(U: torch.Tensor, parts: dict,
 def _surrogate_predict(x_det: torch.Tensor,
                        y_det: torch.Tensor,
                        primary_batch: torch.Tensor,
-                       fnn):
+                       fnn,
+                       sample: bool = True):
     """Broadcast one layout over a primary batch and run the dual surrogate.
 
     Returns (xy_batch (B, n_det, 2), pred_ET (B, n_det, 2)) — the surrogate's
@@ -215,8 +216,18 @@ def _surrogate_predict(x_det: torch.Tensor,
     # batch has since grown to 5-50k primaries (~20-200x), which should average
     # the noise out well below what fooled the optimizers back then. Callers
     # without a variance head (e.g. true_utility.py's kernel-label stand-in,
-    # which IS ground truth — nothing to sample) fall back to the mean.
-    if hasattr(fnn, "forward_sample"):
+    # which IS ground truth — nothing to sample) fall back to the mean, as do
+    # callers that explicitly pass sample=False (e.g. a correctness guard that
+    # must compare against a deterministic reference).
+    #
+    # `getattr(fnn, "supports_var", False)` rather than
+    # `hasattr(fnn, "forward_sample")`: the dual-species wrapper ALWAYS
+    # defines forward_sample, even when one of its per-species members is a
+    # plain FNNSurrogate with no forward_var -- hasattr would say yes and then
+    # crash inside forward_with_var. `supports_var` is set once in
+    # MultiSpeciesSurrogate.__init__ from whether every member actually has
+    # forward_var, so this is the real precondition.
+    if sample and getattr(fnn, "supports_var", False):
         pred_ET = fnn.forward_sample(primary_batch, xy_batch)              # (B, n_det, 2)
     else:
         pred_ET = fnn(primary_batch, xy_batch)
@@ -227,14 +238,15 @@ def _predict_primary(x_det: torch.Tensor,
                      y_det: torch.Tensor,
                      primary_batch: torch.Tensor,
                      fnn,
-                     recon):
+                     recon,
+                     sample: bool = True):
     """Layout -> dual surrogate -> recon -> physical primary labels.
 
     Returns (E_pred_det, E_pred_phys, theta_pred, phi_pred): the surrogate's
     per-detector E channel (log1p counts, what `reconstructability` expm1s) plus
     the reconstructed primary decoded by `primary_to_physical_labels`.
     """
-    xy_batch, pred_ET = _surrogate_predict(x_det, y_det, primary_batch, fnn)
+    xy_batch, pred_ET = _surrogate_predict(x_det, y_det, primary_batch, fnn, sample=sample)
     E_pred_det = pred_ET[..., 0]
     T_pred_det = pred_ET[..., 1]
 
@@ -255,7 +267,8 @@ def utility_of_xy(x_det: torch.Tensor,
                   recon,
                   mesh_en: torch.Tensor = None,
                   penalty_w: float = 0.0,
-                  penalty_r0: float = None):
+                  penalty_r0: float = None,
+                  sample: bool = True):
     """Composite U for an (East, North) layout against a primary batch.
 
     Order-agnostic: the pair goes straight to the FNN + recon, both trained on the
@@ -275,9 +288,16 @@ def utility_of_xy(x_det: torch.Tensor,
     what the optimizer scored — get identical numbers. The returned U is the
     PENALISED objective; raw utility and penalty are both in `parts`. With
     r0 = max_gap a converged in-band layout has penalty exactly 0.
+
+    `sample` (default True, matching production/optimizer behavior) is passed
+    straight through to `_surrogate_predict`: set False when the caller needs
+    a deterministic reference to compare against (e.g.
+    plots/layouts/utility_vs_energy.py's per-event decomposition, which is
+    itself mean-based and would otherwise be checked against a different,
+    stochastic draw every call).
     """
     E_pred_det, E_pred_phys, theta_pred, phi_pred = _predict_primary(
-        x_det, y_det, primary_batch, fnn, recon)
+        x_det, y_det, primary_batch, fnn, recon, sample=sample)
 
     E_true, theta_true, phi_true = primary_to_physical_labels(primary_batch)
 

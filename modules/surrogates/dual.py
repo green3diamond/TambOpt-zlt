@@ -99,6 +99,15 @@ class MultiSpeciesSurrogate(nn.Module):
         self.species = tuple(names)
         self.models = nn.ModuleList(models)
         self.n_det = getattr(models[0], "n_det", N_DETECTORS)
+        # A plain attribute (not routed through the custom __getattr__ below,
+        # which only fires for names nn.Module's own lookup misses) so callers
+        # can check whether EVERY member actually supports forward_var before
+        # calling forward_sample/forward_with_var -- this wrapper always
+        # defines those methods, so hasattr(self, "forward_sample") can't
+        # tell a real heteroscedastic ensemble from one with a plain
+        # FNNSurrogate member (which has no forward_var and would raise
+        # AttributeError inside forward_with_var).
+        self.supports_var = all(hasattr(m, "forward_var") for m in models)
 
     def __getattr__(self, name):
         """`self.electron` / `self.muon` / … resolve to that species' model.

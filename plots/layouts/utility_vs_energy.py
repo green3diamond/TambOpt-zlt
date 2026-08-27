@@ -172,7 +172,12 @@ def score_run(run_dir, prim, fnn, recon, mountain, device, formats=("png",)):
     # Correctness guard: mean is linear, so this must reproduce utility_of_xy's
     # own scalar U to floating-point precision. A mismatch means the per-event
     # decomposition above drifted from the composite it claims to mirror.
-    U_ref, _, _ = utility_of_xy(x, y, prim, fnn, recon)
+    # sample=False: utility_per_event above always uses the surrogate's MEAN
+    # (line ~92, plain fnn(...) call, no forward_sample) -- utility_of_xy
+    # defaults to a stochastic draw for production/optimizer use, which would
+    # make this guard compare against a different random realization every
+    # call instead of the same deterministic reference this function computes.
+    U_ref, _, _ = utility_of_xy(x, y, prim, fnn, recon, sample=False)
     U_ref = float(U_ref.item())
     U_mean = float(U_i_np.mean())
     print(f"[{os.path.basename(run_dir)}] mean(per-event U) = {U_mean:.4f}  "
