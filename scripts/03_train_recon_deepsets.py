@@ -9,10 +9,25 @@ Architecture:
     c       = context_proj(cat[mean h_i, max h_i])  invariant pool (maxmean)
     out     = decoder(c)            → [dir_x, dir_y, dir_z, log_e_norm]
 
-E_comb/T_comb are a stochastic SAMPLE drawn from the stage-2 heteroscedastic
-surrogate's predicted (mean, var) distribution (DualSpeciesSurrogate.
-forward_sample), not the mean point estimate — recon trains on the
-surrogate's learned aleatoric spread directly instead of a smoothed average.
+E_comb/T_comb come from one of three sources, chosen with --recon-input:
+
+  sample  (default, historical behaviour) — a stochastic SAMPLE drawn from the
+          stage-2 heteroscedastic surrogate's predicted (mean, var) distribution
+          (DualSpeciesSurrogate.forward_sample), not the mean point estimate, so
+          recon sees the surrogate's learned aleatoric spread directly.
+  kernel  — the REAL kernel-computed detector responses Step 1 already wrote
+          (E.pt / T.pt), i.e. the same labels Step 2 trained the surrogate to
+          predict.
+  mix     — a per-row coin flip between the two (--mix-frac = P(kernel)).
+
+Why `kernel`/`mix` exist: with `sample`, recon only ever sees surrogate-generated
+responses, but plots/layouts/true_utility.py scores it on KERNEL responses ("kernel
+vs surrogate on the SAME recon"). That is a train/eval distribution mismatch, and
+it shows up as a large standing artifact gap — on the 6-chain run (job 42695512)
+surrogate-U 47.94 vs true-U 22.78 on the UN-optimized grid baseline, a ~2.2-2.4x
+uniform overestimate across u_theta/u_phi/u_e that is present before the optimizer
+moves anything. Training recon on kernel responses removes that mismatch; `mix`
+keeps it robust to both, since stage 4 still feeds it surrogate output.
 
 Normalization: in_mean/in_std are (4,) — one scalar per feature kind,
 broadcast over all detector slots. Output stats are (4,) like the flat MLP.
@@ -21,6 +36,8 @@ Writes to RECON_FOLDER + "_deepsets" — safe to run alongside 03_train_recon.py
 
 Run:
     python 03_train_recon_deepsets.py
+    python 03_train_recon_deepsets.py --recon-input kernel
+    python 03_train_recon_deepsets.py --recon-input mix --mix-frac 0.5
     python 03_train_recon_deepsets.py --epochs 2 --lbfgs-iters 3   # smoke run
 """
 import argparse
@@ -44,10 +61,15 @@ from modules.surrogates  import load_dual_surrogate
 from modules.surrogates  import DeepSetsRecon
 from modules.constants import (
     RECON_FOLDER, TRAINING_DATASET_FOLDER, FNN_FOLDER,
-    N_DETECTORS,
+    N_DETECTORS, T_LOG_SCALE,
 )
 
 OUTPUT_FOLDER = RECON_FOLDER + "_deepsets"
+
+# Where the recon's per-detector (E, T) inputs come from — see the module
+# docstring. "sample" is the historical default; the CLI can override.
+RECON_INPUT   = "sample"     # "sample" | "kernel" | "mix"
+MIX_FRAC      = 0.5          # P(row uses kernel labels) when RECON_INPUT == "mix"
 
 # ── Architecture ─────────────────────────────────────────────────────────────
 # 3 -> 6 layers each (2026-07-30). Cost is asymmetric: the encoder runs
@@ -80,9 +102,9 @@ LBFGS_HISTORY_SIZE = 20
 LBFGS_CHUNK        = 4_096
 RESUME_CKPT_INTERVAL = 25   # save a rolling resume checkpoint every N Adam epochs
 
-RECON_INPUT_FEATURES = 4   # (x, y, E, T) per detector — E, T are a stochastic
-                            # sample from the stage-2 surrogate's predicted
-                            # distribution, not the mean point estimate.
+RECON_INPUT_FEATURES = 4   # (x, y, E, T) per detector — E, T come from
+                            # RECON_INPUT (surrogate draw, real kernel, or a
+                            # mix); see the module docstring.
 
 
 def shower_level_split(strategy_ids: torch.Tensor,
@@ -131,6 +153,50 @@ def compute_fnn_predictions(model: nn.Module,
         E_pred[lo:hi] = pred[..., 0].cpu()
         T_pred[lo:hi] = pred[..., 1].cpu()
     return E_pred, T_pred
+
+
+def load_kernel_responses(folder: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    """The REAL kernel labels Step 1 wrote, in the surrogate's own output space.
+
+    Step 1 saves E already log1p'd (`01_build_dataset_northeast.py:117`) but T
+    RAW, and Step 2 is what applies `log1p(T * T_LOG_SCALE)` before training
+    against it. `DualSpeciesSurrogate.forward` returns
+    (log1p(N_tot), log1p(t_tot * T_LOG_SCALE)) — so E needs no transform here and
+    T needs Step 2's. Getting that asymmetry wrong would silently feed recon two
+    different spaces depending on --recon-input.
+
+    Row-aligned with primary.pt / xy.pt, same (N, N_DETECTORS) shape as
+    compute_fnn_predictions' return, so the two are drop-in interchangeable.
+    """
+    E = torch.load(os.path.join(folder, "E.pt")).float()
+    T = torch.load(os.path.join(folder, "T.pt")).float()
+    T = torch.log1p(T * T_LOG_SCALE)
+    return E, T
+
+
+def build_recon_inputs(mode: str, mix_frac: float, seed: int,
+                       E_sample: torch.Tensor, T_sample: torch.Tensor,
+                       E_kernel: torch.Tensor, T_kernel: torch.Tensor
+                       ) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Resolve --recon-input into the (E, T) pair recon actually trains on.
+
+    "mix" is a per-ROW coin flip rather than a concatenation of both corpora: it
+    keeps the row count (and so the shower-level split, the strategy_ids
+    alignment and peak memory) exactly as the other two modes, and every event
+    still appears once. Seeded so a preempted run resumes on the same draw.
+    """
+    if mode == "sample":
+        return E_sample, T_sample
+    if mode == "kernel":
+        return E_kernel, T_kernel
+    if mode != "mix":
+        raise ValueError(f"unknown --recon-input {mode!r}")
+    g = torch.Generator().manual_seed(int(seed))
+    use_kernel = torch.rand(E_sample.shape[0], generator=g) < float(mix_frac)
+    m = use_kernel.unsqueeze(1)                       # (N, 1) broadcast over slots
+    print(f"[mix] {int(use_kernel.sum())}/{use_kernel.numel()} rows "
+          f"({use_kernel.float().mean():.1%}) use kernel labels")
+    return torch.where(m, E_kernel, E_sample), torch.where(m, T_kernel, T_sample)
 
 
 _AXIS_KEYS = ("tot", "dx", "dy", "dz", "logE")
@@ -188,6 +254,12 @@ def _save_ckpt(path: str,
             hidden=HIDDEN, context=CONTEXT,
             n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
             output_dim=4,
+            # What the recon's (E, T) inputs were during training. Stage 4 and
+            # true_utility.py feed it different response sources, so a checkpoint
+            # that does not record this cannot be told apart from one trained the
+            # other way. Old checkpoints have no key -> read as "sample".
+            recon_input=RECON_INPUT,
+            mix_frac=(MIX_FRAC if RECON_INPUT == "mix" else None),
         ),
         **extra,
     }, path)
@@ -248,10 +320,21 @@ def _plot_curves(log, path: str, adam_epochs: int = 0,
 
 def main():
     global N_EPOCHS, LBFGS_MAX_ITER
+    global RECON_INPUT, MIX_FRAC
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs",      type=int, default=N_EPOCHS)
     ap.add_argument("--lbfgs-iters", type=int, default=LBFGS_MAX_ITER)
+    ap.add_argument("--recon-input", choices=("sample", "kernel", "mix"),
+                    default=RECON_INPUT,
+                    help="source of the per-detector (E, T) recon inputs: "
+                         "'sample' = a draw from the stage-2 surrogate (default, "
+                         "historical); 'kernel' = the real Step-1 labels; 'mix' = "
+                         "per-row coin flip. See the module docstring for why "
+                         "'sample' alone leaves a standing surrogate-vs-true gap.")
+    ap.add_argument("--mix-frac", type=float, default=MIX_FRAC,
+                    help="P(row uses kernel labels) when --recon-input mix")
     args = ap.parse_args()
+    RECON_INPUT, MIX_FRAC = args.recon_input, float(args.mix_frac)
     N_EPOCHS, LBFGS_MAX_ITER = int(args.epochs), int(args.lbfgs_iters)
 
     print("=" * 72)
@@ -272,11 +355,34 @@ def main():
 
     dual = load_dual_surrogate(FNN_FOLDER, DEVICE)
 
+    # The surrogate draw is computed even for --recon-input kernel: it costs one
+    # pass and its summary stats beside the kernel's are the diagnostic for how
+    # far apart the two response distributions actually are — the quantity the
+    # whole surrogate-vs-true artifact gap comes from.
     t0 = time.time()
-    E_pred, T_pred = compute_fnn_predictions(dual, primary, xy, DEVICE)
+    E_samp, T_samp = compute_fnn_predictions(dual, primary, xy, DEVICE)
     print(f"[dual] sampled predictions in {time.time() - t0:.1f}s  "
-          f"E mean={E_pred.mean():.3g} std={E_pred.std():.3g}  "
-          f"T mean={T_pred.mean():.3g} std={T_pred.std():.3g}")
+          f"E mean={E_samp.mean():.3g} std={E_samp.std():.3g}  "
+          f"T mean={T_samp.mean():.3g} std={T_samp.std():.3g}")
+
+    t0 = time.time()
+    E_kern, T_kern = load_kernel_responses(TRAINING_DATASET_FOLDER)
+    print(f"[kernel] real labels in {time.time() - t0:.1f}s  "
+          f"E mean={E_kern.mean():.3g} std={E_kern.std():.3g}  "
+          f"T mean={T_kern.mean():.3g} std={T_kern.std():.3g}")
+    if E_kern.shape != E_samp.shape:
+        raise RuntimeError(
+            f"kernel labels {tuple(E_kern.shape)} do not match the surrogate "
+            f"draw {tuple(E_samp.shape)} — E.pt/T.pt are not row-aligned with "
+            f"primary.pt, so Step 1 and Step 2/3 disagree on the corpus")
+    print(f"[delta] surrogate-minus-kernel  E {(E_samp - E_kern).abs().mean():.4g}"
+          f"  T {(T_samp - T_kern).abs().mean():.4g}  (mean |diff|)")
+
+    print(f"[input] recon-input={RECON_INPUT}"
+          + (f"  mix_frac={MIX_FRAC}" if RECON_INPUT == "mix" else ""))
+    E_pred, T_pred = build_recon_inputs(
+        RECON_INPUT, MIX_FRAC, SEED, E_samp, T_samp, E_kern, T_kern)
+    del E_samp, T_samp, E_kern, T_kern
 
     target   = primary[:, :4].clone().float()
     tgt_mean = target.mean(dim=0)
@@ -405,6 +511,8 @@ def main():
                     batch_size=BATCH_SIZE, n_epochs=N_EPOCHS, lr=LR,
                     grad_clip=GRAD_CLIP, val_frac=VAL_FRAC, seed=SEED,
                     hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
+                    recon_input=RECON_INPUT,
+                    mix_frac=(MIX_FRAC if RECON_INPUT == "mix" else None),
                 ),
             }, f, indent=2)
         _plot_curves(log, os.path.join(OUTPUT_FOLDER, "recon_train_curves.png"))
@@ -528,6 +636,8 @@ def main():
                 lbfgs_lr=LBFGS_LR, lbfgs_max_iter=LBFGS_MAX_ITER,
                 lbfgs_history_size=LBFGS_HISTORY_SIZE,
                 hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
+                recon_input=RECON_INPUT,
+                mix_frac=(MIX_FRAC if RECON_INPUT == "mix" else None),
             ),
         }, f, indent=2)
     _plot_curves(full_log, os.path.join(OUTPUT_FOLDER, "recon_train_curves.png"),

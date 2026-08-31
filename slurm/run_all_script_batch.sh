@@ -53,7 +53,14 @@ run_step () {
 run_step 00_generate_data_dual_species.py --n-pairs 70_000
 run_step 01_build_dataset_northeast.py
 run_step 02_train_fnn_deepsets.py
-run_step 03_train_recon_deepsets.py
+# --recon-input mix: recon trains on a 50/50 per-row mix of the stage-2
+# surrogate draw and the REAL kernel labels Step 1 wrote. Pure "sample" (the old
+# default) only ever showed recon surrogate-generated responses while
+# true_utility.py scores it on kernel ones -- a train/eval mismatch worth ~25 U
+# of standing artifact gap, present even on the UN-optimized grid baseline
+# (job 42695512: surrogate-U 47.94 vs true-U 22.78). Stage 4 still feeds recon
+# surrogate output, so mix rather than pure kernel keeps it good at both.
+run_step 03_train_recon_deepsets.py --recon-input mix --mix-frac 0.5
 run_step 04_optimize_lbfgs_ensemble.py --chains 6
 
 # --- evaluation ------------------------------------------------------------
@@ -94,11 +101,19 @@ run_eval eval_true_utility_center bash -c \
          --layout "$0/layout_best.pt" 2>&1 | tee "$0/true_utility_eval.txt"' \
     "$CDIR"
 
-# 2) Per-event utility vs primary energy; writes utility_vs_energy.png into
-#    each run dir. Both schemes in one call so they share the loaded models.
-run_eval eval_utility_vs_energy \
-    python -u plots/layouts/utility_vs_energy.py --run-dir \
-        "$CDIR" "$GDIR"
+# 2) Per-event utility vs primary energy; writes utility_vs_energy.png into each
+#    run dir. Each scheme now overlays its OWN baseline (--grid-layout picks the
+#    grid one, omitting it uses center — same convention as the true_utility
+#    calls above), so this is one call per scheme rather than both in one: a
+#    single call can only carry one baseline, and pairing the grid layout against
+#    a center baseline would make the ΔU in its title meaningless. Both curves
+#    are scored on kernel labels (the script's default), so the numbers match the
+#    true-U column of the true_utility tables above rather than the surrogate's.
+run_eval eval_utility_vs_energy_grid \
+    python -u plots/layouts/utility_vs_energy.py --grid-layout --run-dir "$GDIR"
+
+run_eval eval_utility_vs_energy_center \
+    python -u plots/layouts/utility_vs_energy.py --run-dir "$CDIR"
 
 # 3) Trajectory videos, center and grid side by side in each. CPU-only work on
 #    a GPU node, but it is ~12 min and keeps the pipeline to one job.
