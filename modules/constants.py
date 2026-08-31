@@ -83,7 +83,7 @@ PRIMARY_DIM = 8
 # 53/486 electron, 27/486 muon and 52/486 photon showers after 10 attempts.
 # Anything trained across it should be checked against those guards.
 LOG_E_MIN = 5.0   # log10(1e5 GeV)
-LOG_E_MAX = 8.0   # log10(1e8 GeV)
+LOG_E_MAX = 7.0   # log10(1e7 GeV)
 
 # Direction bounds for sampling primaries
 ZENITH_MIN   = 60.0  # degrees
@@ -92,7 +92,7 @@ AZIMUTH_MIN  = 0.0   # degrees
 AZIMUTH_MAX  = 360.0 # degrees
 
 
-RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/09_logemax8_64k"
+RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/11_logemax7_750k"
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are

@@ -12,6 +12,14 @@
 
 source slurm/env.sh
 
+# The muon holdout generation batch (00_generate_data_dual_species.py) hit a
+# late-run CUDA OOM twice (jobs 42240054, 42469213) despite its own batch-size
+# back-off bottoming out at batch_size=1 -- the error showed 11+ GiB "reserved
+# but unallocated", i.e. allocator fragmentation from ~8000s of varying-shape
+# point-cloud tensors, not true memory exhaustion. expandable_segments lets
+# the allocator grow existing segments instead of fragmenting into new ones.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # --- checkpointing: steps marked done in pipeline_status.json are skipped ---
 # Delete the file (or a step's entry) to force a rerun.
 # -s not -f: the file can exist but be EMPTY (a preempted gpu_requeue job killed
@@ -46,7 +54,7 @@ run_step 00_generate_data_dual_species.py --n-pairs 70_000
 run_step 01_build_dataset_northeast.py
 run_step 02_train_fnn_deepsets.py
 run_step 03_train_recon_deepsets.py
-run_step 04_optimize_lbfgs_ensemble.py --chains 1
+run_step 04_optimize_lbfgs_ensemble.py --chains 6
 
 # --- evaluation ------------------------------------------------------------
 # Same checkpointing as run_step, but for entry points outside scripts/ (the
