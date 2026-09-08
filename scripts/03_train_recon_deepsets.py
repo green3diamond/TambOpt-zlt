@@ -59,6 +59,7 @@ from torch.utils.data import TensorDataset, DataLoader, Subset
 import modules   # noqa: F401
 from modules.surrogates  import load_dual_surrogate
 from modules.surrogates  import DeepSetsRecon
+from modules.surrogates.dual import combine_species_outputs
 from modules.constants import (
     RECON_FOLDER, TRAINING_DATASET_FOLDER, FNN_FOLDER,
     N_DETECTORS, T_LOG_SCALE,
@@ -85,7 +86,7 @@ POOL     = "maxmean"   # "mean" or "maxmean"; maxmean doubles context_proj input
 
 # ── Training ─────────────────────────────────────────────────────────────────
 BATCH_SIZE = 256
-N_EPOCHS   = 300
+N_EPOCHS   = 600
 LR         = 3e-5
 GRAD_CLIP  = 10.0
 VAL_FRAC   = 0.10
@@ -100,6 +101,22 @@ LBFGS_HISTORY_SIZE = 20
 # Encoder activations dominate: chunk × n_det × hidden × bytes/layer.
 # chunk=4096 keeps peak memory ~3 GB on a 40 GB GPU (vs 32 768 for flat MLP).
 LBFGS_CHUNK        = 4_096
+# Early stop, mirroring 02_train_fnn_deepsets.py's LBFGS_PATIENCE. Without it
+# L-BFGS burns the full LBFGS_MAX_ITER budget long after val has flatlined: on
+# the 7.7M-row corpus (job 45345560) a closure call costs ~60-85s, and iters
+# 200-321 bought 0.00003 val for ~3h while train loss kept falling -- grinding
+# into the train set, not learning.
+LBFGS_PATIENCE      = 150
+# The sweep is driven as repeated bounded .step() calls of this many iterations
+# rather than one step(max_iter=LBFGS_MAX_ITER), so a gpu_requeue preemption
+# resumes with the Hessian history intact instead of restarting cold.
+# It MUST be done between step() calls, not inside the closure: torch's LBFGS
+# reads its working vars at lbfgs.py:349 and only writes them back at :487-493,
+# when step() returns -- a state_dict captured mid-closure is stale by a whole
+# step, and on the first one prev_flat_grad is absent entirely, so resuming
+# from it dies in `flat_grad.sub(prev_flat_grad)` with None. Costs one extra
+# closure call per step() (lbfgs.py:330), i.e. ~1/LBFGS_STEP_ITERS overhead.
+LBFGS_STEP_ITERS    = 25
 RESUME_CKPT_INTERVAL = 25   # save a rolling resume checkpoint every N Adam epochs
 
 RECON_INPUT_FEATURES = 4   # (x, y, E, T) per detector — E, T come from
@@ -156,22 +173,68 @@ def compute_fnn_predictions(model: nn.Module,
 
 
 def load_kernel_responses(folder: str) -> Tuple[torch.Tensor, torch.Tensor]:
-    """The REAL kernel labels Step 1 wrote, in the surrogate's own output space.
+    """The REAL kernel labels Step 1 wrote, COMBINED across species and put in
+    the dual surrogate's own output space.
 
-    Step 1 saves E already log1p'd (`01_build_dataset_northeast.py:117`) but T
-    RAW, and Step 2 is what applies `log1p(T * T_LOG_SCALE)` before training
-    against it. `DualSpeciesSurrogate.forward` returns
-    (log1p(N_tot), log1p(t_tot * T_LOG_SCALE)) — so E needs no transform here and
-    T needs Step 2's. Getting that asymmetry wrong would silently feed recon two
-    different spaces depending on --recon-input.
+    Two transforms are needed, and skipping either silently trains recon on the
+    wrong quantity:
 
-    Row-aligned with primary.pt / xy.pt, same (N, N_DETECTORS) shape as
-    compute_fnn_predictions' return, so the two are drop-in interchangeable.
+    1. SPECIES COMBINATION. E.pt/T.pt are PER-SPECIES — Step 2 trains one
+       surrogate per species against them, so row i holds only that row's own
+       species' response (electron rows are frequently all-zero while the muon
+       and photon rows of the SAME event carry the signal). What recon consumes
+       at every other call site is `DualSpeciesSurrogate.forward`, which returns
+       the species-COMBINED event. Feeding the raw per-species rows hands recon
+       one third of an event and asks it to reconstruct the whole thing. Combine
+       with the very function the surrogate uses (`combine_species_outputs`:
+       counts add, T is the leading edge, i.e. min over species that hit) so the
+       two sources are the same physical quantity.
+    2. UNITS. Step 1 saves E already log1p'd (`01_build_dataset_northeast.py:117`)
+       but T RAW; Step 2 is what applies `log1p(T * T_LOG_SCALE)`. So E needs no
+       transform and T needs Step 2's before combining.
+
+    Row order is strategy-major then species-major then event (asserted below —
+    a silent mismatch here is exactly the failure this docstring exists to
+    prevent). The combined event is broadcast back over all species rows, so the
+    return stays row-aligned with primary.pt / xy.pt and keeps the same
+    (N, N_DETECTORS) shape compute_fnn_predictions returns.
     """
     E = torch.load(os.path.join(folder, "E.pt")).float()
     T = torch.load(os.path.join(folder, "T.pt")).float()
+    sp = torch.load(os.path.join(folder, "species_ids.pt")).long()
+    st = torch.load(os.path.join(folder, "strategy_ids.pt")).long()
     T = torch.log1p(T * T_LOG_SCALE)
-    return E, T
+
+    N, n_det = E.shape
+    n_species = int(sp.max().item()) + 1
+    n_strat   = int(st.max().item()) + 1
+    if N % (n_species * n_strat):
+        raise RuntimeError(
+            f"{N} rows is not divisible by n_species={n_species} x "
+            f"n_strat={n_strat} — the corpus is not the rectangular "
+            f"strategy/species/event block this assumes")
+    n_ev = N // (n_species * n_strat)
+
+    # Assert the block order rather than trust it: view() below is a reinterpret,
+    # so a different ordering would mis-pair species silently and train on
+    # nonsense that still has the right shape.
+    exp_sp = torch.arange(n_species).repeat_interleave(n_ev).repeat(n_strat)
+    exp_st = torch.arange(n_strat).repeat_interleave(n_species * n_ev)
+    if not torch.equal(sp, exp_sp) or not torch.equal(st, exp_st):
+        raise RuntimeError(
+            "species_ids/strategy_ids are not in strategy-major, species-major, "
+            "event order; load_kernel_responses' reshape would mis-pair species")
+
+    E4 = E.view(n_strat, n_species, n_ev, n_det)
+    T4 = T.view(n_strat, n_species, n_ev, n_det)
+    per_species = [torch.stack([E4[:, k], T4[:, k]], dim=-1)      # (S, ev, det, 2)
+                   for k in range(n_species)]
+    comb = combine_species_outputs(*per_species)                  # (S, ev, det, 2)
+    # Same combined event for every species row of that (strategy, event).
+    comb = (comb.unsqueeze(1)
+                .expand(n_strat, n_species, n_ev, n_det, 2)
+                .reshape(N, n_det, 2))
+    return comb[..., 0].contiguous(), comb[..., 1].contiguous()
 
 
 def build_recon_inputs(mode: str, mix_frac: float, seed: int,
@@ -433,10 +496,12 @@ def main():
     log        = []
     best_val   = float("inf")
     best_epoch = -1
+    lbfgs_resume = None          # L-BFGS sweep state, if a preemption left one
     if os.path.exists(resume_path):
-        _r = torch.load(resume_path, map_location=DEVICE)
+        _r = torch.load(resume_path, map_location=DEVICE, weights_only=False)
         if _r.get("adam_done"):
             adam_done = True
+            lbfgs_resume = _r.get("lbfgs")
             print("[resume] Adam done, jumping to L-BFGS")
         else:
             recon.load_state_dict(_r["state_dict"])
@@ -552,11 +617,35 @@ def main():
     lbfgs_iter_log  = []
     lbfgs_best_val  = adam_best_val
     lbfgs_best_iter = -1
+    lbfgs_no_improve = 0
+    done_iters = 0            # cumulative L-BFGS iterations across step() calls
     N_train = inp_all.shape[0]
     t_lbfgs = time.time()
 
+    class _LBFGSStop(Exception):
+        """Raised inside the closure to break out of optimizer.step()."""
+
+    # Resume a preempted sweep. Order matters: the optimizer's history
+    # (old_dirs/old_stps/prev_flat_grad/d) describes the CURRENT iterate, not
+    # the best one, so the model must be restored from the resume payload --
+    # recon.pt above holds best-val weights, which the history does not match.
+    if lbfgs_resume is not None:
+        recon.load_state_dict(lbfgs_resume["model"])
+        lbfgs_optimizer.load_state_dict(lbfgs_resume["optimizer"])
+        lbfgs_iter_log   = lbfgs_resume["iter_log"]
+        lbfgs_best_val   = lbfgs_resume["best_val"]
+        lbfgs_best_iter  = lbfgs_resume["best_iter"]
+        lbfgs_no_improve = lbfgs_resume["no_improve"]
+        # state['n_iter'] is cumulative and survives load_state_dict; the driver
+        # loop below uses it to spend only the remaining budget.
+        done_iters = int(
+            lbfgs_optimizer.state[lbfgs_optimizer._params[0]].get("n_iter", 0))
+        print(f"[resume] L-BFGS from closure {len(lbfgs_iter_log)} "
+              f"(iters done={done_iters}/{LBFGS_MAX_ITER})  "
+              f"best_val={lbfgs_best_val:.6f} at iter {lbfgs_best_iter}")
+
     def closure():
-        nonlocal lbfgs_best_val, lbfgs_best_iter
+        nonlocal lbfgs_best_val, lbfgs_best_iter, lbfgs_no_improve
         lbfgs_optimizer.zero_grad()
         sums = [0.0] * 5
         for lo in range(0, N_train, LBFGS_CHUNK):
@@ -580,15 +669,52 @@ def main():
         if va['tot'] < lbfgs_best_val - 1e-6:
             lbfgs_best_val  = va['tot']
             lbfgs_best_iter = it
+            lbfgs_no_improve = 0
             _save_ckpt(os.path.join(OUTPUT_FOLDER, "recon.pt"),
                        recon, N_EPOCHS + 1, va, in_mean, in_std, tgt_mean, tgt_std,
                        phase="lbfgs", lbfgs_iter=it)
             marker = "  <- NEW BEST (saved)"
+        else:
+            lbfgs_no_improve += 1
         print(f"  [lbfgs iter {it:3d}] loss={tr['tot']:.6f} "
               f"val={va['tot']:.6f}{marker}")
+
+        if lbfgs_no_improve >= LBFGS_PATIENCE:
+            raise _LBFGSStop
         return torch.tensor(tr['tot'], device=DEVICE)
 
-    final_loss = lbfgs_optimizer.step(closure)
+    def _save_lbfgs_resume():
+        """Persist the sweep. Only valid straight after step() returns — see
+        LBFGS_STEP_ITERS. Temp file + os.replace so a preemption landing
+        mid-save cannot leave a truncated payload (the same failure mode that
+        once zeroed pipeline_status.json)."""
+        tmp = resume_path + ".tmp"
+        torch.save({"adam_done": True,
+                    "lbfgs": {"model": recon.state_dict(),
+                              "optimizer": lbfgs_optimizer.state_dict(),
+                              "iter_log": lbfgs_iter_log,
+                              "best_val": lbfgs_best_val,
+                              "best_iter": lbfgs_best_iter,
+                              "no_improve": lbfgs_no_improve}}, tmp)
+        os.replace(tmp, resume_path)
+
+    final_loss = torch.tensor(lbfgs_best_val, device=DEVICE)
+    try:
+        while (done_iters < LBFGS_MAX_ITER
+               and lbfgs_no_improve < LBFGS_PATIENCE):
+            budget = min(LBFGS_STEP_ITERS, LBFGS_MAX_ITER - done_iters)
+            lbfgs_optimizer.param_groups[0]["max_iter"] = budget
+            final_loss = lbfgs_optimizer.step(closure)
+            # state["n_iter"] is cumulative across step() calls; the loop bound
+            # inside step() is a LOCAL counter, so budget is "this many more".
+            done_iters = int(
+                lbfgs_optimizer.state[lbfgs_optimizer._params[0]]["n_iter"])
+            _save_lbfgs_resume()
+    except _LBFGSStop:
+        print(f"[lbfgs] early stop: {LBFGS_PATIENCE} closure calls with no val "
+              f"improvement (best val={lbfgs_best_val:.6f} at iter {lbfgs_best_iter})")
+        final_loss = torch.tensor(lbfgs_best_val, device=DEVICE)
+
     del inp_all, tgt_train
     if os.path.exists(resume_path):
         os.remove(resume_path)
