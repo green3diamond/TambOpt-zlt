@@ -12,6 +12,64 @@
 
 source slurm/env.sh
 
+# --- GPU health gate -------------------------------------------------------
+# gpu_requeue preemption can hand the requeued job the SAME node it was just
+# preempted from, while our own killed process still pins the GPU: every CUDA
+# alloc then fails with "CUDA-capable device(s) is/are busy or unavailable"
+# (jobs 42556695, 43192939, 43844284, 43857690, 44186645). Step 0 streams into
+# a ~100 GB corpus file on lustre, so a SIGKILLed writer can sit in
+# uninterruptible I/O for minutes.
+#
+# Waiting on the node is the WRONG trade. Measured: the stuck writer survived
+# 210s of waiting (job 44186645), while a requeue turns the job around in ~3
+# min (44186645 preempted 23:57:23, restarted 00:00:24) AND re-rolls the node,
+# which is the only thing that actually clears it. So the probe budget is kept
+# just long enough to ride out a genuine quick race, and anything longer is
+# handed to a requeue.
+THIS_NODE="$(hostname -s)"
+GATE_FAILS=".gpu_gate_fails"     # consecutive gate-triggered requeues
+
+# Poll inside ONE python process: `import torch` alone costs ~30s, so a shell
+# retry loop would burn its budget on imports. Exit 0 = usable, 1 = still busy.
+python - <<'PY'
+import sys, time, torch
+DEADLINE, STEP = 90, 30
+t0 = time.time()
+while True:
+    try:
+        torch.zeros(1, device="cuda"); torch.cuda.synchronize(); sys.exit(0)
+    except RuntimeError as e:
+        if time.time() - t0 > DEADLINE:
+            print(f"[gpu-gate] still busy after {DEADLINE}s: {e}", flush=True)
+            sys.exit(1)
+        print(f"[gpu-gate] busy at t+{time.time()-t0:.0f}s, retrying", flush=True)
+        time.sleep(STEP)
+PY
+
+if [ $? -ne 0 ]; then
+    # Count CONSECUTIVE gate failures, not total restarts: SLURM_RESTART_COUNT
+    # also counts ordinary preemptions (6 in 10.5h on this partition), so
+    # capping on it conflates "unlucky node once" with "GPU broken everywhere"
+    # and lets the worst case balloon. The streak resets on any good GPU below.
+    n=$(( $(cat "$GATE_FAILS" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$GATE_FAILS"
+    if [ "$n" -ge 5 ]; then
+        echo ">>> GPU busy on $n consecutive nodes -- real fault, giving up"
+        rm -f "$GATE_FAILS"
+        exit 1
+    fi
+    # We cannot blacklist the node: `scontrol update ExcNodeList` is REFUSED on
+    # a RUNNING job ("Job is no longer pending execution", verified in job
+    # 44336590), and the script is dead once the requeue lands. A bare requeue
+    # re-rolls the node anyway; the probe re-runs on whatever we get next.
+    echo ">>> GPU busy on ${THIS_NODE} (strike $n/5) -- requeueing to re-roll the node"
+    scontrol requeue "$SLURM_JOB_ID"
+    sleep 120        # let the controller act before the script would exit
+    exit 0
+fi
+rm -f "$GATE_FAILS"
+echo ">>> GPU OK on ${THIS_NODE} (restart #${SLURM_RESTART_COUNT:-0})"
+
 # The muon holdout generation batch (00_generate_data_dual_species.py) hit a
 # late-run CUDA OOM twice (jobs 42240054, 42469213) despite its own batch-size
 # back-off bottoming out at batch_size=1 -- the error showed 11+ GiB "reserved
@@ -50,17 +108,17 @@ run_step () {
 # row/offset bookkeeping. --n-pairs 0 = all in-band tau events (~751,931);
 # Step 0 itself splits off HOLDOUT_FRAC (5%) into a separate corpus before
 # generating, so this is 750k-scale total, not 750k into training.
-run_step 00_generate_data_dual_species.py --n-pairs 70_000
+run_step 00_generate_data_dual_species.py #--n-pairs 70_000
 run_step 01_build_dataset_northeast.py
 run_step 02_train_fnn_deepsets.py
-# --recon-input mix: recon trains on a 50/50 per-row mix of the stage-2
+# --recon-input mix: recon trains on a 70/30 kernel-weighted per-row mix of the
 # surrogate draw and the REAL kernel labels Step 1 wrote. Pure "sample" (the old
 # default) only ever showed recon surrogate-generated responses while
 # true_utility.py scores it on kernel ones -- a train/eval mismatch worth ~25 U
 # of standing artifact gap, present even on the UN-optimized grid baseline
 # (job 42695512: surrogate-U 47.94 vs true-U 22.78). Stage 4 still feeds recon
 # surrogate output, so mix rather than pure kernel keeps it good at both.
-run_step 03_train_recon_deepsets.py --recon-input mix --mix-frac 0.5
+run_step 03_train_recon_deepsets.py --recon-input mix --mix-frac 0.7
 run_step 04_optimize_lbfgs_ensemble.py --chains 6
 
 # --- evaluation ------------------------------------------------------------
