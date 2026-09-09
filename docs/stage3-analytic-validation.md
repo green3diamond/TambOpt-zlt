@@ -120,7 +120,7 @@ exactly **0.0000** on grid, rings_R800 and center; Test 9 puts canonical order 0
 
 ---
 
-## Part A — Analytic reconstruction (new standalone file) — **written, not yet run**
+## Part A — Analytic reconstruction (new standalone file) — **done, see Status for results**
 
 **New file: `plots/training/04_analytic_recon.py`.** Self-contained, read-only w.r.t. the
 pipeline, no Stage-3 changes. Follows `plots/training/aleatoric_floor.py` conventions (the
