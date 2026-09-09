@@ -161,13 +161,35 @@ def weighted_plane_fit(pos: torch.Tensor, t: torch.Tensor, w: torch.Tensor,
         w   : (B, D) nonnegative weights.
     Returns:
         t0 (B,), s (B, 3), resid (B, D) = t - (t0 + s . pos),
-        cond (B,) a conditioning diagnostic (min/max eigenvalue of the
-        weighted normal-equations matrix) — small values flag an unreliable
-        fit (near-collinear or too-few weighted detectors).
+        cond (B,) a SCALE-INVARIANT conditioning diagnostic: the min/max
+        eigenvalue ratio of `A` normalized by its own diagonal (equivalent to
+        the condition number of `A`'s "correlation matrix"). The raw ratio is
+        NOT usable here — `A`'s diagonal entries span the constant, East/North/
+        Up columns' units (metres, metres^2), so its eigenvalues differ by
+        ~1e10 purely from units, not from anything about the actual fit.
+        Verified against the real corpus (measured 2026-09-09): even properly
+        normalized, `cond` is structurally small (median ~1e-6) because Up is
+        a smooth deterministic function of (East, North) via the mountain's
+        `SurfaceUpMap` — i.e. this array's 3 spatial columns are only
+        ~2.something-dimensional, not fully independent. That is real
+        geometry, not a numerical artifact, so `cond` is reported as a
+        diagnostic (see A1's printed distribution) rather than used to reject
+        events — the ridge term already keeps the solve well-posed regardless.
     """
     B, D, _ = pos.shape
+    # Centre positions per event before the solve: East sits ~1400-1500 m
+    # (near EAST_ENTRY), not near 0, so fitting the intercept t0 alongside a
+    # slope on UNCENTRED East badly conditions that pair in float32 (t0 and
+    # s_east become almost perfectly anti-correlated) — measured on the real
+    # corpus (2026-09-09) giving R2 around -1e15, i.e. a "successful" solve
+    # that is numerically garbage. Centering is a linear reparametrization
+    # (t0 = t0' - s.mean_pos), so s/resid/cond are identical to the
+    # uncentred solve in exact arithmetic; only the float32 rounding differs,
+    # and it differs by orders of magnitude here.
+    mean_pos = pos.mean(dim=1, keepdim=True)                # (B, 1, 3)
+    pos_c = pos - mean_pos
     ones = torch.ones(B, D, 1, dtype=pos.dtype, device=pos.device)
-    X = torch.cat([ones, pos], dim=-1)                       # (B, D, 4)
+    X = torch.cat([ones, pos_c], dim=-1)                     # (B, D, 4)
     Xw = X * w.unsqueeze(-1)
     A = torch.einsum("bdi,bdj->bij", Xw, X)                  # (B, 4, 4)
     b = torch.einsum("bdi,bd->bi", Xw, t)                    # (B, 4)
@@ -175,10 +197,14 @@ def weighted_plane_fit(pos: torch.Tensor, t: torch.Tensor, w: torch.Tensor,
     trace = A.diagonal(dim1=-2, dim2=-1).sum(-1).clamp(min=1e-30)
     A_reg = A + ridge * trace.view(B, 1, 1) * eye4 / 4.0
     beta = torch.linalg.solve(A_reg, b.unsqueeze(-1)).squeeze(-1)   # (B, 4)
-    t0, s = beta[:, 0], beta[:, 1:]
-    pred = t0.unsqueeze(-1) + torch.einsum("bi,bdi->bd", s, pos)
+    t0_c, s = beta[:, 0], beta[:, 1:]
+    pred = t0_c.unsqueeze(-1) + torch.einsum("bi,bdi->bd", s, pos_c)
     resid = t - pred
-    eigvals = torch.linalg.eigvalsh(A)                        # (B, 4), ascending
+    t0 = t0_c - torch.einsum("bi,bi->b", s, mean_pos.squeeze(1))   # back to pos's own frame
+    diag = A.diagonal(dim1=-2, dim2=-1).clamp(min=1e-30)      # (B, 4)
+    d_inv = diag.sqrt().reciprocal()
+    A_norm = A * d_inv.unsqueeze(-1) * d_inv.unsqueeze(-2)    # unit diagonal
+    eigvals = torch.linalg.eigvalsh(A_norm)                   # (B, 4), ascending
     cond = eigvals[:, 0].clamp(min=0) / eigvals[:, -1].clamp(min=1e-30)
     return t0, s, resid, cond
 
@@ -235,22 +261,32 @@ def fit_ldf_poisson(r: torch.Tensor, y: torch.Tensor,
     events). `beta` is parametrized through a softplus + floor so it stays in
     `reco.jl`'s (0, 5]-ish physical range without a hard constraint.
 
+    This runs its OWN internal optimization (unlike every other function in
+    this module, which is a single forward computation) — so it wraps that
+    loop in `torch.enable_grad()` regardless of the caller's ambient grad
+    state. Without it, calling this from inside a `@torch.no_grad()` scope
+    (a perfectly reasonable thing for a caller that only wants a read-only
+    evaluation, e.g. an analytic-recon check bolted onto an optimizer loop)
+    makes every tensor here inherit no_grad too, and `.backward()` below
+    fails with "does not have a grad_fn" — caught wiring this into
+    `scripts/04_optimize_lbfgs_kernel.py`'s `analytic_eval`.
+
     Returns: log_A (B,), beta (B,), both detached.
     """
-    B = r.shape[0]
-    log_A = torch.zeros(B, device=r.device, requires_grad=True)
-    beta_raw = torch.zeros(B, device=r.device, requires_grad=True)
-    opt = torch.optim.Adam([log_A, beta_raw], lr=lr)
-    for _ in range(steps):
-        opt.zero_grad()
-        beta = torch.nn.functional.softplus(beta_raw) + 0.1
-        y_pred = torch.exp(log_A).unsqueeze(-1) * Q_ldf(r, beta.unsqueeze(-1),
-                                                        kappa=kappa, r_ref=r_ref)
-        y_pred = y_pred.clamp(min=1e-12)
-        nll = -(y * torch.log(y_pred) - y_pred).sum(dim=-1)
-        nll.sum().backward()
-        opt.step()
-    with torch.no_grad():
+    with torch.enable_grad():
+        B = r.shape[0]
+        log_A = torch.zeros(B, device=r.device, requires_grad=True)
+        beta_raw = torch.zeros(B, device=r.device, requires_grad=True)
+        opt = torch.optim.Adam([log_A, beta_raw], lr=lr)
+        for _ in range(steps):
+            opt.zero_grad()
+            beta = torch.nn.functional.softplus(beta_raw) + 0.1
+            y_pred = torch.exp(log_A).unsqueeze(-1) * Q_ldf(r, beta.unsqueeze(-1),
+                                                            kappa=kappa, r_ref=r_ref)
+            y_pred = y_pred.clamp(min=1e-12)
+            nll = -(y * torch.log(y_pred) - y_pred).sum(dim=-1)
+            nll.sum().backward()
+            opt.step()
         beta = torch.nn.functional.softplus(beta_raw) + 0.1
     return log_A.detach(), beta.detach()
 
@@ -340,7 +376,12 @@ def run_direction_and_curvature(pos, T_raw, E_raw, min_fired):
     n_hat = s / s_norm.unsqueeze(-1)
     speed_check = s_norm * C_LIGHT   # should be ~1 for a clean plane fit
 
-    ok = valid_count & (cond > 1e-9)
+    # `cond` (see weighted_plane_fit's docstring) is structurally small for
+    # this array even on a good fit -- Up correlates with (East, North) via
+    # the terrain -- so it is NOT used to reject events; only `cond > 0`
+    # excludes the genuinely degenerate case (fewer independent positions
+    # than free parameters, e.g. every fired detector at the same point).
+    ok = valid_count & (cond > 0) & torch.isfinite(cond)
 
     # ---- A2: curvature -> source distance ----
     core = weighted_centroid(pos, w1)
@@ -421,9 +462,13 @@ def main():
     print(f"[A0] R2(East ramp)={fits_v['r2_east'][ok_v].mean():.4f}  "
           f"R2(East+transverse)={fits_v['r2_full'][ok_v].mean():.4f}  "
           f"(delta={float((fits_v['r2_full'] - fits_v['r2_east'])[ok_v].mean()):.4f})")
-    print(f"[A1] qualifying events (>= {args.min_fired} fired, well-conditioned): "
+    print(f"[A1] qualifying events (>= {args.min_fired} fired, non-degenerate): "
           f"{frac_ok:.1%}  |s|*c mean={float(fits_v['speed_check'][ok_v].mean()):.3f} "
           f"(1.0 = a clean plane fit)")
+    cond_q = torch.quantile(fits_v["cond"][ok_v], torch.tensor([0.1, 0.5, 0.9], device=ok_v.device))
+    print(f"    conditioning (scale-invariant, see weighted_plane_fit docstring): "
+          f"p10={cond_q[0]:.2e}  p50={cond_q[1]:.2e}  p90={cond_q[2]:.2e} "
+          f"(structurally small -- Up correlates with East/North via the terrain)")
 
     true_dir_v = prim_v[:, :3]
     pred_dir_v = fits_v["n_hat"]

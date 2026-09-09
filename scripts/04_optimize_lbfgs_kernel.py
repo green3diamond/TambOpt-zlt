@@ -61,6 +61,7 @@ Usage:
     python scripts/04_optimize_lbfgs_kernel.py --n-events 64 --chunk 8 --epochs 200
 """
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -76,6 +77,7 @@ import modules  # noqa: F401 — package import; keeps modules on the path
 from modules.constants import (
     N_DETECTORS, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, RECON_FOLDER, OPT_FOLDER,
+    LOG_E_MIN, LOG_E_MAX, T_LOG_SCALE,
 )
 from modules.layouts import LearnableXY
 from modules.geometry import load_tr_mountain, SurfaceUpMap
@@ -86,6 +88,18 @@ from modules.surrogates import build_recon_from_ckpt
 # plots/layouts/true_utility.py has no digit prefix, so it imports normally as
 # a namespace-package module (no plots/layouts/__init__.py needed in Py3).
 from plots.layouts.true_utility import load_events, KernelDualLabels
+
+# plots/training/04_analytic_recon.py starts with a digit, so it cannot be
+# `import`ed by name -- loaded by path, the same trick 03_recon_diagnostics.py
+# uses for 02_nn_target_vs_pred.py. Only its pure math (weighted_plane_fit,
+# perp_distance, weighted_centroid, fit_ldf_poisson) is reused here, NOT its
+# main()/aggregate reporting (that file's A0 R2 aggregation has a known,
+# separate, not-yet-fixed bug with near-zero-variance outlier events --
+# unrelated to the per-event math below, which is unit-tested and used as-is).
+_spec = importlib.util.spec_from_file_location(
+    "_analytic_recon", os.path.join(V6_ROOT, "plots", "training", "04_analytic_recon.py"))
+_analytic = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_analytic)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEED = 4200
@@ -142,6 +156,96 @@ def time_one_step(kernel_fnn, recon, primary_batch, xy_module):
           f"not from a hunch")
 
 
+@torch.no_grad()
+def analytic_eval(kernel_fnn, primary_batch, e_det, n_det, surface, device,
+                  min_fired=4, ldf_steps=200, ldf_r_ref=100.0):
+    """Score a layout with the ANALYTIC (plane-front + LDF) reconstruction
+    instead of the frozen neural recon -- a second, reconstruction-
+    independent read on whether this layout is actually better, following
+    the same logic docs/stage3-analytic-validation.md's Part A applies to
+    Stage 3: the frozen recon sitting in this script's own optimization loop
+    could itself be exploited the way THEORY SS11.3 documents for the
+    surrogate, so a metric that owes it nothing is worth having alongside U.
+
+    Reuses `plots/training/04_analytic_recon.py`'s per-event math verbatim
+    (weighted_plane_fit / perp_distance / weighted_centroid / fit_ldf_poisson
+    -- unit-tested there against synthetic data), NOT that file's aggregate
+    R2 reporting, which has a separate, known, not-yet-fixed bug with
+    near-zero-variance outlier events. Reports plain angular error (degrees)
+    and an UNCALIBRATED energy correlation instead: with only `B = n_events`
+    events available (default 64, the same fixed batch the optimizer itself
+    uses) there usually is not enough left for a proper train/val calibration
+    split the way the standalone script does it, so log_A's correlation with
+    true log_e is reported directly rather than mapped through a fitted
+    (m, b) -- a real number, just not a calibrated dex-RMSE.
+
+    No gradient here (@torch.no_grad()): this is a REPORTING pass on a given
+    layout, not part of the optimized objective.
+    """
+    A = _analytic
+    B = primary_batch.shape[0]
+    xy_batch = torch.stack([e_det, n_det], dim=-1).unsqueeze(0).expand(B, -1, -1)
+    pred = kernel_fnn(primary_batch, xy_batch)                       # (B, n_det, 2), log-encoded
+    E_raw = torch.expm1(pred[..., 0]).clamp(min=0)
+    T_raw = torch.expm1(pred[..., 1]).clamp(min=0) / T_LOG_SCALE
+
+    up = surface(n_det, e_det)                                        # (n_det,)
+    pos = torch.stack([e_det, n_det, up], dim=-1).unsqueeze(0).expand(B, -1, -1)
+
+    fired = T_raw > 0
+    n_fired = fired.sum(dim=-1)
+    ok = n_fired >= min_fired
+    w = torch.where(fired, E_raw, torch.zeros_like(E_raw))
+
+    t0, s, resid, cond = A.weighted_plane_fit(pos, T_raw, w)
+    s_norm = s.norm(dim=-1).clamp(min=1e-30)
+    n_hat = s / s_norm.unsqueeze(-1)
+
+    true_dir = primary_batch[:, :3]
+    true_dir = true_dir / true_dir.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+    if not ok.any():
+        return dict(qualifying_frac=0.0, mean_angular_error_deg=None,
+                    log_e_pearson_r=None, n_events=B)
+    sign = torch.sign((n_hat[ok] * true_dir[ok]).sum(-1).mean())
+    if sign == 0:
+        sign = torch.tensor(1.0, device=device)
+    n_hat = n_hat * sign
+    cos = (n_hat * true_dir).sum(-1).clamp(-1.0, 1.0)
+    ang_err_deg = torch.rad2deg(torch.arccos(cos))
+
+    core = A.weighted_centroid(pos, w)
+    r_perp = A.perp_distance(pos, core, n_hat)
+    log_A, beta = A.fit_ldf_poisson(r_perp, E_raw, steps=ldf_steps, r_ref=ldf_r_ref)
+    true_log_e = primary_batch[:, 3] * (LOG_E_MAX - LOG_E_MIN) + LOG_E_MIN
+
+    ok_e = ok & torch.isfinite(log_A)
+    if ok_e.sum() >= 2:
+        r_e = torch.corrcoef(torch.stack([log_A[ok_e], true_log_e[ok_e]]))[0, 1]
+        r_e = float(r_e)
+    else:
+        r_e = None
+
+    return dict(
+        qualifying_frac=float(ok.float().mean()),
+        mean_angular_error_deg=float(ang_err_deg[ok].mean()),
+        median_angular_error_deg=float(ang_err_deg[ok].median()),
+        log_e_pearson_r=r_e,
+        n_events=B,
+    )
+
+
+def _print_analytic_eval(tag, ev):
+    if ev["qualifying_frac"] == 0.0:
+        print(f"[analytic-eval:{tag}] no qualifying events (need >= min-fired "
+              f"detectors with a well-posed plane fit)")
+        return
+    r_e = f"{ev['log_e_pearson_r']:.3f}" if ev["log_e_pearson_r"] is not None else "n/a"
+    print(f"[analytic-eval:{tag}] qualifying={ev['qualifying_frac']:.1%}  "
+          f"angular error mean={ev['mean_angular_error_deg']:.1f} deg "
+          f"median={ev['median_angular_error_deg']:.1f} deg  "
+          f"log_A~log_e pearson_r={r_e}  (uncalibrated, see analytic_eval docstring)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -162,6 +266,14 @@ def main():
     ap.add_argument("--time-one-step", action="store_true",
                     help="time one fwd+bwd at the given --n-events/--chunk "
                          "and exit -- no optimization, nothing written")
+    ap.add_argument("--analytic-min-fired", type=int, default=4,
+                    help="min fired detectors for the analytic plane fit -- "
+                         "see analytic_eval's docstring")
+    ap.add_argument("--analytic-ldf-steps", type=int, default=200)
+    ap.add_argument("--skip-analytic-eval", action="store_true",
+                    help="skip the analytic (plane-front + LDF) evaluation "
+                         "of the init/best layouts -- it never affects the "
+                         "optimization, only what gets printed/saved")
     args = ap.parse_args()
     torch.manual_seed(args.seed)
 
@@ -195,6 +307,13 @@ def main():
     if args.time_one_step:
         time_one_step(kernel_fnn, recon, primary_batch, xy_module)
         return
+
+    analytic_init = None
+    if not args.skip_analytic_eval:
+        analytic_init = analytic_eval(
+            kernel_fnn, primary_batch, e_init, n_init, surface, DEVICE,
+            min_fired=args.analytic_min_fired, ldf_steps=args.analytic_ldf_steps)
+        _print_analytic_eval("init", analytic_init)
 
     optimizer = torch.optim.Adam(xy_module.parameters(), lr=args.lr)
     log = []
@@ -241,6 +360,24 @@ def main():
     with open(os.path.join(out_dir, "optimize_log.json"), "w") as f:
         json.dump(dict(config=vars(args), log=log, best_u=best_u), f, indent=2)
     print(f"[write] {out_dir}/layout_best.pt, optimize_log.json")
+
+    if not args.skip_analytic_eval:
+        analytic_best = analytic_eval(
+            kernel_fnn, primary_batch, best_x.to(DEVICE), best_y.to(DEVICE),
+            surface, DEVICE, min_fired=args.analytic_min_fired,
+            ldf_steps=args.analytic_ldf_steps)
+        _print_analytic_eval("best", analytic_best)
+
+        # Own, clearly-named subfolder next to layout_best.pt/optimize_log.json --
+        # this is a DIFFERENT metric family (reconstruction-independent, from
+        # plots/training/04_analytic_recon.py's math) than the neural-recon-based
+        # U this run optimized, so it does not belong folded into optimize_log.json.
+        analytic_dir = os.path.join(out_dir, "analytic_eval")
+        os.makedirs(analytic_dir, exist_ok=True)
+        with open(os.path.join(analytic_dir, "analytic_eval.json"), "w") as f:
+            json.dump(dict(config=vars(args), init=analytic_init, best=analytic_best),
+                      f, indent=2)
+        print(f"[write] {analytic_dir}/analytic_eval.json")
 
 
 if __name__ == "__main__":
