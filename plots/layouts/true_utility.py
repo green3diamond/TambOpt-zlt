@@ -85,16 +85,24 @@ class KernelDualLabels:
     event ever sees another. The utility statistics downstream still average over
     all B events -- unlike lowering --n-events, which shrinks the sample."""
 
-    def __init__(self, species_clouds, surface, device, chunk=0):
+    def __init__(self, species_clouds, surface, device, chunk=0, differentiable=False):
         """`species_clouds`: one placed (B, P, 5) tensor per species, in
-        constants.SPECIES_NAMES order — the components of the SAME B events."""
+        constants.SPECIES_NAMES order — the components of the SAME B events.
+
+        `differentiable=True` threads through to `compute_labels_batch`, so
+        gradients reach the LAYOUT (e_det, n_det) through the kernel itself —
+        what `scripts/04_optimize_lbfgs_kernel.py` needs and this class's
+        default scoring use (`true_utility.py`'s surrogate-vs-kernel table)
+        does not. Default False keeps every existing caller unchanged."""
         self.clouds = [c.to(device) for c in species_clouds]
         self.surface = surface
         # 0 / None -> whole batch at once (previous behaviour).
         self.chunk = int(chunk) or int(self.clouds[0].shape[0])
+        self.differentiable = differentiable
 
     def _labels(self, clouds, e_det, n_det):
-        E, T = compute_labels_batch(clouds, e_det, n_det, self.surface)
+        E, T = compute_labels_batch(clouds, e_det, n_det, self.surface,
+                                    differentiable=self.differentiable)
         return torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1)
 
     def __call__(self, primary_batch, xy_batch):

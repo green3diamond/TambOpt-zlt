@@ -162,14 +162,14 @@ def flag_blob_showers(clouds: torch.Tensor,
 
 # ── Label computation (batched over showers, one shared layout per batch) ────
 
-@torch.no_grad()
 def compute_labels_batch(clouds:   torch.Tensor,
                          e_det:    torch.Tensor,    # East  (defined; detector col 0)
                          n_det:    torch.Tensor,    # North (detector col 1)
                          surface,                    # SurfaceUpMap: (North, East) → Up
                          east_entry:    float = EAST_ENTRY,
                          layer_east_dx: float = LAYER_EAST_DX,
-                         sigma_spatial: float = SIGMA_SPATIAL) -> Tuple[torch.Tensor, torch.Tensor]:
+                         sigma_spatial: float = SIGMA_SPATIAL,
+                         differentiable: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run the plane-aware kernel on a batch of showers sharing one layout.
 
     Detectors are (East, North), matching the ENU h5 convention; the kernel is
@@ -180,22 +180,35 @@ def compute_labels_batch(clouds:   torch.Tensor,
         clouds : (B, max_points, 5) AllShowers point clouds.
         e_det  : (n_det,) East  — defined; sets depth / z_cont.
         n_det  : (n_det,) North — the kernel's transverse axis.
+        differentiable : the kernel math (`GetCounts_planeaware`) is pure,
+            differentiable torch — every OTHER caller (Step 1's label build,
+            `aleatoric_floor.py`, `KernelDualLabels` in scoring mode) wants
+            `@torch.no_grad()`'s speed/memory saving and never differentiates
+            through this call, which is why that was a blanket decorator.
+            `docs/THEORY.md` SS11.3 flags it as "the only blocker to exact
+            ∂U/∂(East, North)" for a kernel-in-the-loop Stage 4
+            (`scripts/04_optimize_lbfgs_kernel.py`); passing True here is that
+            flag — default False keeps every existing call site byte-for-byte
+            unchanged.
     Returns:
         E, T : (B, n_det) local intensities and leading-edge arrival times
                (seconds; 0 where no point cleared the detection threshold).
     """
-    up     = surface(n_det, e_det)                       # Up = g(North, East)
-    z_cont = (east_entry - e_det) / layer_east_dx        # depth from defined East
+    import contextlib
+    ctx = contextlib.nullcontext() if differentiable else torch.no_grad()
+    with ctx:
+        up     = surface(n_det, e_det)                       # Up = g(North, East)
+        z_cont = (east_entry - e_det) / layer_east_dx        # depth from defined East
 
-    dummy_flux = torch.tensor([0.0], device=clouds.device)
-    E, T = GetCounts_planeaware(
-        clouds, n_det, up, z_cont,                       # transverse plane (North, Up) — kernel unchanged
-        SmearN_fn=None,
-        fluxB_e=dummy_flux,
-        TimeAverage_vectorized_fn=None,
-        sigma=sigma_spatial,
-    )
-    return E, T
+        dummy_flux = torch.tensor([0.0], device=clouds.device)
+        E, T = GetCounts_planeaware(
+            clouds, n_det, up, z_cont,                       # transverse plane (North, Up) — kernel unchanged
+            SmearN_fn=None,
+            fluxB_e=dummy_flux,
+            TimeAverage_vectorized_fn=None,
+            sigma=sigma_spatial,
+        )
+        return E, T
 
 
 # ── Dataset builder stages ───────────────────────────────────────────────────
