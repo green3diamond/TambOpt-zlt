@@ -338,3 +338,55 @@ def plot_detector_patterns(panel, df, df_show, layouts_cache, points,
                   ncol=len(labels), bbox_to_anchor=(0.5, -0.02))
     fig.tight_layout(pad=1.2)
     return fig
+
+
+def plot_detector_patterns_by_time(panel, df, df_show, layouts_cache_time, points,
+                                   example_strategy, layout_threshold, *,
+                                   figsize_per_panel=(7.0, 6.2), fs_title=9,
+                                   fs_legend=7, cols_per=3, rows=(0, 3, 4, 5)):
+    """`plot_detector_patterns`'s twin, coloured by arrival TIME instead of
+    counts -- same layout, same representative (shower, layout) picks, same
+    dark/lit split, but `panel(ax, E_arr, T_arr, e_det, n_det_xy, cloud=..., s=...)`
+    takes an extra `T_arr` and is expected to colour lit detectors via
+    `opt_plotting.draw_detectors_enu_3d_by_time`.
+
+    `layouts_cache_time` holds `(E_arr, T_arr, e_det, n_det_xy)` 4-tuples, one
+    per `(shower, strategy, seed)` -- a separate cache from `plot_detector_patterns`'s
+    3-tuple `layouts_cache`, kept apart rather than widening the original tuple
+    so this function's caller (`05_paper_figures.py`'s `load_trigger_context`)
+    is unaffected until it opts in.
+
+    See `plot_detector_patterns` for the meaning of every other argument;
+    everything below `layouts_cache_time` unpacking is identical to it."""
+    df_show_tmp = df_show.copy().iloc[list(rows)]
+    rows_per = (len(df_show_tmp) + cols_per - 1) // cols_per
+    fig, axes = plt.subplots(
+        rows_per, cols_per,
+        figsize=(figsize_per_panel[0] * cols_per, figsize_per_panel[1] * rows_per),
+        squeeze=False, subplot_kw=dict(projection="3d"),
+        gridspec_kw={"wspace": 0.35})
+
+    legend_ax = None
+    for ax, (_, row) in zip(axes.flat, df_show_tmp.iterrows()):
+        s = int(row["shower"])
+        seeds = df[(df["shower"] == s) & (df["strategy"] == example_strategy)].sort_values("n_trig")
+        pick_seed = int(seeds.iloc[len(seeds) // 2]["seed"])
+        E_arr, T_arr, e_det, n_det_xy = layouts_cache_time[(s, example_strategy, pick_seed)]
+
+        sc, n_live, n_over = panel(ax, E_arr, T_arr, e_det, n_det_xy, cloud=points[s], s=s)
+        if sc is not None:
+            plt.colorbar(sc, ax=ax, label="arrival time [µs]", shrink=0.55, pad=0.04)
+        ax.set_title(f"#{s} ({row['tag']})\n"
+                    f"E={row['E']:.1e}, θ={row['theta_deg']:.0f}°, "
+                    f"φ={row['phi_deg']:.0f}°, {n_live}/100", fontsize=fs_title)
+        if legend_ax is None and ax.get_legend_handles_labels()[1]:
+            legend_ax = ax
+
+    for ax in axes.flat[len(df_show_tmp):]:
+        ax.set_visible(False)
+    if legend_ax is not None:
+        handles, labels = legend_ax.get_legend_handles_labels()
+        fig.legend(handles, labels, loc="lower center", fontsize=fs_legend,
+                  ncol=len(labels), bbox_to_anchor=(0.5, -0.02))
+    fig.tight_layout(pad=1.2)
+    return fig

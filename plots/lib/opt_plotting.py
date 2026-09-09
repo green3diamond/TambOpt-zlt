@@ -271,6 +271,50 @@ def draw_detectors_enu_3d(ax, E, e_det, n_det, surface,
     return sc, int(live.sum()), int(over.sum())
 
 
+def draw_detectors_enu_3d_by_time(ax, E, T, e_det, n_det, surface,
+                                  layout_threshold=None, legend=True,
+                                  log1p_space: bool = False,
+                                  cmap: str = "viridis", marker: str = "^",
+                                  s_live: float = 55.0, s_dark: float = 26.0):
+    """3-D ENU detector scatter coloured by ARRIVAL TIME instead of counts.
+
+    Same "live"/"no signal" split as `draw_detectors_enu_3d` (`E`-derived counts
+    > 0.001), so a detector's dark/lit status still comes from its deposit — but
+    lit detectors are coloured by raw leading-edge arrival time `T` [µs] on a
+    LINEAR scale instead of counts on a log scale. `T` is
+    `modules.showers.kernel.GetCounts_planeaware`'s front-timing observable: the
+    earliest detected particle's time in seconds, 0 = no hit (a leading edge, not
+    a weighted mean — see `modules/showers/kernel.py`). Linear, not log, because
+    the front's timing structure across the array is the point of the plot and a
+    log scale would compress it; a handful of `E`-live detectors can still show
+    `T=0` (their deposit is a sum over many sub-threshold hits, none of which
+    individually cleared `HIT_DEPOSIT_MIN`) and are left in the colour scale
+    rather than special-cased out.
+
+    Returns (mappable_or_None, n_with_signal, n_over_threshold), matching
+    `draw_detectors_enu_3d`.
+    """
+    if layout_threshold is None:
+        layout_threshold = LAYOUT_THRESHOLD
+    e = np.asarray(e_det, dtype=float).reshape(-1)
+    n = np.asarray(n_det, dtype=float).reshape(-1)
+    up = np.asarray(project_ne_to_up(surface, n, e), dtype=float).reshape(-1)
+    c = det_counts(E, log1p_space=log1p_space).reshape(-1)
+    t = np.nan_to_num(np.asarray(T, dtype=float), nan=0.0, posinf=0.0, neginf=0.0).reshape(-1)
+    live, over = c > 0.001, c > layout_threshold
+
+    ax.scatter(e[~live], n[~live], up[~live], s=s_dark, c="dimgray", marker=marker,
+               depthshade=False, label="no signal" if legend else None)
+    sc = None
+    if live.any():
+        t_us = t[live] * 1.0e6      # seconds -> microseconds, a readable range
+        sc = ax.scatter(e[live], n[live], up[live], c=t_us,
+                        s=s_live, cmap=cmap, marker=marker, edgecolor="white",
+                        linewidths=0.5, depthshade=False,
+                        label="signal" if legend else None)
+    return sc, int(live.sum()), int(over.sum())
+
+
 def draw_detectors_on_face(ax, E, e_det, n_det, surface, frame,
                            layout_threshold=None, legend=True,
                            log1p_space: bool = False, dyn_range: float = 1e6,
