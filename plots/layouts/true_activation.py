@@ -143,7 +143,8 @@ def main():
     surface = SurfaceUpMap.from_mountain(mountain).to(device)
     species_clouds, B, n_pairs, prim = load_events(args.n_events, device, mountain)
     print(f"events      : {B} of {n_pairs} pairs")
-    kernel_fnn = KernelDualLabels(species_clouds, surface, device, chunk=args.kernel_chunk)
+    kernel_fnn = KernelDualLabels(species_clouds, surface, device, chunk=args.kernel_chunk,
+                                  expected_primary=prim)
     print(f"kernel chunk: {kernel_fnn.chunk} events/call")
 
     fnn, _ = load_models(device)          # recon unused: activation never reconstructs

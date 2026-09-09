@@ -186,7 +186,8 @@ def main():
     print(f"[load] {B} held-out events (of {n_pairs} available) in "
           f"{time.time() - t0:.1f}s")
     kernel_fnn = KernelDualLabels(species_clouds, surface, DEVICE,
-                                 chunk=args.chunk, differentiable=True)
+                                 chunk=args.chunk, differentiable=True,
+                                 expected_primary=primary_batch)
 
     e_init, n_init = init_layout(mountain, args.init, DEVICE)
     xy_module = LearnableXY(e_init, n_init, device=str(DEVICE)).to(DEVICE)

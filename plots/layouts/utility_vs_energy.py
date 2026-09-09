@@ -275,7 +275,8 @@ def main():
 
     if args.labels == "kernel":
         surface = SurfaceUpMap.from_mountain(mountain).to(device)
-        labeller = KernelDualLabels(clouds, surface, device, chunk=args.kernel_chunk)
+        labeller = KernelDualLabels(clouds, surface, device, chunk=args.kernel_chunk,
+                                    expected_primary=prim)
         print(f"labels : kernel  ({labeller.chunk} events/call)")
     else:
         labeller = fnn

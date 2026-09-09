@@ -74,7 +74,21 @@ class KernelDualLabels:
     are combined into the surrogate's own output space with
     `dual.combine_species_outputs` (log1p(N_tot), log1p(t_tot*T_LOG_SCALE)),
     so the frozen recon sees inputs in the space it was trained on. `primary_batch`
-    is ignored: the clouds already fix which events this is.
+    is otherwise IGNORED for the actual computation: the clouds already fix which
+    events this is, and their (E, T) response depends only on the layout.
+
+    THAT is exactly the danger: because the response never touches
+    `primary_batch`, nothing stops a caller from passing in a `primary_batch`
+    that has been reordered, subsampled, or otherwise desynced from `self.clouds`
+    relative to how `load_events()` built them together -- row i's kernel
+    response would then get silently scored against row i's WRONG ground
+    truth (a different event's true direction/energy), with no error, just a
+    quietly incorrect number. Pass `primary_batch` here too (the SAME one
+    `load_events()` returned alongside `species_clouds`) and every `__call__`
+    checks the batch it is actually given against it, loudly, rather than
+    trusting callers to keep two independent objects in lockstep by hand.
+    Optional and off by default (`expected_primary=None`) so existing callers
+    that have not been updated to pass it keep exactly today's behaviour.
 
     `chunk` splits the call over events. The kernel materializes several
     (B, points, n_det) fp32 tensors at once -- at B=512 with ~25k points/event
@@ -85,7 +99,8 @@ class KernelDualLabels:
     event ever sees another. The utility statistics downstream still average over
     all B events -- unlike lowering --n-events, which shrinks the sample."""
 
-    def __init__(self, species_clouds, surface, device, chunk=0, differentiable=False):
+    def __init__(self, species_clouds, surface, device, chunk=0, differentiable=False,
+                expected_primary=None):
         """`species_clouds`: one placed (B, P, 5) tensor per species, in
         constants.SPECIES_NAMES order — the components of the SAME B events.
 
@@ -93,12 +108,20 @@ class KernelDualLabels:
         gradients reach the LAYOUT (e_det, n_det) through the kernel itself —
         what `scripts/04_optimize_lbfgs_kernel.py` needs and this class's
         default scoring use (`true_utility.py`'s surrogate-vs-kernel table)
-        does not. Default False keeps every existing caller unchanged."""
+        does not. Default False keeps every existing caller unchanged.
+
+        `expected_primary`: the `primary_batch` `load_events()` returned
+        ALONGSIDE `species_clouds` (same call, same events). When given,
+        every `__call__` asserts its own `primary_batch` argument matches
+        this byte-for-byte — see the class docstring for why that check
+        exists. `None` (default) disables it."""
         self.clouds = [c.to(device) for c in species_clouds]
         self.surface = surface
         # 0 / None -> whole batch at once (previous behaviour).
         self.chunk = int(chunk) or int(self.clouds[0].shape[0])
         self.differentiable = differentiable
+        self.expected_primary = (expected_primary.detach().to(device)
+                                 if expected_primary is not None else None)
 
     def _labels(self, clouds, e_det, n_det):
         E, T = compute_labels_batch(clouds, e_det, n_det, self.surface,
@@ -106,6 +129,27 @@ class KernelDualLabels:
         return torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1)
 
     def __call__(self, primary_batch, xy_batch):
+        # primary_batch=None is a legitimate call (activation_counts.py's own
+        # choice, made explicit in its comment there): it never builds a
+        # primary_batch at all, so there is nothing to check against --
+        # skip, do not treat "no primary_batch" as "wrong primary_batch".
+        if self.expected_primary is not None and primary_batch is not None:
+            exp = self.expected_primary
+            if primary_batch.shape != exp.shape:
+                raise ValueError(
+                    f"KernelDualLabels got primary_batch shape {tuple(primary_batch.shape)} "
+                    f"but was built (expected_primary=) from {tuple(exp.shape)} -- these "
+                    f"are not the same events. Pass the SAME primary_batch load_events() "
+                    f"returned alongside the species_clouds this instance holds.")
+            if not torch.equal(primary_batch.detach().to(exp.device), exp):
+                raise ValueError(
+                    "KernelDualLabels.__call__'s primary_batch does not match the "
+                    "primary_batch it was constructed with (expected_primary=) -- the "
+                    "kernel's response (from its own fixed clouds) would be scored "
+                    "against a DIFFERENT event's true direction/energy, silently. This "
+                    "means primary_batch and species_clouds have gone out of sync "
+                    "somewhere upstream (a reorder, subsample, or reslice applied to "
+                    "one but not the other) -- fix that rather than removing this check.")
         e_det, n_det = xy_batch[0, :, 0], xy_batch[0, :, 1]      # layout shared across batch
         B = int(self.clouds[0].shape[0])
         out = []
@@ -256,7 +300,7 @@ def main():
     species_clouds, B, n_pairs, prim = load_events(args.n_events, device, mountain)
     print(f"events      : {B} of {n_pairs} pairs")
     kernel_fnn = KernelDualLabels(species_clouds, surface, device,
-                                  chunk=args.kernel_chunk)
+                                  chunk=args.kernel_chunk, expected_primary=prim)
     print(f"kernel chunk: {kernel_fnn.chunk} events/call")
 
     fnn, recon = load_models(device)
