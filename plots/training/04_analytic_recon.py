@@ -368,6 +368,23 @@ def run_direction_and_curvature(pos, T_raw, E_raw, min_fired):
     ss_tot = ((T_raw - w_mean) * w0).pow(2).sum(dim=-1)
     r2_east = 1.0 - ss_res_east / ss_tot.clamp(min=1e-30)
     r2_full = 1.0 - ss_res_full / ss_tot.clamp(min=1e-30)
+    # A handful of events have T ~constant across their fired detectors (all
+    # arriving within float32 noise of each other), so ss_tot is genuinely
+    # ~0 -- R2's 0/0-like blow-up there is not a numerical bug in the fit
+    # (resid itself is tiny too, ~1e-5 s, a fine fit) but the R2 CONCEPT
+    # not applying: there is no timing variance for the plane term to have
+    # explained. Measured on the real corpus (2026-09-09): a few such events
+    # in a 500-row sample gave R2 ~ -1e15/-1e18 and dominated the batch mean
+    # by many orders of magnitude. Flagged via a floor RELATIVE to this
+    # batch's own scale (not a magic absolute constant, since T's scale
+    # varies with the corpus/units) rather than clamping ss_tot itself, which
+    # would just move the same blow-up to a different, still-wrong number.
+    # Scale reference from valid_count events only (a degenerate few-fired-
+    # detector event's near-zero ss_tot would otherwise drag the median down
+    # and let other degenerate events slip past the floor too).
+    _ss_tot_scale = (ss_tot[valid_count].median() if valid_count.any()
+                    else torch.tensor(1.0, device=ss_tot.device)).clamp(min=1e-30)
+    ss_tot_ok = ss_tot > 1.0e-3 * _ss_tot_scale
 
     # ---- A1: weighted plane fit, deposit E as the multiplicity proxy ----
     w1 = torch.where(fired, E_raw.clamp(min=0), torch.zeros_like(E_raw))
@@ -394,7 +411,7 @@ def run_direction_and_curvature(pos, T_raw, E_raw, min_fired):
         ok=ok, n_fired=n_fired, cond=cond,
         t0=t0, n_hat=n_hat, resid=resid, speed_check=speed_check,
         core=core, r_perp=r_perp, a_curv=a_curv, R_dist=R_dist,
-        r2_east=r2_east, r2_full=r2_full,
+        r2_east=r2_east, r2_full=r2_full, ss_tot_ok=ss_tot_ok,
     )
 
 
@@ -459,9 +476,22 @@ def main():
     fits_v = run_direction_and_curvature(pos_v, T_v, E_v, args.min_fired)
     ok_v = fits_v["ok"]
     frac_ok = float(ok_v.float().mean())
-    print(f"[A0] R2(East ramp)={fits_v['r2_east'][ok_v].mean():.4f}  "
-          f"R2(East+transverse)={fits_v['r2_full'][ok_v].mean():.4f}  "
-          f"(delta={float((fits_v['r2_full'] - fits_v['r2_east'])[ok_v].mean()):.4f})")
+    # A0's R2 is undefined (0/0-like), not just noisy, for an event whose
+    # fired-detector T is ~constant (ss_tot ~0) -- ss_tot_ok excludes those
+    # rather than let them dominate the mean by many orders of magnitude
+    # (measured: a few such events gave R2 ~ -1e15/-1e18 on real data). Report
+    # the exclusion count explicitly, and MEDIAN alongside mean since even
+    # after that exclusion, per-event R2 is a fat-tailed quantity -- a plane
+    # fit can genuinely fail badly on one noisy event without anything being
+    # wrong with the arithmetic.
+    ok_r2 = ok_v & fits_v["ss_tot_ok"]
+    n_excluded = int(ok_v.sum()) - int(ok_r2.sum())
+    r2e, r2f = fits_v["r2_east"][ok_r2], fits_v["r2_full"][ok_r2]
+    print(f"[A0] R2(East ramp)      mean={r2e.mean():.4f}  median={r2e.median():.4f}")
+    print(f"     R2(East+transverse) mean={r2f.mean():.4f}  median={r2f.median():.4f}  "
+          f"(delta of medians={float(r2f.median() - r2e.median()):.4f})")
+    print(f"     ({n_excluded}/{int(ok_v.sum())} otherwise-qualifying events excluded: "
+          f"near-zero T variance across fired detectors, R2 undefined there)")
     print(f"[A1] qualifying events (>= {args.min_fired} fired, non-degenerate): "
           f"{frac_ok:.1%}  |s|*c mean={float(fits_v['speed_check'][ok_v].mean()):.3f} "
           f"(1.0 = a clean plane fit)")
@@ -567,8 +597,9 @@ def main():
     result = dict(
         n_val=int(len(val_sub)), n_train_calib=int(len(train_sub)),
         min_fired=args.min_fired,
-        A0=dict(r2_east=float(fits_v["r2_east"][ok_v].mean()),
-                r2_full=float(fits_v["r2_full"][ok_v].mean())),
+        A0=dict(r2_east_mean=float(r2e.mean()), r2_east_median=float(r2e.median()),
+                r2_full_mean=float(r2f.mean()), r2_full_median=float(r2f.median()),
+                n_excluded_zero_variance=n_excluded, n_qualifying=int(ok_v.sum())),
         A1=dict(qualifying_frac=frac_ok,
                 mean_speed_check=float(fits_v["speed_check"][ok_v].mean()),
                 sign_convention=float(sign),
@@ -591,8 +622,12 @@ def main():
         f.write(f"[eval] {len(val_sub)} val rows (analytic reconstruction, kernel "
                f"ground truth, --min-fired={args.min_fired})\n\n")
         f.write("=== ANALYTIC (plane-front + LDF) reconstruction ===\n\n")
-        f.write(f"  A0  R2(East ramp)={result['A0']['r2_east']:.4f}  "
-               f"R2(East+transverse)={result['A0']['r2_full']:.4f}\n")
+        f.write(f"  A0  R2(East ramp)       mean={result['A0']['r2_east_mean']:.4f}  "
+               f"median={result['A0']['r2_east_median']:.4f}\n")
+        f.write(f"      R2(East+transverse) mean={result['A0']['r2_full_mean']:.4f}  "
+               f"median={result['A0']['r2_full_median']:.4f}  "
+               f"({result['A0']['n_excluded_zero_variance']}/"
+               f"{result['A0']['n_qualifying']} excluded: near-zero T variance)\n")
         f.write(f"  A1  qualifying={frac_ok:.1%}  |s|*c={result['A1']['mean_speed_check']:.3f}\n")
         for name, st in zip(("dir_x", "dir_y", "dir_z"), dir_stats):
             f.write(f"    {name:6s} mse={st['mse']:.5f}  R2={st['r2']:6.3f}  "
@@ -616,8 +651,12 @@ def _plot(folder, fits_v, ok_v, true_dir, pred_dir, true_dist, ok_a2,
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
 
-    # A0: per-event R2 gain from the transverse terms
-    gain = (fits_v["r2_full"] - fits_v["r2_east"])[ok_v].cpu().numpy()
+    # A0: per-event R2 gain from the transverse terms. Same ss_tot_ok
+    # exclusion as the printed A0 stats -- an event with ~0 T variance has
+    # an undefined R2 (not just a noisy one) and would otherwise put a
+    # handful of +-1e15-scale bars in an otherwise O(1)-ranged histogram.
+    ok_r2_plot = ok_v & fits_v["ss_tot_ok"]
+    gain = (fits_v["r2_full"] - fits_v["r2_east"])[ok_r2_plot].cpu().numpy()
     axes[0, 0].hist(gain, bins=40, color="C0")
     axes[0, 0].set_xlabel("R2(East+transverse) - R2(East only)")
     axes[0, 0].set_title("A0: transverse timing structure per event")
