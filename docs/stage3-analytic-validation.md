@@ -4,18 +4,40 @@
 
 - [x] **B0** — blob-row filter landed in `scripts/03_train_recon_deepsets.py` (`5a792d8`).
 - [x] **`--out-suffix` flag** — added to `scripts/03_train_recon_deepsets.py` (`5a792d8`).
-- [x] **Part A script written AND now run against the real corpus** —
+- [x] **Part A script written AND run at scale — results in, this gates B1/B4 below.**
       `plots/training/04_analytic_recon.py` (`9c930d6`, fixes in `78b39ad`). Three real bugs
       found and fixed while running it on a GPU node: unnormalized conditioning check
       (rejected 100% of events), uncentered-position numerical instability in the plane
       solve (R² ≈ −1e15), and an aggregate-R² blow-up from near-zero-T-variance outlier
-      events (fixed in `78b39ad`, verified end-to-end). At `--n-val 500`: A0 median R²
-      East-only 0.086 vs East+transverse 0.30 (+0.22 — real transverse timing signal);
-      A1 direction R² still weak (dir_x/y/z −0.07/−0.27/−16.1, pearson 0.23/0.29/0.04) —
-      the plane fit alone is not yet competitive with recon's 0.876/0.880/0.896; A2 curvature
-      gives a source-distance estimate ~2500 m off a ~2800 m median true distance (weak but
-      nonzero); A3 LDF energy R² ≈ 0 (uncalibrated at this sample size). A `--n-val 20000`
-      run (closer to `recon_regimes.py`'s own scale) is in progress.
+      events (fixed in `78b39ad`). Confirmed at `--n-val 500` and then at `--n-val 20000`
+      (matching `recon_regimes.py`'s own scale) — same signs and magnitudes at both sizes,
+      so this is a stable result, not small-sample noise:
+
+      | | 500 events | 20,000 events |
+      |---|---|---|
+      | A0 median R² (East only / East+transverse) | 0.086 / 0.30 | 0.083 / 0.347 |
+      | A0 median delta (transverse gain) | +0.22 | **+0.264** |
+      | A1 dir_x/y/z R² | −0.07 / −0.27 / −16.1 | −0.02 / −0.42 / −18.1 |
+      | A1 dir_x/y/z pearson r | 0.23 / 0.29 / 0.04 | 0.24 / 0.27 / 0.03 |
+      | A2 median dist. error vs true median | 2520 m vs 2840 m | 2578 m vs 2914 m |
+      | A3 log_e R² / pearson r / RMSE (dex) | 0.004 / 0.064 / 0.452 | 0.001 / 0.037 / **0.463** |
+      | A4 pearson r: N_lit vs log₁₀E / axis-dist | −0.216 / 0.017 | −0.154 / −0.008 |
+
+      **Verdict:** the naive plane-front + LDF analytic reconstruction is clearly and
+      consistently WORSE than recon on both channels it was meant to challenge — direction
+      pearson-r 0.24-0.30 (recon: 0.936-0.947) and energy RMSE 0.46 dex (recon: 0.341 dex).
+      A2 (curvature → vertex) is confirmed uninformative as the doc's own prior predicted
+      (error ≈ 88% of the true distance — no localization power). The one clear positive:
+      A0 shows real transverse timing structure beyond the East depth-ramp (+0.26 median R²),
+      so recon's use of the T channel is not just picking up a trivial depth correlation.
+      **This means Part A does not surface an easy win recon is leaving on the table** — the
+      network is already extracting substantially more direction/energy signal than a
+      straightforward physics-based fit recovers. It does NOT mean recon is optimal, and does
+      NOT weaken the independent evidence for B1 (the surrogate-sample-vs-kernel R² asymmetry,
+      diag_stage3.py) — but B4 (predict the decay vertex as an auxiliary target) is now weakly
+      motivated at best, since even the analytic method with an explicit vertex-fitting step
+      (A2) can't localize it, and there is no reason to expect an auxiliary head would recover
+      information the physics itself does not clearly provide from this array's geometry.
 - [x] **Kernel-in-the-loop Stage 4** — `scripts/04_optimize_lbfgs_kernel.py` + a
       `differentiable` flag on `compute_labels_batch`/`KernelDualLabels` (`5bde42d`), a
       primary_batch/clouds consistency check on `KernelDualLabels` (`f7fc35a`), and a second,
@@ -23,12 +45,10 @@
       Added beyond this doc's original scope, at the user's request. Differentiability
       verified end-to-end on synthetic clouds; the optimization loop itself (real corpus,
       real `recon.pt`, a full run) has not yet been executed.
-- [ ] **A0-A4 at full scale** — the 500-row run above is a first real signal, not a final
-      verdict; direction/energy are both currently WORSE than recon via the plane/LDF fit
-      alone, so B1/B4's gating question ("would giving recon better inputs help, or is the
-      information itself not there") leans toward "recon is already extracting more than a
-      naive analytic fit can" — but confirm at the `--n-val 20000` scale before acting on it.
-- [ ] **B1-B6** — not started; ranked below, gated on A0-A4 at full scale.
+- [x] **A0-A4 at full scale** — done, see table above. Re-run only if Stage 3 changes enough
+      to plausibly move the direction/energy comparison (e.g. after B1 lands).
+- [ ] **B1-B6** — not started. B1 still well-motivated (independent evidence); B2/B3/B5/B6
+      unaffected by this result; B4 downgraded — see verdict above.
 - [ ] Re-baseline `recon_regimes.py` after B0 (val loss / R² numbers before this branch are
       not comparable to a run after it).
 
@@ -233,13 +253,21 @@ Cheaper and testable now: weight each row's `log_e` loss by inverse spectrum den
 energy plateau is a sampling artifact this moves it; if not, that is evidence for the
 arithmetic ceiling and the answer is to widen `LOG_E_MAX` or accept 0.34 dex.
 
-### B4 — Predict the decay vertex as an auxiliary output — **not started**
+### B4 — Predict the decay vertex as an auxiliary output — **downgraded by A2's result**
 
 Extend the target to include `primary[:, 5:8]`. Two reasons: it **tests the energy/distance
 degeneracy** (if total deposit confounds energy with decay distance, a network that cannot
 infer distance cannot invert energy), and it is free at inference — U reads only the first four
 outputs (`objective.py:237-260`), so Stage 4 is unaffected if the head is extended rather than
-replaced. Weight the auxiliary terms low enough to regularize, not dominate. Gate on A3.
+replaced. Weight the auxiliary terms low enough to regularize, not dominate.
+
+**Gated on A3 as written; A2's result (see Status) weakens the case.** A2 fits the front
+curvature explicitly to localize the vertex and gets a median error ≈ 88% of the true
+distance — essentially no localization power, at both 500- and 20,000-event scale. If the
+physics itself (via an explicit geometric fit) cannot pin down the vertex from this array's
+timing, there is no strong prior that an auxiliary recon head would recover that information
+either. Still cheap to try since it's free at inference, but it is no longer the well-motivated
+item it looked like before A2 ran — reprioritize below B1/B2 if time is limited.
 
 ### B5 — Direction output is unconstrained — **not started**
 
@@ -259,12 +287,14 @@ channel by target variance.
 
 ## Sequencing
 
-1. **B0** — everything else is measured against a contaminated baseline until this lands.
-2. **A0** — the gate; a negative redirects Part A entirely.
-3. **A1 / A3 / A4** — the yardstick numbers and the missing multiplicity study.
-4. **B1** — best-evidenced change, measured against A1/A3.
+1. **B0** — done. Everything else is measured against a contaminated baseline until this lands.
+2. **A0** — done, positive (real transverse timing signal beyond the depth ramp).
+3. **A1 / A3 / A4** — done. Analytic direction/energy both clearly worse than recon;
+   A2 (run alongside) confirms no vertex-localization power. See Status for numbers.
+4. **B1** — next up. Best-evidenced change (surrogate-sample-vs-kernel R² asymmetry),
+   independent of the A-phase result, measured against recon_regimes.py's baseline.
 5. **B2**, then **B3** / **B5** / **B6** as cheap follow-ons.
-6. **B4**, **A2** — gated on A3's degeneracy result.
+6. **B4** — downgraded by A2's result (see its own section); do last if at all.
 
 Stage-3 experiments need an **`--out-suffix` flag** (not implemented; add it) so they do not
 overwrite production `recon.pt`. At ~390 s/epoch on the 8.58M-row corpus, A/B comparisons run
