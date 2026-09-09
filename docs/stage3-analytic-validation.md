@@ -1,5 +1,37 @@
 # Stage 3: analytic validation + targeted improvements
 
+## Status (branch `stage3-analytic-validation`)
+
+- [x] **B0** — blob-row filter landed in `scripts/03_train_recon_deepsets.py` (`5a792d8`).
+- [x] **`--out-suffix` flag** — added to `scripts/03_train_recon_deepsets.py` (`5a792d8`).
+- [x] **Part A script written AND now run against the real corpus** —
+      `plots/training/04_analytic_recon.py` (`9c930d6`, fixes in `78b39ad`). Three real bugs
+      found and fixed while running it on a GPU node: unnormalized conditioning check
+      (rejected 100% of events), uncentered-position numerical instability in the plane
+      solve (R² ≈ −1e15), and an aggregate-R² blow-up from near-zero-T-variance outlier
+      events (fixed in `78b39ad`, verified end-to-end). At `--n-val 500`: A0 median R²
+      East-only 0.086 vs East+transverse 0.30 (+0.22 — real transverse timing signal);
+      A1 direction R² still weak (dir_x/y/z −0.07/−0.27/−16.1, pearson 0.23/0.29/0.04) —
+      the plane fit alone is not yet competitive with recon's 0.876/0.880/0.896; A2 curvature
+      gives a source-distance estimate ~2500 m off a ~2800 m median true distance (weak but
+      nonzero); A3 LDF energy R² ≈ 0 (uncalibrated at this sample size). A `--n-val 20000`
+      run (closer to `recon_regimes.py`'s own scale) is in progress.
+- [x] **Kernel-in-the-loop Stage 4** — `scripts/04_optimize_lbfgs_kernel.py` + a
+      `differentiable` flag on `compute_labels_batch`/`KernelDualLabels` (`5bde42d`), a
+      primary_batch/clouds consistency check on `KernelDualLabels` (`f7fc35a`), and a second,
+      reconstruction-independent (analytic) evaluation of the init/best layout (`f14e7da`).
+      Added beyond this doc's original scope, at the user's request. Differentiability
+      verified end-to-end on synthetic clouds; the optimization loop itself (real corpus,
+      real `recon.pt`, a full run) has not yet been executed.
+- [ ] **A0-A4 at full scale** — the 500-row run above is a first real signal, not a final
+      verdict; direction/energy are both currently WORSE than recon via the plane/LDF fit
+      alone, so B1/B4's gating question ("would giving recon better inputs help, or is the
+      information itself not there") leans toward "recon is already extracting more than a
+      naive analytic fit can" — but confirm at the `--n-val 20000` scale before acting on it.
+- [ ] **B1-B6** — not started; ranked below, gated on A0-A4 at full scale.
+- [ ] Re-baseline `recon_regimes.py` after B0 (val loss / R² numbers before this branch are
+      not comparable to a run after it).
+
 ## Context
 
 Stage 3 trains a DeepSets reconstructor `(East, North, E, T)×100 → (n̂_x, n̂_y, n̂_z, log̃E)`.
@@ -68,7 +100,7 @@ exactly **0.0000** on grid, rings_R800 and center; Test 9 puts canonical order 0
 
 ---
 
-## Part A — Analytic reconstruction (new standalone file)
+## Part A — Analytic reconstruction (new standalone file) — **written, not yet run**
 
 **New file: `plots/training/04_analytic_recon.py`.** Self-contained, read-only w.r.t. the
 pipeline, no Stage-3 changes. Follows `plots/training/aleatoric_floor.py` conventions (the
@@ -147,7 +179,7 @@ Cheap (no fitting, no generation), and it tells you where reconstruction actuall
 
 ## Part B — Stage-3 changes, ranked
 
-### B0 — `blob_ids.pt` is never filtered in Stage 3 *(a real bug, ~5 lines)*
+### B0 — `blob_ids.pt` is never filtered in Stage 3 *(a real bug, ~5 lines)* — **DONE (`5a792d8`)**
 
 Step 2 drops degenerate showers from train, val **and** its norm stats, and hard-errors if the
 file is missing (`02_train_fnn_deepsets.py:376-394, 939-942`). `03_train_recon_deepsets.py`
@@ -157,7 +189,7 @@ rows are in recon's training set, its z-score statistics, and its validation met
 Cheapest item by a wide margin, and it contaminates the metric every other experiment is
 judged on. Do it first and re-baseline.
 
-### B1 — Explicit hit mask + masked pooling *(strongest evidence)*
+### B1 — Explicit hit mask + masked pooling *(strongest evidence)* — **not started**
 
 There is no mask anywhere in `DeepSetsRecon` — no mask argument, no masked-mean denominator.
 `h.mean(dim=1)` always divides by 100 and `h.max(dim=1)` competes over all 100 slots,
@@ -174,7 +206,7 @@ feature too.
 Note THEORY §10.1 found zero-inflation handling backfired — but that was *loss reweighting* on
 the equivariant surrogate, not *pooling* on an invariant recon. It does not transfer; measure.
 
-### B2 — Give recon the geometry it is missing
+### B2 — Give recon the geometry it is missing — **not started**
 
 Recon sees `(East, North)`; the kernel's response is defined by `(North, Up, z_cont)`
 (`dataset_builder.py:187-192`). `Up = g(North, East)` is deterministic so nothing is *lost*,
@@ -191,7 +223,7 @@ assemblies in Stage 3, `objective.py:253-256`, and `plots/layouts/true_utility.p
 together or a 4-feature tensor gets fed silently into a 6-feature model. Gate on checkpoint
 `config` for backward compatibility.
 
-### B3 — Reweight the energy loss by inverse spectrum density
+### B3 — Reweight the energy loss by inverse spectrum density — **not started**
 
 The corpus under-samples the top half-decade 4.5×, exactly where AllShowers already
 extrapolates (`constants.py:80-84`: its training set ran out at 4.9e7). Balanced corpora exist
@@ -201,7 +233,7 @@ Cheaper and testable now: weight each row's `log_e` loss by inverse spectrum den
 energy plateau is a sampling artifact this moves it; if not, that is evidence for the
 arithmetic ceiling and the answer is to widen `LOG_E_MAX` or accept 0.34 dex.
 
-### B4 — Predict the decay vertex as an auxiliary output
+### B4 — Predict the decay vertex as an auxiliary output — **not started**
 
 Extend the target to include `primary[:, 5:8]`. Two reasons: it **tests the energy/distance
 degeneracy** (if total deposit confounds energy with decay distance, a network that cannot
@@ -209,14 +241,14 @@ infer distance cannot invert energy), and it is free at inference — U reads on
 outputs (`objective.py:237-260`), so Stage 4 is unaffected if the head is extended rather than
 replaced. Weight the auxiliary terms low enough to regularize, not dominate. Gate on A3.
 
-### B5 — Direction output is unconstrained
+### B5 — Direction output is unconstrained — **not started**
 
 `(n̂_x, n̂_y, n̂_z)` are free targets from a bare `Linear(hidden, 4)`; nothing enforces
 `|n̂| = 1`. Normalization happens post hoc at `objective.py:102-106`, whose own comment warns
 the stored components are not guaranteed normalized. The MSE is isotropic in ℝ³ while the
 physical quantity lives on S², so radial error is paid for in the loss and then discarded.
 
-### B6 — Loss weighting is accidental
+### B6 — Loss weighting is accidental — **not started**
 
 `_per_axis_loss` (`:277-283`) is an unweighted sum of four raw-unit MSEs, so the effective
 weighting is an accident of target variance: `dz` (var 0.0445) contributes far less gradient
