@@ -212,15 +212,27 @@ def face_limits(ax, mtn_s, mtn_u, pad: float = 400.0):
     ax.set_aspect("equal")
 
 
-def _count_norm(c, live, dyn_range):
+def _count_norm(c, live, dyn_range, pct_clip=None):
     """LogNorm for a detector-count colour scale, clamped to `dyn_range` decades
     below the peak: real layouts mix a few strong detectors with a far tail, and an
     unbounded LogNorm over ~60 decades fails outright with "Invalid vmin or vmax".
 
+    `pct_clip`, if given, is a `(lo_pct, hi_pct)` pair (e.g. `(2, 98)`) and takes
+    over lo/hi from the PERCENTILES of the live values instead of `dyn_range`
+    below the literal max. Use it when a few outliers would otherwise set `hi`
+    (or `lo`) far from where most of the live population actually sits — e.g. a
+    surrogate's stochastic sample draw, which can put one detector's count
+    orders of magnitude from the rest — so the fixed-decades clamp compresses
+    the real spread into one end of the colour scale instead of showing it.
+
     Returns (norm, lo, hi); clip the data to [lo, hi] before handing it over."""
     from matplotlib.colors import LogNorm
-    hi = float(c[live].max())
-    lo = max(float(c[live].min()), hi / dyn_range)
+    vals = c[live]
+    if pct_clip is not None:
+        lo, hi = (float(v) for v in np.percentile(vals, pct_clip))
+    else:
+        hi = float(vals.max())
+        lo = max(float(vals.min()), hi / dyn_range)
     if not (np.isfinite(lo) and np.isfinite(hi)) or lo <= 0:
         lo, hi = 1e-12, 1.0
     if hi <= lo:                          # single value / all-equal → give it room
@@ -231,6 +243,7 @@ def _count_norm(c, live, dyn_range):
 def draw_detectors_enu_3d(ax, E, e_det, n_det, surface,
                           layout_threshold=None, legend=True,
                           log1p_space: bool = False, dyn_range: float = 1e6,
+                          pct_clip=None,
                           cmap: str = "plasma", marker: str = "^",
                           s_live: float = 55.0, s_dark: float = 26.0):
     """3-D (East, North, Up) twin of `draw_detectors_on_face`.
@@ -243,6 +256,10 @@ def draw_detectors_enu_3d(ax, E, e_det, n_det, surface,
 
     `ax` must be a ``projection="3d"`` axis. Detector Up comes from the same
     differentiable `SurfaceUpMap` the optimiser is scored through.
+
+    `pct_clip`: see `_count_norm` — pass e.g. `(2, 98)` when `E` can carry
+    outliers that would otherwise dominate `dyn_range`'s fixed-decades clamp
+    (a surrogate's stochastic sample draw, not a deterministic kernel label).
 
     Returns (mappable_or_None, n_with_signal, n_over_threshold)."""
     if layout_threshold is None:
@@ -259,7 +276,7 @@ def draw_detectors_enu_3d(ax, E, e_det, n_det, surface,
                depthshade=False, label="no signal" if legend else None)
     sc = None
     if live.any():
-        norm, lo, hi = _count_norm(c, live, dyn_range)
+        norm, lo, hi = _count_norm(c, live, dyn_range, pct_clip=pct_clip)
         sc = ax.scatter(e[live], n[live], up[live], c=np.clip(c[live], lo, hi),
                         s=s_live, cmap=cmap, marker=marker, edgecolor="white",
                         linewidths=0.5, norm=norm, depthshade=False,
@@ -274,6 +291,7 @@ def draw_detectors_enu_3d(ax, E, e_det, n_det, surface,
 def draw_detectors_enu_3d_by_time(ax, E, T, e_det, n_det, surface,
                                   layout_threshold=None, legend=True,
                                   log1p_space: bool = False,
+                                  pct_clip=None,
                                   cmap: str = "viridis", marker: str = "^",
                                   s_live: float = 55.0, s_dark: float = 26.0):
     """3-D ENU detector scatter coloured by ARRIVAL TIME instead of counts.
@@ -290,6 +308,14 @@ def draw_detectors_enu_3d_by_time(ax, E, T, e_det, n_det, surface,
     `T=0` (their deposit is a sum over many sub-threshold hits, none of which
     individually cleared `HIT_DEPOSIT_MIN`) and are left in the colour scale
     rather than special-cased out.
+
+    `pct_clip`: an optional `(lo_pct, hi_pct)` pair (e.g. `(2, 98)`). Default
+    `None` autoscales the colour bar to the live set's literal min/max, same as
+    before this parameter existed; a single outlier detector then sets one end
+    of the bar and everything else reads as one flat colour. Pass a percentile
+    pair when `T` can carry such outliers — e.g. a surrogate's stochastic
+    sample draw, not a deterministic kernel label — to clip the colour range
+    (not which detectors are "live") to where most of the population sits.
 
     Returns (mappable_or_None, n_with_signal, n_over_threshold), matching
     `draw_detectors_enu_3d`.
@@ -308,9 +334,15 @@ def draw_detectors_enu_3d_by_time(ax, E, T, e_det, n_det, surface,
     sc = None
     if live.any():
         t_us = t[live] * 1.0e6      # seconds -> microseconds, a readable range
+        vmin, vmax = None, None
+        if pct_clip is not None:
+            vmin, vmax = (float(v) for v in np.percentile(t_us, pct_clip))
+            if vmax <= vmin:
+                vmax = vmin + 1.0
+            t_us = np.clip(t_us, vmin, vmax)
         sc = ax.scatter(e[live], n[live], up[live], c=t_us,
                         s=s_live, cmap=cmap, marker=marker, edgecolor="white",
-                        linewidths=0.5, depthshade=False,
+                        linewidths=0.5, vmin=vmin, vmax=vmax, depthshade=False,
                         label="signal" if legend else None)
     return sc, int(live.sum()), int(over.sum())
 
