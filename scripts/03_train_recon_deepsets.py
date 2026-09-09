@@ -117,7 +117,16 @@ LBFGS_PATIENCE      = 150
 # from it dies in `flat_grad.sub(prev_flat_grad)` with None. Costs one extra
 # closure call per step() (lbfgs.py:330), i.e. ~1/LBFGS_STEP_ITERS overhead.
 LBFGS_STEP_ITERS    = 25
-RESUME_CKPT_INTERVAL = 25   # save a rolling resume checkpoint every N Adam epochs
+# Save the rolling resume checkpoint every N Adam epochs. This MUST be small
+# relative to the preemption rate, not to the epoch count: on the 7.7M-row
+# corpus an epoch is ~390s, so the old value of 25 meant one save every 2.7h
+# while gpu_requeue preempts every 1-3h. Job 45423856 lost its first four
+# training segments outright -- they died at epochs 20, 24 and 1, i.e. always
+# before the first save, so recon_resume.pt never existed and every restart
+# began at epoch 1 (9 restarts / 9.4h bought 83 epochs). The checkpoint is
+# 5.2 MB; writing it every epoch costs well under a second against a 390s
+# epoch, so there is no reason to batch it.
+RESUME_CKPT_INTERVAL = 1
 
 RECON_INPUT_FEATURES = 4   # (x, y, E, T) per detector — E, T come from
                             # RECON_INPUT (surrogate draw, real kernel, or a
@@ -383,7 +392,7 @@ def _plot_curves(log, path: str, adam_epochs: int = 0,
 
 def main():
     global N_EPOCHS, LBFGS_MAX_ITER
-    global RECON_INPUT, MIX_FRAC
+    global RECON_INPUT, MIX_FRAC, OUTPUT_FOLDER
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs",      type=int, default=N_EPOCHS)
     ap.add_argument("--lbfgs-iters", type=int, default=LBFGS_MAX_ITER)
@@ -396,9 +405,17 @@ def main():
                          "'sample' alone leaves a standing surrogate-vs-true gap.")
     ap.add_argument("--mix-frac", type=float, default=MIX_FRAC,
                     help="P(row uses kernel labels) when --recon-input mix")
+    ap.add_argument("--out-suffix", type=str, default=None,
+                    help="append _<suffix> to the output folder, e.g. "
+                         "--out-suffix expB1 writes to RECON_FOLDER + "
+                         "'_deepsets_expB1' instead of the production "
+                         "recon.pt. Use for any run that is not meant to "
+                         "become the checkpoint Stage 4 / true_utility.py load.")
     args = ap.parse_args()
     RECON_INPUT, MIX_FRAC = args.recon_input, float(args.mix_frac)
     N_EPOCHS, LBFGS_MAX_ITER = int(args.epochs), int(args.lbfgs_iters)
+    if args.out_suffix:
+        OUTPUT_FOLDER = OUTPUT_FOLDER + "_" + args.out_suffix
 
     print("=" * 72)
     print("v6/03_train_recon_deepsets.py — DeepSets recon on dual-species preds")
@@ -414,7 +431,22 @@ def main():
     primary   = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt")).float()
     xy        = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "xy.pt")).float()
     strat_ids = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "strategy_ids.pt")).long()
-    print(f"[load] corpus in {time.time() - t0:.1f}s  primary={tuple(primary.shape)}")
+    # Degenerate/corrupt showers, flagged by Step 1's flag_blob_showers. Step 2
+    # (02_train_fnn_deepsets.py) drops these from train, val AND its norm stats
+    # and hard-errors if the file is missing; this script never loaded it at
+    # all, so blob rows sat in recon's training set, z-score statistics, and
+    # validation metric. Same hard-error convention as Step 2: a dataset built
+    # before the filter existed should be rebuilt, not silently scored as-is.
+    _blob_path = os.path.join(TRAINING_DATASET_FOLDER, "blob_ids.pt")
+    if not os.path.exists(_blob_path):
+        raise SystemExit(
+            f"blob_ids.pt not found in {TRAINING_DATASET_FOLDER}.\n"
+            "This dataset predates the degenerate-shower filter, so its E/T "
+            "labels may still contain blobs. Re-run 01_build_dataset_northeast.py.")
+    blob_ids = torch.load(_blob_path)
+    keep = ~blob_ids.bool()
+    print(f"[load] corpus in {time.time() - t0:.1f}s  primary={tuple(primary.shape)}  "
+          f"blob={100 * (~keep).float().mean():.2f}%")
 
     dual = load_dual_surrogate(FNN_FOLDER, DEVICE)
 
@@ -448,18 +480,26 @@ def main():
     del E_samp, T_samp, E_kern, T_kern
 
     target   = primary[:, :4].clone().float()
-    tgt_mean = target.mean(dim=0)
-    tgt_std  = target.std(dim=0).clamp(min=1e-8)
+    # Stats over the clean (non-blob) rows only -- mirrors Step 2's
+    # compute_normalization(primary[keep], ...); a blob row's corrupted E/T (or,
+    # pre-leading-edge datasets, corrupted T) would otherwise skew the very
+    # z-score every row (including clean ones) gets normalized by.
+    tgt_mean = target[keep].mean(dim=0)
+    tgt_std  = target[keep].std(dim=0).clamp(min=1e-8)
     print(f"[target] mean={tgt_mean.tolist()}  std={tgt_std.tolist()}")
 
     train_idx, val_idx = shower_level_split(strat_ids, VAL_FRAC, SEED)
-    print(f"[split] train={len(train_idx)}  val={len(val_idx)}")
+    n_tr0, n_va0 = len(train_idx), len(val_idx)
+    train_idx = train_idx[keep[train_idx]]
+    val_idx   = val_idx[keep[val_idx]]
+    print(f"[split] train={len(train_idx)}  val={len(val_idx)}  "
+          f"(dropped {n_tr0 - len(train_idx)} train / {n_va0 - len(val_idx)} val blob rows)")
 
     # Per-feature z-score: one scalar per feature kind, broadcast over all slots.
-    in_mean = torch.stack([xy[..., 0].mean(), xy[..., 1].mean(),
-                           E_pred.mean(),      T_pred.mean()])         # (4,)
-    in_std  = torch.stack([xy[..., 0].std(),  xy[..., 1].std(),
-                           E_pred.std(),       T_pred.std()]).clamp(min=1e-8)
+    in_mean = torch.stack([xy[keep, :, 0].mean(), xy[keep, :, 1].mean(),
+                           E_pred[keep].mean(),    T_pred[keep].mean()])   # (4,)
+    in_std  = torch.stack([xy[keep, :, 0].std(),  xy[keep, :, 1].std(),
+                           E_pred[keep].std(),     T_pred[keep].std()]).clamp(min=1e-8)
     print(f"[norm] per-feat mean={in_mean.tolist()}  std={in_std.tolist()}")
 
     full_ds  = TensorDataset(xy, E_pred, T_pred, target)
@@ -498,8 +538,16 @@ def main():
     best_epoch = -1
     lbfgs_resume = None          # L-BFGS sweep state, if a preemption left one
     if os.path.exists(resume_path):
-        _r = torch.load(resume_path, map_location=DEVICE, weights_only=False)
-        if _r.get("adam_done"):
+        # A resume file that cannot be read is a stale artifact, not a reason to
+        # abort: fall through to a cold start rather than failing every restart.
+        try:
+            _r = torch.load(resume_path, map_location=DEVICE, weights_only=False)
+        except Exception as exc:
+            print(f"[resume] unreadable {resume_path} ({exc!r}) -- starting cold")
+            _r = {}
+        if not _r:
+            pass
+        elif _r.get("adam_done"):
             adam_done = True
             lbfgs_resume = _r.get("lbfgs")
             print("[resume] Adam done, jumping to L-BFGS")
@@ -560,11 +608,16 @@ def main():
                        recon, epoch + 1, va, in_mean, in_std, tgt_mean, tgt_std)
 
         if (epoch + 1) % RESUME_CKPT_INTERVAL == 0:
+            # tmp + os.replace: a preemption landing mid-write would otherwise
+            # leave a truncated recon_resume.pt, and the torch.load above has
+            # no fallback -- the job would then die on every restart forever.
+            tmp = resume_path + ".tmp"
             torch.save({
                 "state_dict": recon.state_dict(), "optimizer": optimizer.state_dict(),
                 "epoch": epoch + 1, "log": log,
                 "best_val": best_val, "best_epoch": best_epoch,
-            }, resume_path)
+            }, tmp)
+            os.replace(tmp, resume_path)
 
     if not adam_done:
         with open(os.path.join(OUTPUT_FOLDER, "recon_train_log.json"), "w") as f:
