@@ -92,7 +92,10 @@ AZIMUTH_MIN  = 0.0   # degrees
 AZIMUTH_MAX  = 360.0 # degrees
 
 
-RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/11_750k_max_100k_LBFGS"
+# Every path below derives from this one, so retargeting the whole pipeline at
+# a sibling run folder (e.g. a verbatim copy of Stage 0/1 output used to try a
+# different Stage 2/3/4 config) is a one-line change here.
+RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/12_10pct_mean_analytic"
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are
@@ -108,8 +111,12 @@ RECON_FOLDER            = os.path.join(RUN_LOCATION, "test_v6_run_03_recentered"
 # 04_optimize.py appends "_{scheme}" (one folder per init scheme).
 OPT_FOLDER              = os.path.join(RUN_LOCATION, "test_v6_run_04_optimize")
 
-# 02: fraction of training-set indices to keep (val set always full).
-TRAIN_FRACTION = 1.00
+# 02/03: fraction of training-set showers to keep (val set always full). Same
+# constant, same SEED, applied independently by each stage's own train_idx --
+# see 03_train_recon_deepsets.py's shower_level_split fix -- so a value < 1.0
+# restricts every stage to a consistent slice rather than each one drawing
+# its own independent subsample.
+TRAIN_FRACTION = 0.10
 # 01: fraction of the dual corpus to load, applied per species so both stay
 # represented. 1.0 is ~501 GB dense and OOMs at --mem=100g.
 DATASET_FRACTION = 1.00

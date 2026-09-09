@@ -875,7 +875,7 @@ def train_species(tag:        str,
 
 
 def main():
-    global NLL_BETA, VAR_PARAM, VAR_MIN_Z, ADAM_PATIENCE
+    global NLL_BETA, VAR_PARAM, VAR_MIN_Z, ADAM_PATIENCE, NLL_WARMUP_FRAC
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=N_EPOCHS,
                     help="Adam epochs per species (default from config)")
@@ -897,6 +897,14 @@ def main():
     ap.add_argument("--adam-patience", type=int, default=ADAM_PATIENCE,
                     help="NLL-phase Adam epochs with no checkpoint improvement "
                          "before stopping early (default from config)")
+    ap.add_argument("--nll-warmup-frac", type=float, default=NLL_WARMUP_FRAC,
+                    help="fraction of Adam epochs spent in the mean-only MSE "
+                         "warm-start before switching to full Gaussian NLL "
+                         "(default from config). 1.0 never leaves warm-up, "
+                         "i.e. trains a pure mean regressor: the logvar head "
+                         "is still computed every forward pass (shared trunk) "
+                         "but mse_mean_only never includes it in the loss, so "
+                         "it gets no training signal and stays near its init.")
     args = ap.parse_args()
     wanted = {s.strip() for s in args.species.split(",") if s.strip()}
     unknown = wanted - {tag for tag, _ in SPECIES_TAGS}
@@ -904,10 +912,11 @@ def main():
         raise SystemExit(f"unknown species {sorted(unknown)}; "
                          f"valid: {', '.join(SPECIES_NAMES)}")
 
-    NLL_BETA      = args.nll_beta
-    VAR_PARAM     = args.var_param
-    VAR_MIN_Z     = args.var_min
-    ADAM_PATIENCE = args.adam_patience
+    NLL_BETA        = args.nll_beta
+    VAR_PARAM       = args.var_param
+    VAR_MIN_Z       = args.var_min
+    ADAM_PATIENCE   = args.adam_patience
+    NLL_WARMUP_FRAC = args.nll_warmup_frac
 
     print("=" * 72)
     print("v6/02_train_fnn_deepsets.py — two parallel per-species DeepSets surrogates")
@@ -923,7 +932,7 @@ def main():
     print(f"deepsets        : hidden={DS_HIDDEN} context={DS_CONTEXT} "
           f"enc={DS_N_ENC} dec={DS_N_DEC} dropout={DS_DROPOUT}")
     print(f"nll-beta        : {NLL_BETA}   var-param: {VAR_PARAM}   var-min: {VAR_MIN_Z}   "
-          f"adam-patience: {ADAM_PATIENCE}")
+          f"adam-patience: {ADAM_PATIENCE}   nll-warmup-frac: {NLL_WARMUP_FRAC}")
     if args.out_suffix:
         print(f"out-suffix      : {args.out_suffix!r} (checkpoints will NOT overwrite production)")
     print(f"augmentation    : per-batch detector permutation (no-op regularizer; "

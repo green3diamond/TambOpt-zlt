@@ -133,7 +133,8 @@ def init_layout(mountain, scheme, device):
     return e.to(device), n.to(device)
 
 
-def time_one_step(kernel_fnn, recon, primary_batch, xy_module):
+def time_one_step(utility, kernel_fnn, recon, primary_batch, xy_module,
+                  analytic_min_fired):
     """THEORY SS11.3's cheap experiment #1: one fwd+bwd, timed, no optimizer
     step. Answers "is kernel-in-the-loop even tractable here" before anyone
     commits to a multi-epoch run."""
@@ -142,7 +143,11 @@ def time_one_step(kernel_fnn, recon, primary_batch, xy_module):
         torch.cuda.synchronize()
     t0 = time.time()
     x, y = xy_module()
-    U, r, parts = utility_of_xy(x, y, primary_batch, kernel_fnn, recon)
+    if utility == "analytic":
+        U, r, parts = analytic_utility_of_xy(x, y, primary_batch, kernel_fnn,
+                                             min_fired=analytic_min_fired)
+    else:
+        U, r, parts = utility_of_xy(x, y, primary_batch, kernel_fnn, recon)
     (-U).backward()
     if DEVICE.type == "cuda":
         torch.cuda.synchronize()
@@ -234,6 +239,76 @@ def analytic_eval(kernel_fnn, primary_batch, e_det, n_det, surface, device,
     )
 
 
+def analytic_utility_of_xy(x_det, y_det, primary_batch, kernel_fnn,
+                           min_fired=4):
+    """The `--utility analytic` objective: DIRECTION ONLY, from
+    `weighted_plane_fit` run on the kernel's differentiable output, in place
+    of `utility_of_xy`'s frozen-recon-based U.
+
+    Deliberately does NOT include `04_analytic_recon.py`'s LDF energy term
+    (`fit_ldf_poisson`). That function runs its OWN internal Adam loop to fit
+    (log_A, beta) per call (see its docstring) -- differentiating an OUTER
+    optimizer's gradient through that INNER optimizer means either unrolling
+    every one of its steps (multiplies this already several-x-costlier-than-
+    the-surrogate forward+backward by `ldf_steps`, ~200) or an implicit-
+    function-theorem shortcut (a real derivation, not a small change). This
+    is scope for a follow-up, not an oversight -- `--utility analytic` is
+    direction-only until that's done.
+
+    Returns (U, ok_frac, parts) mirroring `utility_of_xy`'s (U, r, parts)
+    contract so the epoch loop below needs no branching beyond which
+    function it calls: `ok_frac` (fraction of the batch with >= min_fired
+    fired detectors and a well-posed plane fit) stands in for `r`
+    (reconstructability) -- a different quantity, not a substitute, but the
+    loop only ever calls `.mean()` on it. `parts["u_theta"]` carries the real
+    signal (mean cosine-similarity to the true direction, maximized directly
+    rather than via `arccos`, whose gradient blows up near perfect alignment);
+    `u_phi`/`u_e` are zero tensors so the loop's existing per-part print line
+    doesn't need a separate code path -- they are NOT a phi or energy score.
+    """
+    A = _analytic
+    B = primary_batch.shape[0]
+    xy_batch = torch.stack([x_det, y_det], dim=-1).unsqueeze(0).expand(B, -1, -1)
+    pred = kernel_fnn(primary_batch, xy_batch)                       # (B, n_det, 2), log-encoded
+    E_raw = torch.expm1(pred[..., 0]).clamp(min=0)
+    T_raw = torch.expm1(pred[..., 1]).clamp(min=0) / T_LOG_SCALE
+
+    up = kernel_fnn.surface(y_det, x_det)                             # (n_det,)
+    pos = torch.stack([x_det, y_det, up], dim=-1).unsqueeze(0).expand(B, -1, -1)
+
+    fired = T_raw > 0
+    n_fired = fired.sum(dim=-1)
+    ok = n_fired >= min_fired
+    w = torch.where(fired, E_raw, torch.zeros_like(E_raw))
+
+    t0, s, resid, cond = A.weighted_plane_fit(pos, T_raw, w)
+    n_hat = s / s.norm(dim=-1, keepdim=True).clamp(min=1e-30)
+
+    true_dir = primary_batch[:, :3]
+    true_dir = true_dir / true_dir.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+    cos = (n_hat * true_dir).sum(-1).clamp(-1.0, 1.0)                 # sign-ambiguous, see below
+
+    ok_f = ok.float()
+    if ok_f.sum() < 1:
+        # No qualifying event this batch -- a zero, differentiable-w.r.t.-
+        # nothing loss rather than a NaN from dividing by an empty sum.
+        u_theta = torch.zeros((), device=x_det.device)
+    else:
+        # weighted_plane_fit's normal has a sign ambiguity (a plane fit
+        # cannot tell "up the front" from "down the front" on its own) --
+        # `analytic_eval` resolves it with one batch-level majority-sign
+        # vote against ground truth for REPORTING. Using |cos| here instead
+        # keeps the optimized loss itself free of that non-differentiable,
+        # data-dependent branch (the sign vote would have to be taken inside
+        # the loss every step, on a mask that changes as the layout moves).
+        u_theta = (cos.abs() * ok_f).sum() / ok_f.sum()
+
+    U = u_theta
+    parts = dict(u_theta=u_theta, u_phi=torch.zeros((), device=x_det.device),
+                u_e=torch.zeros((), device=x_det.device))
+    return U, ok_f, parts
+
+
 def _print_analytic_eval(tag, ev):
     if ev["qualifying_frac"] == 0.0:
         print(f"[analytic-eval:{tag}] no qualifying events (need >= min-fired "
@@ -261,6 +336,15 @@ def main():
     ap.add_argument("--grad-clip", type=float, default=100.0)
     ap.add_argument("--log-every", type=int, default=5)
     ap.add_argument("--recon-folder", default=RECON_FOLDER + "_deepsets")
+    ap.add_argument("--utility", choices=("recon", "analytic"), default="recon",
+                    help="'recon' (default): optimize against the frozen "
+                         "DeepSets recon, as today. 'analytic': optimize "
+                         "against the differentiable plane-front direction "
+                         "fit instead (`analytic_utility_of_xy` -- direction "
+                         "only, no LDF/energy term, no recon.pt dependency; "
+                         "see that function's docstring for why energy is "
+                         "out of scope here). The two are not comparable "
+                         "numbers -- U's scale and meaning differ.")
     ap.add_argument("--out-suffix", type=str, default=None)
     ap.add_argument("--seed", type=int, default=SEED)
     ap.add_argument("--time-one-step", action="store_true",
@@ -284,14 +368,17 @@ def main():
           "KERNEL, not the surrogate")
     print("=" * 72)
     print(f"device={DEVICE}  n_events={args.n_events}  chunk={args.chunk}  "
-          f"epochs={args.epochs}")
+          f"epochs={args.epochs}  utility={args.utility}")
 
     mountain = load_tr_mountain(GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
                                east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX,
                                n_planes=N_PLANES)
     surface = SurfaceUpMap.from_mountain(mountain, grid_h=256, grid_w=256).to(DEVICE)
 
-    recon = load_recon(args.recon_folder, DEVICE)
+    # 'analytic' never touches the frozen recon -- that is the whole point of
+    # this utility variant (a reconstruction-independent objective) -- so
+    # skip the load rather than fetch a checkpoint main() then ignores.
+    recon = load_recon(args.recon_folder, DEVICE) if args.utility == "recon" else None
 
     t0 = time.time()
     species_clouds, B, n_pairs, primary_batch = load_events(args.n_events, DEVICE, mountain)
@@ -305,7 +392,8 @@ def main():
     xy_module = LearnableXY(e_init, n_init, device=str(DEVICE)).to(DEVICE)
 
     if args.time_one_step:
-        time_one_step(kernel_fnn, recon, primary_batch, xy_module)
+        time_one_step(args.utility, kernel_fnn, recon, primary_batch,
+                     xy_module, args.analytic_min_fired)
         return
 
     analytic_init = None
@@ -323,7 +411,12 @@ def main():
 
     for epoch in range(args.epochs):
         x_det, y_det = xy_module()
-        U, r, parts = utility_of_xy(x_det, y_det, primary_batch, kernel_fnn, recon)
+        if args.utility == "analytic":
+            U, r, parts = analytic_utility_of_xy(
+                x_det, y_det, primary_batch, kernel_fnn,
+                min_fired=args.analytic_min_fired)
+        else:
+            U, r, parts = utility_of_xy(x_det, y_det, primary_batch, kernel_fnn, recon)
         loss = -U
 
         optimizer.zero_grad(set_to_none=True)

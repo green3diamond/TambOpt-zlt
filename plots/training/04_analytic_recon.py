@@ -317,11 +317,16 @@ def linear_calibrate(x_train, y_train, x_val):
 
 # ── Wiring to the real corpus ────────────────────────────────────────────────
 
-def load_val_and_calib_idx(strat_ids, blob_ids, n_val, n_train_calib, seed):
+def load_val_and_calib_idx(strat_ids, species_ids, blob_ids, n_val, n_train_calib, seed):
     """The SAME shower-level split + blob filter Stage 3 trains on (after the
-    blob-filtering fix — B0 in docs/stage3-analytic-validation.md), then a
+    blob-filtering fix — B0 in docs/stage3-analytic-validation.md — and the
+    species-conflation fix to `shower_level_split` itself, needed here for the
+    same reason: this corpus's rows are strategy-major/species-major/event,
+    and without `species_ids` the split would key on (species, event) instead
+    of the real shower, letting one event's species rows split across train
+    and val even though `E_kern`/`T_kern` are identical across them), then a
     seeded subsample of each side down to a workable size."""
-    train_idx, val_idx = s3.shower_level_split(strat_ids, 0.10, 1)
+    train_idx, val_idx = s3.shower_level_split(strat_ids, species_ids, 0.10, 1)
     keep = ~blob_ids.bool()
     train_idx = train_idx[keep[train_idx]]
     val_idx = val_idx[keep[val_idx]]
@@ -442,6 +447,7 @@ def main():
     primary = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt")).float()
     xy = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "xy.pt")).float()
     strat_ids = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "strategy_ids.pt")).long()
+    species_ids = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "species_ids.pt")).long()
     blob_path = os.path.join(TRAINING_DATASET_FOLDER, "blob_ids.pt")
     if not os.path.exists(blob_path):
         raise SystemExit(f"blob_ids.pt not found in {TRAINING_DATASET_FOLDER} — "
@@ -450,7 +456,7 @@ def main():
     print(f"[load] corpus metadata in {time.time() - t0:.1f}s  primary={tuple(primary.shape)}")
 
     train_sub, val_sub = load_val_and_calib_idx(
-        strat_ids, blob_ids, args.n_val, args.n_train_calib, args.seed)
+        strat_ids, species_ids, blob_ids, args.n_val, args.n_train_calib, args.seed)
     print(f"[split] train-calib={len(train_sub)}  val={len(val_sub)}")
 
     t0 = time.time()

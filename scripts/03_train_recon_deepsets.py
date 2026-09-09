@@ -62,7 +62,7 @@ from modules.surrogates  import DeepSetsRecon
 from modules.surrogates.dual import combine_species_outputs
 from modules.constants import (
     RECON_FOLDER, TRAINING_DATASET_FOLDER, FNN_FOLDER,
-    N_DETECTORS, T_LOG_SCALE,
+    N_DETECTORS, T_LOG_SCALE, TRAIN_FRACTION,
 )
 
 OUTPUT_FOLDER = RECON_FOLDER + "_deepsets"
@@ -134,12 +134,29 @@ RECON_INPUT_FEATURES = 4   # (x, y, E, T) per detector — E, T come from
 
 
 def shower_level_split(strategy_ids: torch.Tensor,
+                       species_ids: torch.Tensor,
                        val_frac: float,
                        seed: int) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Shower-level split so all strategies for one shower share a side."""
+    """Shower-level split so all strategies AND all species for one shower
+    share a side.
+
+    `strategy_ids`/`species_ids` come from this corpus's row order (strategy-
+    major, species-major, event -- `load_kernel_responses`'s docstring),
+    n_pairs = n_strat * n_species * n_ev. Naively deriving `n_showers =
+    n_pairs // n_strat` (as this function did before species_ids was added)
+    silently treats each strategy block's `n_species * n_ev` rows as if it
+    held one row per shower -- i.e. it splits at (species, event) granularity,
+    not shower granularity, so a real shower's electron row could land in
+    train while its muon/photon rows of the SAME event land in val. That is a
+    real train/val leak (the combined kernel target is identical across a
+    shower's species rows -- see `load_kernel_responses`), not just a
+    labeling nicety. Collapsing species out here, the same way strategy
+    already was, is the fix.
+    """
     n_pairs   = int(strategy_ids.shape[0])
     n_strat   = int(strategy_ids.max().item() + 1)
-    n_showers = n_pairs // n_strat
+    n_species = int(species_ids.max().item() + 1)
+    n_showers = n_pairs // (n_strat * n_species)
 
     g = torch.Generator().manual_seed(int(seed))
     perm = torch.randperm(n_showers, generator=g)
@@ -149,7 +166,7 @@ def shower_level_split(strategy_ids: torch.Tensor,
     is_val[perm[:n_val]] = True
 
     all_idx = torch.arange(n_pairs, dtype=torch.long)
-    shower_of_pair = all_idx - strategy_ids * n_showers
+    shower_of_pair = all_idx - strategy_ids * (n_species * n_showers) - species_ids * n_showers
     val_mask = is_val[shower_of_pair]
     return (torch.nonzero(~val_mask).squeeze(-1),
             torch.nonzero(val_mask).squeeze(-1))
@@ -160,20 +177,31 @@ def compute_fnn_predictions(model: nn.Module,
                              primary: torch.Tensor,
                              xy:      torch.Tensor,
                              device:  torch.device,
-                             batch_size: int = 1024
+                             batch_size: int = 1024,
+                             mean_only: bool = False,
                              ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Draw one stochastic sample per row from the dual surrogate's predicted
     distribution (not the mean) over the whole corpus. Returns CPU tensors.
     Sampled once here and reused for every epoch — the same "one fixed
     realization per (primary, layout) row" convention the real kernel-labeled
-    corpus already uses, not a fresh draw every epoch."""
+    corpus already uses, not a fresh draw every epoch.
+
+    `mean_only=True` calls `model.forward(...)` instead of `forward_sample`.
+    Needed whenever the surrogate's variance head was never trained (Stage 2
+    run with `--nll-warmup-frac 1.0`): `forward_sample`'s `eps*std` draw is
+    then noise from an untrained head, not a calibrated aleatoric sample, so
+    treating it as "the sample regime" would be actively misleading rather
+    than merely conservative. Opt-in, not the default -- the historical
+    stochastic-sample behavior stays intact for callers that trained a real
+    variance head."""
     model.eval()
     N = int(primary.shape[0])
     E_pred = torch.empty((N, N_DETECTORS), dtype=torch.float32)
     T_pred = torch.empty((N, N_DETECTORS), dtype=torch.float32)
+    predict = model.forward if mean_only else model.forward_sample
     for lo in range(0, N, batch_size):
         hi = min(lo + batch_size, N)
-        pred = model.forward_sample(
+        pred = predict(
             primary[lo:hi].to(device, non_blocking=True),
             xy[lo:hi].to(device, non_blocking=True))            # (B, 100, 2)
         E_pred[lo:hi] = pred[..., 0].cpu()
@@ -411,6 +439,13 @@ def main():
                          "'_deepsets_expB1' instead of the production "
                          "recon.pt. Use for any run that is not meant to "
                          "become the checkpoint Stage 4 / true_utility.py load.")
+    ap.add_argument("--fnn-mean-only", action="store_true",
+                    help="use the surrogate's deterministic mean (model.forward) "
+                         "instead of a forward_sample() draw for --recon-input "
+                         "sample/mix. Required whenever the loaded FNN_FOLDER "
+                         "checkpoint was trained with --nll-warmup-frac 1.0 "
+                         "(no variance head), since forward_sample's draw would "
+                         "otherwise be untrained-head noise, not a real sample.")
     args = ap.parse_args()
     RECON_INPUT, MIX_FRAC = args.recon_input, float(args.mix_frac)
     N_EPOCHS, LBFGS_MAX_ITER = int(args.epochs), int(args.lbfgs_iters)
@@ -431,6 +466,7 @@ def main():
     primary   = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt")).float()
     xy        = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "xy.pt")).float()
     strat_ids = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "strategy_ids.pt")).long()
+    species_ids = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "species_ids.pt")).long()
     # Degenerate/corrupt showers, flagged by Step 1's flag_blob_showers. Step 2
     # (02_train_fnn_deepsets.py) drops these from train, val AND its norm stats
     # and hard-errors if the file is missing; this script never loaded it at
@@ -455,8 +491,10 @@ def main():
     # far apart the two response distributions actually are — the quantity the
     # whole surrogate-vs-true artifact gap comes from.
     t0 = time.time()
-    E_samp, T_samp = compute_fnn_predictions(dual, primary, xy, DEVICE)
-    print(f"[dual] sampled predictions in {time.time() - t0:.1f}s  "
+    E_samp, T_samp = compute_fnn_predictions(dual, primary, xy, DEVICE,
+                                             mean_only=args.fnn_mean_only)
+    print(f"[dual] {'mean' if args.fnn_mean_only else 'sampled'} predictions "
+          f"in {time.time() - t0:.1f}s  "
           f"E mean={E_samp.mean():.3g} std={E_samp.std():.3g}  "
           f"T mean={T_samp.mean():.3g} std={T_samp.std():.3g}")
 
@@ -488,12 +526,23 @@ def main():
     tgt_std  = target[keep].std(dim=0).clamp(min=1e-8)
     print(f"[target] mean={tgt_mean.tolist()}  std={tgt_std.tolist()}")
 
-    train_idx, val_idx = shower_level_split(strat_ids, VAL_FRAC, SEED)
+    train_idx, val_idx = shower_level_split(strat_ids, species_ids, VAL_FRAC, SEED)
     n_tr0, n_va0 = len(train_idx), len(val_idx)
     train_idx = train_idx[keep[train_idx]]
     val_idx   = val_idx[keep[val_idx]]
     print(f"[split] train={len(train_idx)}  val={len(val_idx)}  "
           f"(dropped {n_tr0 - len(train_idx)} train / {n_va0 - len(val_idx)} val blob rows)")
+    # Same TRAIN_FRACTION knob and formula 02_train_fnn_deepsets.py already
+    # applies to its own (per-species) train_idx -- same constant, same SEED,
+    # so a fraction < 1.0 restricts every stage to a consistent slice of
+    # showers instead of each stage drawing its own independent subsample.
+    if 0.0 < TRAIN_FRACTION < 1.0:
+        _n_orig = int(train_idx.shape[0])
+        _n_keep = max(1, int(round(TRAIN_FRACTION * _n_orig)))
+        _g_sub = torch.Generator().manual_seed(SEED)
+        _perm = torch.randperm(_n_orig, generator=_g_sub)
+        train_idx = train_idx[_perm[:_n_keep]]
+        print(f"[subsample] kept {_n_keep} of {_n_orig} train pairs (TRAIN_FRACTION={TRAIN_FRACTION})")
 
     # Per-feature z-score: one scalar per feature kind, broadcast over all slots.
     in_mean = torch.stack([xy[keep, :, 0].mean(), xy[keep, :, 1].mean(),
