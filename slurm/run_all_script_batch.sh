@@ -103,6 +103,22 @@ run_step () {
     python -c "import json,os; d=json.load(open('$STATUS_FILE')); d['$step']='done'; json.dump(d, open('$STATUS_FILE.tmp','w'), indent=2); os.replace('$STATUS_FILE.tmp','$STATUS_FILE')"
 }
 
+# run_step's twin for calling the SAME script more than once with different
+# flags (e.g. one script, two --utility variants): run_step's status key IS
+# the script path, so a second call would read back the first call's "done"
+# and skip. Here the key is an explicit, separate first argument.
+run_step_as () {
+    local key="$1"; local step="$2"; shift 2
+    local script_path="scripts/$step"
+    if python -c "import json,sys; sys.exit(0 if json.load(open('$STATUS_FILE')).get('$key')=='done' else 1)"; then
+        echo ">>> Skipping $key (already done)"
+        return 0
+    fi
+    echo ">>> Running $key ($script_path $*)"
+    python -u "$script_path" "$@" || exit $?
+    python -c "import json,os; d=json.load(open('$STATUS_FILE')); d['$key']='done'; json.dump(d, open('$STATUS_FILE.tmp','w'), indent=2); os.replace('$STATUS_FILE.tmp','$STATUS_FILE')"
+}
+
 # Step 0 now resumes automatically (progress.json next to each output corpus,
 # per species) — a preempted run just needs the same command re-run, no manual
 # row/offset bookkeeping. --n-pairs 0 = all in-band tau events (~751,931);
@@ -192,3 +208,44 @@ run_eval eval_traj_lbfgs_chunks \
         --phase lbfgs --lbfgs-chunk 0-9 --fit-view --min-per-chunk 0 \
         --zoom-epochs 0 --seconds 20 --fps 60 \
         -o "$R/ensemble_lbfgs_chunk0-9.mp4"
+
+# ============================================================================
+# Experiment (stage3-analytic-validation): 10%-data, mean-only Stage 2,
+# analytic Stage 4. Runs against RUN_LOCATION = 12_10pct_mean_analytic
+# (modules/constants.py) — a folder whose Stage 0/1 outputs were COPIED
+# verbatim from the production run above, not regenerated (00/01 above
+# already no-op against it: $STATUS_FILE marks them done from the run they
+# were copied from). TRAIN_FRACTION=0.10 (modules/constants.py) applies to
+# Stage 2 and Stage 3 automatically, no flag needed here.
+#
+# A SEPARATE status file: the production $STATUS_FILE already marks
+# 02/03/04_optimize_lbfgs_ensemble.py "done", and these steps use different
+# flags against the same script names, so reusing those keys would skip them
+# outright rather than run the experiment's own variant.
+EXP_STATUS_FILE="pipeline_status_10pct_mean_analytic.json"
+[ -s "$EXP_STATUS_FILE" ] || echo '{}' > "$EXP_STATUS_FILE"
+STATUS_FILE="$EXP_STATUS_FILE"
+
+# Stage 2: mean-only regressor -- --nll-warmup-frac 1.0 never leaves the
+# mean-only MSE warm-up phase, so the variance head gets no training signal.
+run_step 02_train_fnn_deepsets.py --nll-warmup-frac 1.0
+
+# Stage 3: recon input is the Stage-2 MEAN (--fnn-mean-only, since
+# forward_sample would be untrained-head noise here, not a real aleatoric
+# draw), mixed 0.7 mean-prediction / 0.3 real kernel labels (--mix-frac is
+# P(kernel), so 0.3 gives the 0.7/0.3 split).
+run_step 03_train_recon_deepsets.py \
+    --recon-input mix --mix-frac 0.3 --fnn-mean-only
+
+# Stage 4, kernel-in-the-loop, two utility variants (04_optimize_lbfgs_kernel.py's
+# own --recon-folder default already matches Stage 3's default OUTPUT_FOLDER
+# above, so it needs no override here). Same script both times -> run_step_as,
+# not run_step, so the second call isn't skipped as "already done" from the
+# first's status key. --out-suffix likewise distinguishes the two runs'
+# output dirs, since both would otherwise land in the same
+# OPT_FOLDER + "_lbfgs_kernel".
+run_step_as 04_optimize_lbfgs_kernel_recon_utility 04_optimize_lbfgs_kernel.py \
+    --utility recon --out-suffix recon_utility --n-events 64 --chunk 8 --epochs 200
+
+run_step_as 04_optimize_lbfgs_kernel_analytic_utility 04_optimize_lbfgs_kernel.py \
+    --utility analytic --out-suffix analytic_utility --n-events 64 --chunk 8 --epochs 200
