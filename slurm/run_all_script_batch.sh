@@ -19,13 +19,6 @@ source slurm/env.sh
 # (jobs 42556695, 43192939, 43844284, 43857690, 44186645). Step 0 streams into
 # a ~100 GB corpus file on lustre, so a SIGKILLed writer can sit in
 # uninterruptible I/O for minutes.
-#
-# Waiting on the node is the WRONG trade. Measured: the stuck writer survived
-# 210s of waiting (job 44186645), while a requeue turns the job around in ~3
-# min (44186645 preempted 23:57:23, restarted 00:00:24) AND re-rolls the node,
-# which is the only thing that actually clears it. So the probe budget is kept
-# just long enough to ride out a genuine quick race, and anything longer is
-# handed to a requeue.
 THIS_NODE="$(hostname -s)"
 GATE_FAILS=".gpu_gate_fails"     # consecutive gate-triggered requeues
 
@@ -127,9 +120,7 @@ run_step 03_train_recon_deepsets.py --recon-input mix --mix-frac 0.7
 run_step 04_optimize_lbfgs_ensemble.py --chains 6
 
 # --- evaluation ------------------------------------------------------------
-# Same checkpointing as run_step, but for entry points outside scripts/ (the
-# plots/ evaluators take a full command rather than a bare script name, since
-# each needs its own flags and per-scheme layout paths).
+# run_step's twin for the plots/ evaluators: a full command, not a bare script.
 run_eval () {
     local key="$1"; shift
     if _status_done "$key"; then
@@ -141,10 +132,7 @@ run_eval () {
     _status_mark_done "$key"
 }
 
-# Step 4 writes OPT_FOLDER + "_lbfgs_ensemble_full_corpus_{scheme}" per scheme
-# (04_optimize_lbfgs_ensemble.py's OPT_DIR_TEMPLATE), for both schemes in its
-# default --schemes grid,center. Resolve the run root from constants so this
-# follows RUN_LOCATION rather than repeating the path.
+# Step 4's own output dirs (OPT_DIR_TEMPLATE): OPT_FOLDER + "_lbfgs_ensemble_full_corpus_{scheme}".
 read -r R A < <(python -c '
 import sys; sys.path.insert(0, ".")
 from modules.constants import RUN_LOCATION, OPT_FOLDER
@@ -153,47 +141,31 @@ A="${A}_lbfgs_ensemble_full_corpus"
 GDIR="${A}_grid"
 CDIR="${A}_center"
 
-# 1) True utility: surrogate-U vs kernel-U for each scheme's optimized layout,
-#    against that scheme's own baseline. --grid-layout picks the grid baseline;
-#    omitting it uses center. Tee into the run dir so the table lives beside the
-#    layout it scored, not only in this job's slurm log.
-run_eval eval_true_utility_grid bash -c \
-    'python -u plots/layouts/true_utility.py --grid-layout \
-         --layout "$0/layout_best.pt" 2>&1 | tee "$0/true_utility_eval.txt"' \
-    "$GDIR"
+# --grid-layout scores each scheme against its OWN baseline (omitted = center).
+for scheme in grid center; do
+    DIR="${A}_${scheme}"
+    flag=""; [ "$scheme" = grid ] && flag="--grid-layout"
 
-run_eval eval_true_utility_center bash -c \
-    'python -u plots/layouts/true_utility.py \
-         --layout "$0/layout_best.pt" 2>&1 | tee "$0/true_utility_eval.txt"' \
-    "$CDIR"
+    # surrogate-U vs kernel-U; tee so the table lands beside the layout it scored.
+    run_eval "eval_true_utility_${scheme}" bash -c \
+        "python -u plots/layouts/true_utility.py $flag \
+             --layout \"\$0/layout_best.pt\" 2>&1 | tee \"\$0/true_utility_eval.txt\"" \
+        "$DIR"
 
-# 2) Per-event utility vs primary energy; writes utility_vs_energy.png into each
-#    run dir. Each scheme now overlays its OWN baseline (--grid-layout picks the
-#    grid one, omitting it uses center — same convention as the true_utility
-#    calls above), so this is one call per scheme rather than both in one: a
-#    single call can only carry one baseline, and pairing the grid layout against
-#    a center baseline would make the ΔU in its title meaningless. Both curves
-#    are scored on kernel labels (the script's default), so the numbers match the
-#    true-U column of the true_utility tables above rather than the surrogate's.
-run_eval eval_utility_vs_energy_grid \
-    python -u plots/layouts/utility_vs_energy.py --grid-layout --run-dir "$GDIR"
+    # per-event utility vs primary energy -> utility_vs_energy.png
+    run_eval "eval_utility_vs_energy_${scheme}" \
+        python -u plots/layouts/utility_vs_energy.py $flag --run-dir "$DIR"
+done
 
-run_eval eval_utility_vs_energy_center \
-    python -u plots/layouts/utility_vs_energy.py --run-dir "$CDIR"
-
-# 3) Trajectory videos, center and grid side by side in each. CPU-only work on
-#    a GPU node, but it is ~12 min and keeps the pipeline to one job.
-#    Adam warm-start, first 500 epochs. --only zoom skips the full-trajectory
-#    render; that pass appends _first500ep to the -o stem.
+# Trajectory videos. --only zoom = Adam phase only, first 500 epochs.
 run_eval eval_traj_adam_first500 \
     python -u plots/layouts/04_trajectory_gif.py \
         --run-dir "$CDIR" "$GDIR" \
         --only zoom --zoom-epochs 500 \
         -o "$R/ensemble_distinct_trajectory.mp4"
 
-#    L-BFGS sweep chunks 0-9. --min-per-chunk 0 because the per-chunk floor is
-#    pointless over a 10-chunk range, and --fit-view drops the strong-Wolfe
-#    probes that fling the layout off-map so the axes can fit the detectors.
+# L-BFGS phase, chunks 0-9. --fit-view drops the strong-Wolfe probes that
+# fling the layout off-map so the axes fit the detectors.
 run_eval eval_traj_lbfgs_chunks \
     python -u plots/layouts/04_trajectory_gif.py \
         --run-dir "$CDIR" "$GDIR" \
