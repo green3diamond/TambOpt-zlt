@@ -108,20 +108,6 @@ run_step () {
     _status_mark_done "$step"
 }
 
-# run_step's twin for calling the SAME script more than once with different
-# flags: run_step's status key is the script name, so a second call would
-# read back the first's "done". Key and script are separate args here.
-run_step_as () {
-    local key="$1"; local step="$2"; shift 2
-    if _status_done "$key"; then
-        echo ">>> Skipping $key (already done)"
-        return 0
-    fi
-    echo ">>> Running $key (scripts/$step $*)"
-    python -u "scripts/$step" "$@" || exit $?
-    _status_mark_done "$key"
-}
-
 # Step 0 now resumes automatically (progress.json next to each output corpus,
 # per species) — a preempted run just needs the same command re-run, no manual
 # row/offset bookkeeping. --n-pairs 0 = all in-band tau events (~751,931);
@@ -246,9 +232,11 @@ run_step 03_train_recon_deepsets.py \
 # Stage 4, kernel-in-the-loop, two utility variants (--recon-folder default
 # already matches Stage 3's OUTPUT_FOLDER above, so no override needed).
 # --out-suffix distinguishes the two runs' output dirs, which would otherwise
-# both land in OPT_FOLDER + "_lbfgs_kernel".
-run_step_as 04_optimize_lbfgs_kernel_recon_utility 04_optimize_lbfgs_kernel.py \
+# both land in OPT_FOLDER + "_lbfgs_kernel". Called directly, not through
+# run_step -- its status key is the bare script name, so a second run_step
+# call on this same script would be skipped as "already done" by the first.
+python -u scripts/04_optimize_lbfgs_kernel.py \
     --utility recon --out-suffix recon_utility --n-events 64 --chunk 8 --epochs 200
 
-run_step_as 04_optimize_lbfgs_kernel_analytic_utility 04_optimize_lbfgs_kernel.py \
+python -u scripts/04_optimize_lbfgs_kernel.py \
     --utility analytic --out-suffix analytic_utility --n-events 64 --chunk 8 --epochs 200
