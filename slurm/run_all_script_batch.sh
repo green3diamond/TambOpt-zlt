@@ -87,36 +87,39 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 STATUS_FILE="pipeline_status.json"
 [ -s "$STATUS_FILE" ] || echo '{}' > "$STATUS_FILE"
 
+# Shared by run_step/run_step_as/run_eval below -- write to a temp file then
+# os.replace (atomic): a preemption can no longer leave the status file
+# truncated to 0 bytes.
+_status_done() {
+    python -c "import json,sys; sys.exit(0 if json.load(open('$STATUS_FILE')).get('$1')=='done' else 1)"
+}
+_status_mark_done() {
+    python -c "import json,os; d=json.load(open('$STATUS_FILE')); d['$1']='done'; json.dump(d, open('$STATUS_FILE.tmp','w'), indent=2); os.replace('$STATUS_FILE.tmp','$STATUS_FILE')"
+}
+
 run_step () {
     local step="$1"; shift
-    # Status-file key stays the bare script name (matches existing
-    # pipeline_status*.json entries); the file itself now lives in scripts/.
-    local script_path="scripts/$step"
-    if python -c "import json,sys; sys.exit(0 if json.load(open('$STATUS_FILE')).get('$step')=='done' else 1)"; then
+    if _status_done "$step"; then
         echo ">>> Skipping $step (already done)"
         return 0
     fi
     echo ">>> Running $step $*"
-    python -u "$script_path" "$@" || exit $?
-    # write to a temp file then os.replace (atomic): a preemption can no longer
-    # leave the status file truncated to 0 bytes.
-    python -c "import json,os; d=json.load(open('$STATUS_FILE')); d['$step']='done'; json.dump(d, open('$STATUS_FILE.tmp','w'), indent=2); os.replace('$STATUS_FILE.tmp','$STATUS_FILE')"
+    python -u "scripts/$step" "$@" || exit $?
+    _status_mark_done "$step"
 }
 
 # run_step's twin for calling the SAME script more than once with different
-# flags (e.g. one script, two --utility variants): run_step's status key IS
-# the script path, so a second call would read back the first call's "done"
-# and skip. Here the key is an explicit, separate first argument.
+# flags: run_step's status key is the script name, so a second call would
+# read back the first's "done". Key and script are separate args here.
 run_step_as () {
     local key="$1"; local step="$2"; shift 2
-    local script_path="scripts/$step"
-    if python -c "import json,sys; sys.exit(0 if json.load(open('$STATUS_FILE')).get('$key')=='done' else 1)"; then
+    if _status_done "$key"; then
         echo ">>> Skipping $key (already done)"
         return 0
     fi
-    echo ">>> Running $key ($script_path $*)"
-    python -u "$script_path" "$@" || exit $?
-    python -c "import json,os; d=json.load(open('$STATUS_FILE')); d['$key']='done'; json.dump(d, open('$STATUS_FILE.tmp','w'), indent=2); os.replace('$STATUS_FILE.tmp','$STATUS_FILE')"
+    echo ">>> Running $key (scripts/$step $*)"
+    python -u "scripts/$step" "$@" || exit $?
+    _status_mark_done "$key"
 }
 
 # Step 0 now resumes automatically (progress.json next to each output corpus,
@@ -143,21 +146,24 @@ run_step 04_optimize_lbfgs_ensemble.py --chains 6
 # each needs its own flags and per-scheme layout paths).
 run_eval () {
     local key="$1"; shift
-    if python -c "import json,sys; sys.exit(0 if json.load(open('$STATUS_FILE')).get('$key')=='done' else 1)"; then
+    if _status_done "$key"; then
         echo ">>> Skipping $key (already done)"
         return 0
     fi
     echo ">>> Running $key"
     "$@" || exit $?
-    python -c "import json,os; d=json.load(open('$STATUS_FILE')); d['$key']='done'; json.dump(d, open('$STATUS_FILE.tmp','w'), indent=2); os.replace('$STATUS_FILE.tmp','$STATUS_FILE')"
+    _status_mark_done "$key"
 }
 
 # Step 4 writes OPT_FOLDER + "_lbfgs_ensemble_full_corpus_{scheme}" per scheme
 # (04_optimize_lbfgs_ensemble.py's OPT_DIR_TEMPLATE), for both schemes in its
 # default --schemes grid,center. Resolve the run root from constants so this
 # follows RUN_LOCATION rather than repeating the path.
-R="$(python -c 'import sys; sys.path.insert(0, "."); from modules.constants import RUN_LOCATION; print(RUN_LOCATION)')"
-A="$(python -c 'import sys; sys.path.insert(0, "."); from modules.constants import OPT_FOLDER; print(OPT_FOLDER)')_lbfgs_ensemble_full_corpus"
+read -r R A < <(python -c '
+import sys; sys.path.insert(0, ".")
+from modules.constants import RUN_LOCATION, OPT_FOLDER
+print(RUN_LOCATION, OPT_FOLDER)')
+A="${A}_lbfgs_ensemble_full_corpus"
 GDIR="${A}_grid"
 CDIR="${A}_center"
 
@@ -237,13 +243,10 @@ run_step 02_train_fnn_deepsets.py --nll-warmup-frac 1.0
 run_step 03_train_recon_deepsets.py \
     --recon-input mix --mix-frac 0.3 --fnn-mean-only
 
-# Stage 4, kernel-in-the-loop, two utility variants (04_optimize_lbfgs_kernel.py's
-# own --recon-folder default already matches Stage 3's default OUTPUT_FOLDER
-# above, so it needs no override here). Same script both times -> run_step_as,
-# not run_step, so the second call isn't skipped as "already done" from the
-# first's status key. --out-suffix likewise distinguishes the two runs'
-# output dirs, since both would otherwise land in the same
-# OPT_FOLDER + "_lbfgs_kernel".
+# Stage 4, kernel-in-the-loop, two utility variants (--recon-folder default
+# already matches Stage 3's OUTPUT_FOLDER above, so no override needed).
+# --out-suffix distinguishes the two runs' output dirs, which would otherwise
+# both land in OPT_FOLDER + "_lbfgs_kernel".
 run_step_as 04_optimize_lbfgs_kernel_recon_utility 04_optimize_lbfgs_kernel.py \
     --utility recon --out-suffix recon_utility --n-events 64 --chunk 8 --epochs 200
 
