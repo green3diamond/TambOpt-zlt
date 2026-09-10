@@ -16,39 +16,8 @@
 # verbatim from the production run (not regenerated here).
 
 source slurm/env.sh
-
-# --- GPU health gate: a requeued job can land on the same node it was just
-# preempted from, still holding the GPU (see run_all_script_batch.sh for the
-# full incident history) ---
-THIS_NODE="$(hostname -s)"
-GATE_FAILS=".gpu_gate_fails"
-python - <<'PY'
-import sys, time, torch
-DEADLINE, STEP = 90, 30
-t0 = time.time()
-while True:
-    try:
-        torch.zeros(1, device="cuda"); torch.cuda.synchronize(); sys.exit(0)
-    except RuntimeError as e:
-        if time.time() - t0 > DEADLINE:
-            print(f"[gpu-gate] still busy after {DEADLINE}s: {e}", flush=True)
-            sys.exit(1)
-        print(f"[gpu-gate] busy at t+{time.time()-t0:.0f}s, retrying", flush=True)
-        time.sleep(STEP)
-PY
-if [ $? -ne 0 ]; then
-    n=$(( $(cat "$GATE_FAILS" 2>/dev/null || echo 0) + 1 ))
-    echo "$n" > "$GATE_FAILS"
-    if [ "$n" -ge 5 ]; then
-        echo ">>> GPU busy on $n consecutive nodes -- giving up"
-        rm -f "$GATE_FAILS"; exit 1
-    fi
-    echo ">>> GPU busy on ${THIS_NODE} (strike $n/5) -- requeueing"
-    scontrol requeue "$SLURM_JOB_ID"
-    sleep 120; exit 0
-fi
-rm -f "$GATE_FAILS"
-echo ">>> GPU OK on ${THIS_NODE} (restart #${SLURM_RESTART_COUNT:-0})"
+source slurm/gpu_gate.sh
+gpu_health_gate
 
 # Own status file: distinct from the production pipeline's, whose keys are
 # already marked "done" under different flags.
