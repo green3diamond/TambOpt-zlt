@@ -101,8 +101,41 @@ _spec = importlib.util.spec_from_file_location(
 _analytic = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_analytic)
 
+# plots/lib/opt_plotting.py, loaded by path the same way -- reused here only
+# for plot_density_heatmap, the same function 04_optimize_lbfgs_ensemble.py
+# calls for its layout_density.png.
+_plt_spec = importlib.util.spec_from_file_location(
+    "opt_plotting", os.path.join(V6_ROOT, "plots", "lib", "opt_plotting.py"))
+_opt_plotting = importlib.util.module_from_spec(_plt_spec)
+_plt_spec.loader.exec_module(_opt_plotting)
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEED = 4200
+
+
+def plot_layout_density(best_x, best_y, mountain, out_dir):
+    """layout_density.png for a SINGLE layout (K=1) -- this script optimizes
+    one chain, not an ensemble, so there is no Hungarian-aligned set of runs
+    to build a real cross-run density from. `plot_density_heatmap` accepts
+    that degenerately (aligned_xy of shape (1, n_det, 2)): the heatmap
+    collapses to per-detector Gaussian blobs around this one layout's
+    positions, still useful as the same visual format the ensemble
+    optimizer's runs use, not as a measure of run-to-run variance.
+
+    Builds its own CPU SurfaceUpMap rather than reusing main()'s (possibly
+    CUDA) `surface` -- plotting is the last, read-only step, and
+    04_optimize_lbfgs_ensemble.py's own density call does the same for the
+    same reason (grid_sample needs the surface and the (x, y) it's called
+    with on the same device)."""
+    import numpy as np
+    surface = SurfaceUpMap.from_mountain(mountain).to("cpu")
+    x_np = best_x.cpu().numpy()
+    y_np = best_y.cpu().numpy()
+    aligned = np.stack([x_np, y_np], axis=-1)[None, :, :]
+    _opt_plotting.plot_density_heatmap(
+        aligned, x_np, y_np, mountain,
+        os.path.join(out_dir, "layout_density.png"), surface=surface,
+        count_word="K", count_suffix=" run (single chain, not an ensemble)")
 
 
 def load_recon(recon_dir, device):
@@ -453,6 +486,12 @@ def main():
     with open(os.path.join(out_dir, "optimize_log.json"), "w") as f:
         json.dump(dict(config=vars(args), log=log, best_u=best_u), f, indent=2)
     print(f"[write] {out_dir}/layout_best.pt, optimize_log.json")
+
+    try:
+        plot_layout_density(best_x, best_y, mountain, out_dir)
+        print(f"[write] {out_dir}/layout_density.png")
+    except Exception as exc:
+        print(f"[plot] layout_density skipped ({exc!r})")
 
     if not args.skip_analytic_eval:
         analytic_best = analytic_eval(
