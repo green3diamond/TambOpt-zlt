@@ -56,6 +56,21 @@ python -u scripts/04_optimize_lbfgs_kernel.py \
 python -u scripts/04_optimize_lbfgs_kernel.py \
     --utility analytic --out-suffix analytic_utility --n-events 64 --chunk 8 --epochs 200
 
+# true_utility/utility_vs_energy work against either optimizer's layout_best.pt
+# (same {x, y} dict format), so they apply here too -- no --grid-layout since
+# both kernel-in-the-loop runs above use --init's default (center). No
+# trajectory video: 04_optimize_lbfgs_kernel.py never writes a trajectory.pt.
+K="$(python -c 'import sys; sys.path.insert(0, "."); from modules.constants import OPT_FOLDER; print(OPT_FOLDER)')_lbfgs_kernel"
+
+for variant in recon_utility analytic_utility; do
+    DIR="${K}_${variant}"
+
+    python -u plots/layouts/true_utility.py \
+        --layout "$DIR/layout_best.pt" 2>&1 | tee "$DIR/true_utility_eval.txt"
+
+    python -u plots/layouts/utility_vs_energy.py --run-dir "$DIR"
+done
+
 # Stage 4, production ensemble optimizer (against the frozen recon/surrogate,
 # not the kernel) -- writes OPT_FOLDER + "_lbfgs_ensemble_full_corpus_{grid,center}",
 # same convention run_all_script_batch.sh's eval section already expects.
