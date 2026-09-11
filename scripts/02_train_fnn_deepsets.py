@@ -757,6 +757,19 @@ def train_species(tag:        str,
             iter=it, loss=loss.item(), mse_E=mE.item(), mse_T=mT.item(),
             val=va_tot, val_E=va_E, val_T=va_T,
         ))
+        # TODO: unlike the Adam phase's val_mse_ok guard above (~:600-601),
+        # this selection has no cap on mean-MSE regression -- va_nll_plain
+        # alone can accept an L-BFGS checkpoint whose mean has drifted
+        # arbitrarily far from the warm-up MSE optimum, since
+        # gaussian_nll_normalized's mean gradient is reweighted by 1/var and
+        # var here can still be poorly calibrated (e.g. after
+        # --nll-warmup-frac 1.0, which forces exactly one real NLL epoch --
+        # see n_warmup_epochs's clamp -- before L-BFGS ever runs). Add the
+        # same `va_mse <= 1.02 * warmup_val_mse` gate here. Checked once
+        # (2026-09-10, 12_10pct_mean_analytic/electron): L-BFGS's gain was
+        # 1e-5 nll and per-iter mse_E/mse_T were unchanged to 5-6 decimals,
+        # i.e. this run happened not to drift -- but nothing stops it in
+        # general.
         if va_nll_plain < lbfgs_best_val - 1e-5:
             lbfgs_best_val = va_nll_plain
             lbfgs_best_iter = it
