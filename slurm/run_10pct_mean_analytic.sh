@@ -40,6 +40,19 @@ run_step () {
     _status_mark_done "$step"
 }
 
+# Every step below is keyed and checkpointed against $STATUS_FILE -- an
+# already-"done" key is skipped outright, so a re-submit of this script picks
+# up wherever the last run left off instead of redoing finished work.
+run_once () {
+    local key="$1"; shift
+    if _status_done "$key"; then
+        echo ">>> Skipping $key (already done)"; return 0
+    fi
+    echo ">>> Running $key"
+    "$@" || exit $?
+    _status_mark_done "$key"
+}
+
 # Stage 2: mean-only regressor, no variance head trained.
 run_step 02_train_fnn_deepsets.py --nll-warmup-frac 1.0
 
@@ -47,14 +60,15 @@ run_step 02_train_fnn_deepsets.py --nll-warmup-frac 1.0
 run_step 03_train_recon_deepsets.py \
     --recon-input mix --mix-frac 0.3 --fnn-mean-only
 
-# Stage 4, kernel-in-the-loop, two utility variants -- called directly
-# (not run_step: same script twice would collide on its status key).
-# --out-suffix keeps their output dirs apart.
-python -u scripts/04_optimize_lbfgs_kernel.py \
-    --utility recon --out-suffix recon_utility --n-events 64 --chunk 8 --epochs 200
+# Stage 4, kernel-in-the-loop, two utility variants. --out-suffix keeps their
+# output dirs apart; explicit keys since both calls are the same script.
+run_once kernel_recon_utility \
+    python -u scripts/04_optimize_lbfgs_kernel.py \
+        --utility recon --out-suffix recon_utility --n-events 64 --chunk 8 --epochs 200
 
-python -u scripts/04_optimize_lbfgs_kernel.py \
-    --utility analytic --out-suffix analytic_utility --n-events 64 --chunk 8 --epochs 200
+run_once kernel_analytic_utility \
+    python -u scripts/04_optimize_lbfgs_kernel.py \
+        --utility analytic --out-suffix analytic_utility --n-events 64 --chunk 8 --epochs 200
 
 # true_utility/utility_vs_energy work against either optimizer's layout_best.pt
 # (same {x, y} dict format), so they apply here too -- no --grid-layout since
@@ -65,19 +79,19 @@ K="$(python -c 'import sys; sys.path.insert(0, "."); from modules.constants impo
 for variant in recon_utility analytic_utility; do
     DIR="${K}_${variant}"
 
-    python -u plots/layouts/true_utility.py \
-        --layout "$DIR/layout_best.pt" 2>&1 | tee "$DIR/true_utility_eval.txt"
+    run_once "eval_true_utility_kernel_${variant}" bash -c \
+        "python -u plots/layouts/true_utility.py \
+             --layout \"\$0/layout_best.pt\" 2>&1 | tee \"\$0/true_utility_eval.txt\"" \
+        "$DIR"
 
-    python -u plots/layouts/utility_vs_energy.py --run-dir "$DIR"
+    run_once "eval_utility_vs_energy_kernel_${variant}" \
+        python -u plots/layouts/utility_vs_energy.py --run-dir "$DIR"
 done
 
 # Stage 4, production ensemble optimizer (against the frozen recon/surrogate,
 # not the kernel) -- writes OPT_FOLDER + "_lbfgs_ensemble_full_corpus_{grid,center}",
 # same convention run_all_script_batch.sh's eval section already expects.
-# Called directly, not through run_step: this and its eval section below
-# should always run/regenerate, not skip on a stale "done" from a previous
-# invocation with different settings.
-python -u scripts/04_optimize_lbfgs_ensemble.py --chains 6
+run_step 04_optimize_lbfgs_ensemble.py --chains 6
 
 A="$(python -c 'import sys; sys.path.insert(0, "."); from modules.constants import OPT_FOLDER; print(OPT_FOLDER)')_lbfgs_ensemble_full_corpus"
 
@@ -85,19 +99,24 @@ for scheme in grid center; do
     DIR="${A}_${scheme}"
     flag=""; [ "$scheme" = grid ] && flag="--grid-layout"
 
-    python -u plots/layouts/true_utility.py $flag \
-        --layout "$DIR/layout_best.pt" 2>&1 | tee "$DIR/true_utility_eval.txt"
+    run_once "eval_true_utility_${scheme}" bash -c \
+        "python -u plots/layouts/true_utility.py $flag \
+             --layout \"\$0/layout_best.pt\" 2>&1 | tee \"\$0/true_utility_eval.txt\"" \
+        "$DIR"
 
-    python -u plots/layouts/utility_vs_energy.py $flag --run-dir "$DIR"
+    run_once "eval_utility_vs_energy_${scheme}" \
+        python -u plots/layouts/utility_vs_energy.py $flag --run-dir "$DIR"
 done
 
-python -u plots/layouts/04_trajectory_gif.py \
-    --run-dir "${A}_center" "${A}_grid" \
-    --only zoom --zoom-epochs 500 \
-    -o "$(dirname "$A")/ensemble_distinct_trajectory.mp4"
+run_once eval_traj_adam_first500 \
+    python -u plots/layouts/04_trajectory_gif.py \
+        --run-dir "${A}_center" "${A}_grid" \
+        --only zoom --zoom-epochs 500 \
+        -o "$(dirname "$A")/ensemble_distinct_trajectory.mp4"
 
-python -u plots/layouts/04_trajectory_gif.py \
-    --run-dir "${A}_center" "${A}_grid" \
-    --phase lbfgs --lbfgs-chunk 0-9 --fit-view --min-per-chunk 0 \
-    --zoom-epochs 0 --seconds 20 --fps 60 \
-    -o "$(dirname "$A")/ensemble_lbfgs_chunk0-9.mp4"
+run_once eval_traj_lbfgs_chunks \
+    python -u plots/layouts/04_trajectory_gif.py \
+        --run-dir "${A}_center" "${A}_grid" \
+        --phase lbfgs --lbfgs-chunk 0-9 --fit-view --min-per-chunk 0 \
+        --zoom-epochs 0 --seconds 20 --fps 60 \
+        -o "$(dirname "$A")/ensemble_lbfgs_chunk0-9.mp4"
