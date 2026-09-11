@@ -59,19 +59,10 @@ python -u scripts/04_optimize_lbfgs_kernel.py \
 # Stage 4, production ensemble optimizer (against the frozen recon/surrogate,
 # not the kernel) -- writes OPT_FOLDER + "_lbfgs_ensemble_full_corpus_{grid,center}",
 # same convention run_all_script_batch.sh's eval section already expects.
-run_step 04_optimize_lbfgs_ensemble.py --chains 6
-
-# Same evaluation run_all_script_batch.sh does for the production pipeline,
-# against these two ensemble output dirs.
-run_eval () {
-    local key="$1"; shift
-    if _status_done "$key"; then
-        echo ">>> Skipping $key (already done)"; return 0
-    fi
-    echo ">>> Running $key"
-    "$@" || exit $?
-    _status_mark_done "$key"
-}
+# Called directly, not through run_step: this and its eval section below
+# should always run/regenerate, not skip on a stale "done" from a previous
+# invocation with different settings.
+python -u scripts/04_optimize_lbfgs_ensemble.py --chains 6
 
 A="$(python -c 'import sys; sys.path.insert(0, "."); from modules.constants import OPT_FOLDER; print(OPT_FOLDER)')_lbfgs_ensemble_full_corpus"
 
@@ -79,24 +70,19 @@ for scheme in grid center; do
     DIR="${A}_${scheme}"
     flag=""; [ "$scheme" = grid ] && flag="--grid-layout"
 
-    run_eval "eval_true_utility_${scheme}" bash -c \
-        "python -u plots/layouts/true_utility.py $flag \
-             --layout \"\$0/layout_best.pt\" 2>&1 | tee \"\$0/true_utility_eval.txt\"" \
-        "$DIR"
+    python -u plots/layouts/true_utility.py $flag \
+        --layout "$DIR/layout_best.pt" 2>&1 | tee "$DIR/true_utility_eval.txt"
 
-    run_eval "eval_utility_vs_energy_${scheme}" \
-        python -u plots/layouts/utility_vs_energy.py $flag --run-dir "$DIR"
+    python -u plots/layouts/utility_vs_energy.py $flag --run-dir "$DIR"
 done
 
-run_eval eval_traj_adam_first500 \
-    python -u plots/layouts/04_trajectory_gif.py \
-        --run-dir "${A}_center" "${A}_grid" \
-        --only zoom --zoom-epochs 500 \
-        -o "$(dirname "$A")/ensemble_distinct_trajectory.mp4"
+python -u plots/layouts/04_trajectory_gif.py \
+    --run-dir "${A}_center" "${A}_grid" \
+    --only zoom --zoom-epochs 500 \
+    -o "$(dirname "$A")/ensemble_distinct_trajectory.mp4"
 
-run_eval eval_traj_lbfgs_chunks \
-    python -u plots/layouts/04_trajectory_gif.py \
-        --run-dir "${A}_center" "${A}_grid" \
-        --phase lbfgs --lbfgs-chunk 0-9 --fit-view --min-per-chunk 0 \
-        --zoom-epochs 0 --seconds 20 --fps 60 \
-        -o "$(dirname "$A")/ensemble_lbfgs_chunk0-9.mp4"
+python -u plots/layouts/04_trajectory_gif.py \
+    --run-dir "${A}_center" "${A}_grid" \
+    --phase lbfgs --lbfgs-chunk 0-9 --fit-view --min-per-chunk 0 \
+    --zoom-epochs 0 --seconds 20 --fps 60 \
+    -o "$(dirname "$A")/ensemble_lbfgs_chunk0-9.mp4"
