@@ -117,11 +117,27 @@ T_LOG_SCALE = 1.0e6
 
 def shower_level_val_idx(strategy_ids: torch.Tensor,
                          val_frac: float,
-                         seed: int) -> torch.Tensor:
-    """Reproduce the shower-level val indices used during training."""
-    n_pairs  = int(strategy_ids.shape[0])
-    n_strat  = int(strategy_ids.max().item() + 1)
-    n_showers = n_pairs // n_strat
+                         seed: int,
+                         species_ids: torch.Tensor = None) -> torch.Tensor:
+    """Reproduce the shower-level val indices used during training.
+
+    `species_ids=None` (default) reproduces the ORIGINAL formula, correct
+    when `strategy_ids` has already been filtered to one species (as the FNN
+    callers below do: they slice to a single species' rows before calling
+    this, so there is no species dimension left to collapse).
+
+    Passing `species_ids` fixes the same species-conflation bug
+    `03_train_recon_deepsets.py`'s `shower_level_split` has: on the FULL
+    multi-species corpus (rows strategy-major/species-major/event),
+    `n_showers = n_pairs // n_strat` alone silently treats (species, event)
+    as "shower" and can put one physical shower's species rows on both sides
+    of the val split. Recon's callers (which use the full corpus, not a
+    per-species slice) must pass it to get the SAME val set recon actually
+    trained/held out on, not just a similarly-sized one."""
+    n_pairs   = int(strategy_ids.shape[0])
+    n_strat   = int(strategy_ids.max().item() + 1)
+    n_species = int(species_ids.max().item() + 1) if species_ids is not None else 1
+    n_showers = n_pairs // (n_strat * n_species)
 
     g = torch.Generator().manual_seed(int(seed))
     perm = torch.randperm(n_showers, generator=g)
@@ -131,7 +147,8 @@ def shower_level_val_idx(strategy_ids: torch.Tensor,
     is_val[perm[:n_val]] = True
 
     all_idx = torch.arange(n_pairs, dtype=torch.long)
-    shower_of_pair = all_idx - strategy_ids * n_showers
+    sp = species_ids if species_ids is not None else torch.zeros_like(strategy_ids)
+    shower_of_pair = all_idx - strategy_ids * (n_species * n_showers) - sp * n_showers
     val_mask = is_val[shower_of_pair]
     return torch.nonzero(val_mask).squeeze(-1)
 
@@ -772,11 +789,12 @@ def _recon_target_pred(fnn, recon, primary, xy, val_idx):
     return target, pred, N
 
 
-def _render_recon_scatter(fnn, recon, primary, xy, val_idx, output_path, formats=("png",)):
-    """Pure rendering — caller supplies both nets (eval mode) and the
-    in-memory primary/xy tensors. Recon target is `primary[val_idx, :4]`."""
-    target, pred, N = _recon_target_pred(fnn, recon, primary, xy, val_idx)
-
+def _draw_recon_scatter(target, pred, N, output_path, formats=("png",),
+                        title_suffix=""):
+    """Shared 2x2 scatter grid over RECON_CHANNELS, given already-computed
+    (target, pred). Both `_render_recon_scatter` (FNN-fed) and
+    `_render_recon_scatter_kernel` (kernel-fed) draw through this so the two
+    figures are visually identical apart from their data source."""
     vmin_s = (1, 1, 1, 1)
     # vmax_s = (100, 100, 100, 200)
     vmax_s = (80, 200, 200, 200)
@@ -787,7 +805,8 @@ def _render_recon_scatter(fnn, recon, primary, xy, val_idx, output_path, formats
     for ax, i, (name, lo, hi) in zip(axes.flat, range(4), RECON_CHANNELS):
         _scatter(ax, target[:, i].numpy(), pred[:, i].numpy(), f"Recon  {name}",
                 vmin=vmin_s[i], vmax=vmax_s[i], lo=lo, hi=hi, legend=False)
-    fig.suptitle(f"Recon: target vs prediction (N={N:,})", fontsize=FS_SUPTITLE_SCATTER)
+    fig.suptitle(f"Recon: target vs prediction{title_suffix} (N={N:,})",
+                fontsize=FS_SUPTITLE_SCATTER)
     handles, labels_leg = axes.flat[0].get_legend_handles_labels()
     fig.legend(handles, labels_leg, loc="lower center", fontsize=FS_LEGEND,
               ncol=len(labels_leg), bbox_to_anchor=(0.5, -0.04))
@@ -800,24 +819,21 @@ def _render_recon_scatter(fnn, recon, primary, xy, val_idx, output_path, formats
     plt.close(fig)
 
 
-def _render_recon_conditional(fnn, recon, primary, xy, val_idx, output_path,
-                              formats=("png",)):
-    """Conditional-density companion to `_render_recon_scatter`, same
-    peak-scaled-column-density + mean/±1σ-band treatment as
-    `_render_fnn_conditional` (see `_conditional_panel`), applied to the 4
-    recon channels instead of the FNN's E/T.
+def _draw_recon_conditional(target, pred, N, output_path, formats=("png",),
+                            title_suffix=""):
+    """Shared conditional-density grid, same peak-scaled-column-density +
+    mean/±1σ-band treatment as `_render_fnn_conditional` (see
+    `_conditional_panel`), applied to the 4 recon channels.
 
     `hit_only=False` throughout: unlike the FNN's per-detector E/T, every recon
     target here is a dense, continuous primary-encoding value — there is no
     dark/hit population to split out, so nothing is filtered before binning."""
-    target, pred, N = _recon_target_pred(fnn, recon, primary, xy, val_idx)
-
     fig, axes = plt.subplots(2, 2, figsize=FIGSIZE_RECON)
     for ax, i, (name, lo, hi) in zip(axes.flat, range(4), RECON_CHANNELS):
         _conditional_panel(ax, target[:, i].numpy(), pred[:, i].numpy(),
                            f"Recon  {name}", legend=False,
                            hit_only=False, lo=lo, hi=hi)
-    fig.suptitle(f"Recon: conditional density (N={N:,})",
+    fig.suptitle(f"Recon: conditional density{title_suffix} (N={N:,})",
                 fontsize=FS_SUPTITLE_SCATTER)
     handles, labels_leg = axes.flat[0].get_legend_handles_labels()
     fig.legend(handles, labels_leg, loc="lower center", fontsize=FS_LEGEND,
@@ -825,6 +841,63 @@ def _render_recon_conditional(fnn, recon, primary, xy, val_idx, output_path,
     fig.tight_layout(rect=(0, 0.06, 1, 0.94))
     _savefig_multi(fig, output_path, dpi=130, formats=formats)
     plt.close(fig)
+
+
+def _render_recon_scatter(fnn, recon, primary, xy, val_idx, output_path, formats=("png",)):
+    """Pure rendering — caller supplies both nets (eval mode) and the
+    in-memory primary/xy tensors. Recon target is `primary[val_idx, :4]`."""
+    target, pred, N = _recon_target_pred(fnn, recon, primary, xy, val_idx)
+    _draw_recon_scatter(target, pred, N, output_path, formats=formats)
+
+
+def _render_recon_conditional(fnn, recon, primary, xy, val_idx, output_path,
+                              formats=("png",)):
+    """Conditional-density companion to `_render_recon_scatter`."""
+    target, pred, N = _recon_target_pred(fnn, recon, primary, xy, val_idx)
+    _draw_recon_conditional(target, pred, N, output_path, formats=formats)
+
+
+def _recon_target_pred_kernel(recon, primary, xy, val_idx):
+    """(target, pred, N) for recon fed the REAL Step-1 kernel labels as its
+    (E, T) input, instead of `_recon_target_pred`'s surrogate-predicted ones.
+
+    `_recon_target_pred` reflects end-to-end FNN -> recon error (what Stage 4
+    actually inherits, since it also reads through the surrogate); this
+    reflects recon's OWN reconstruction quality against ground-truth physics,
+    decoupled from any surrogate error -- the honest "how good is recon,
+    period" number, and the one comparable to Part A's analytic-reconstruction
+    baseline in docs/stage3-analytic-validation.md.
+
+    `load_kernel_responses` lives in `03_train_recon_deepsets.py`, which
+    starts with a digit and so cannot be `import`ed by name -- loaded by
+    path, the same trick `04_optimize_lbfgs_kernel.py` uses for
+    `04_analytic_recon.py`. It returns E/T already combined across species and
+    row-aligned with primary.pt/xy.pt, so it's indexable by the same val_idx."""
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location(
+        "_s3_recon", os.path.join(_V6, "scripts", "03_train_recon_deepsets.py"))
+    _s3 = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_s3)
+
+    E_kern, T_kern = _s3.load_kernel_responses(TRAINING_DATASET_FOLDER)
+
+    p = primary[val_idx]
+    x = xy[val_idx]
+    E_v = E_kern[val_idx]
+    T_v = T_kern[val_idx]
+    target = p[:, :4].float()
+
+    N = p.shape[0]
+    pred = torch.empty((N, 4), dtype=torch.float32)
+    with torch.no_grad():
+        for lo in range(0, N, BATCH):
+            hi = min(lo + BATCH, N)
+            xy_b = x[lo:hi].to(DEVICE)
+            E_b  = E_v[lo:hi].to(DEVICE)
+            T_b  = T_v[lo:hi].to(DEVICE)
+            feats = torch.stack([xy_b[..., 0], xy_b[..., 1], E_b, T_b], dim=-1)  # (B, n_det, 4)
+            pred[lo:hi] = recon(feats).cpu()
+    return target, pred, N
 
 
 def _load_corpus():
@@ -911,7 +984,11 @@ def plot_recon_only(*, fnn=None, recon=None,
             strat_ids_disk = torch.load(
                 os.path.join(TRAINING_DATASET_FOLDER, "strategy_ids.pt")
             ).long()
-        val_idx = shower_level_val_idx(strat_ids_disk, VAL_FRAC, RECON_VAL_SEED)
+        species_ids_disk = torch.load(
+            os.path.join(TRAINING_DATASET_FOLDER, "species_ids.pt")
+        ).long()
+        val_idx = shower_level_val_idx(strat_ids_disk, VAL_FRAC, RECON_VAL_SEED,
+                                       species_ids=species_ids_disk)
     if fnn is None:
         fnn = load_fnn()
     if recon is None:
@@ -924,6 +1001,46 @@ def plot_recon_only(*, fnn=None, recon=None,
     _render_recon_conditional(
         fnn, recon, primary, xy, val_idx,
         base.replace("target_vs_pred", "conditional") + ext, formats=formats)
+
+
+def plot_recon_on_kernel(*, recon=None, primary=None, xy=None, val_idx=None,
+                         output_path=None,
+                         recon_folder=RECON_DEEPSETS_FOLDER,
+                         formats=("png",)):
+    """Render recon_target_vs_pred_kernel.png / recon_conditional_kernel.png:
+    recon scored on the REAL Step-1 kernel labels instead of the surrogate's
+    prediction. No `fnn` argument at all -- unlike `plot_recon_only`, this
+    never touches the surrogate, by design (see `_recon_target_pred_kernel`).
+    Same val split as `plot_recon_only` (species-aware `shower_level_val_idx`),
+    so the two are directly comparable panel-for-panel: any gap between them
+    is FNN-induced error, not a different evaluation set."""
+    if primary is None or xy is None:
+        primary, xy, _E, _T, strat_ids_disk = _load_corpus()
+    else:
+        strat_ids_disk = None
+    if val_idx is None:
+        if strat_ids_disk is None:
+            strat_ids_disk = torch.load(
+                os.path.join(TRAINING_DATASET_FOLDER, "strategy_ids.pt")
+            ).long()
+        species_ids_disk = torch.load(
+            os.path.join(TRAINING_DATASET_FOLDER, "species_ids.pt")
+        ).long()
+        val_idx = shower_level_val_idx(strat_ids_disk, VAL_FRAC, RECON_VAL_SEED,
+                                       species_ids=species_ids_disk)
+    if recon is None:
+        recon = load_recon(recon_folder)
+    if output_path is None:
+        os.makedirs(recon_folder, exist_ok=True)
+        output_path = os.path.join(recon_folder, "recon_target_vs_pred_kernel.png")
+
+    target, pred, N = _recon_target_pred_kernel(recon, primary, xy, val_idx)
+    _draw_recon_scatter(target, pred, N, output_path, formats=formats,
+                        title_suffix=" [kernel input]")
+    base, ext = os.path.splitext(output_path)
+    _draw_recon_conditional(
+        target, pred, N, base.replace("target_vs_pred", "conditional") + ext,
+        formats=formats, title_suffix=" [kernel input]")
 
 
 # Per-species hexbin colour (count) limits for the dual FNN scatters:
@@ -1007,6 +1124,9 @@ def main():
     else:
         plot_fnn_only()
         plot_recon_only()
+    # Recon-on-kernel needs no surrogate at all, so it runs the same way
+    # regardless of --dual.
+    plot_recon_on_kernel()
 
 
 if __name__ == "__main__":
