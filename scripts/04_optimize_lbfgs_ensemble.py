@@ -233,6 +233,28 @@ def adam_warm_start(scheme: str,
                                     penalty_r0=_r0)
         loss = -U
 
+        if not torch.isfinite(loss):
+            # A degenerate layout (e.g. two detectors coincident, or a
+            # projection landing exactly on a distance-term singularity) can
+            # make this forward pass NaN. Unguarded, backward()+step() would
+            # write that NaN into every parameter AND Adam's moment buffers
+            # (clip_grad_norm_'s total_norm is a sum, so one NaN element
+            # poisons the whole clip coefficient), permanently freezing the
+            # rest of this chain's epoch budget -- reset to the last known-
+            # good layout and skip this step instead (mirrors the L-BFGS
+            # phase's own non-finite fallback below).
+            with torch.no_grad():
+                xy_module.x.data.copy_(best_x.to(DEVICE))
+                xy_module.y.data.copy_(best_y.to(DEVICE))
+            grad_hist.append(torch.zeros(2 * N_DETECTORS))
+            log.append(dict(epoch=epoch + 1, U=float("nan"), r_mean=float("nan"),
+                            u_theta=float("nan"), u_phi=float("nan"),
+                            u_e=float("nan"), u_pr=float("nan")))
+            if epoch == 0 or (epoch + 1) % ADAM_LOG_EVERY == 0 or epoch == N_ADAM_EPOCHS - 1:
+                print(f"  [adam {epoch+1:4d}/{N_ADAM_EPOCHS}] non-finite U -- "
+                      f"reset to last best (U={best_u:+.3f})")
+            continue
+
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         # Flat gradient (x then y) before clipping — cosine is scale-invariant,
