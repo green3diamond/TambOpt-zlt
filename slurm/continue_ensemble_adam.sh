@@ -28,6 +28,10 @@
 # 04_optimize_lbfgs_ensemble.py's main() "already complete" skip check
 # doesn't just reload the old cached result instead of continuing.
 
+set -euo pipefail   # a failed python call must stop the script, not fall through
+                     # to the eval steps below and silently re-score stale output
+                     # (pipefail so that includes failures upstream of `| tee`)
+
 source slurm/env.sh
 source slurm/gpu_gate.sh
 gpu_health_gate

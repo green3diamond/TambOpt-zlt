@@ -158,7 +158,7 @@ LBFGS_BATCH_PRIMARIES = 6000
 # per-chunk determinism (what the line search needs) while holding the sweep at
 # the measured cost.
 # this is the total (number of the primaries) x (initialization schemes)
-LBFGS_MAX_SWEEP_PRIMARIES = 100_000
+LBFGS_MAX_SWEEP_PRIMARIES = 300_000
 
 # Fixed scoring set: chunk-end candidates are re-scored here before any of them
 # is called "best". Held out of the sweep pool, so it is the one objective every
