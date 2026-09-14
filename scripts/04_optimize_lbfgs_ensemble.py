@@ -85,7 +85,7 @@ N_CHAINS            = 8
 INIT_OVERDISP_SIGMA = 100.0  # metres — per-restart init spread around scheme init
 
 # Adam warm-start
-N_ADAM_EPOCHS       = 5_000
+N_ADAM_EPOCHS       = 10_000
 PRIMARIES_PER_STEP  = 5_000
 ADAM_LR             = 1.0
 GRAD_CLIP           = 100.0
@@ -123,6 +123,11 @@ POS_LOG_EVERY = 1
 # after the end-of-chunk snap. The penalty is 0 inside the snap radius, so an
 # in-band layout scores exactly as it did before.
 OFFMESH_PENALTY = OFFMESH_PENALTY_W
+
+# Whether utility_of_xy draws a fresh stochastic sample from the surrogate's
+# (mean, var) each call (the default everywhere else in this file) or uses
+# its deterministic mean. Hardcoded off: this run scores against the mean.
+SAMPLE_SURROGATE = False
 
 _MESH_CACHE = {}
 
@@ -230,7 +235,7 @@ def adam_warm_start(scheme: str,
         _mesh, _r0 = _penalty_args(mountain)
         U, r, parts = utility_of_xy(x_det, y_det, primary_batch, fnn, recon,
                                     mesh_en=_mesh, penalty_w=OFFMESH_PENALTY,
-                                    penalty_r0=_r0)
+                                    penalty_r0=_r0, sample=SAMPLE_SURROGATE)
         loss = -U
 
         if not torch.isfinite(loss):
@@ -416,7 +421,8 @@ def score_on_set(x: torch.Tensor, y: torch.Tensor, scoring_set: torch.Tensor,
     for s in range(0, scoring_set.shape[0], step):
         batch = scoring_set[s:s + step].to(DEVICE)
         U, _, _ = utility_of_xy(x, y, batch, fnn, recon, mesh_en=mesh_en,
-                                penalty_w=OFFMESH_PENALTY, penalty_r0=pen_r0)
+                                penalty_w=OFFMESH_PENALTY, penalty_r0=pen_r0,
+                                sample=SAMPLE_SURROGATE)
         tot += float(U.item()) * batch.shape[0]
         n_tot += batch.shape[0]
     return (tot / max(n_tot, 1)), x.detach().cpu(), y.detach().cpu()
@@ -466,7 +472,7 @@ def lbfgs_refine(init_x: torch.Tensor,
         y_det = xy[N_DETECTORS:]
         U, r, parts = utility_of_xy(x_det, y_det, primary_fixed, fnn, recon,
                                     mesh_en=mesh_en, penalty_w=OFFMESH_PENALTY,
-                                    penalty_r0=pen_r0)
+                                    penalty_r0=pen_r0, sample=SAMPLE_SURROGATE)
         loss = -U
         if not torch.isfinite(loss):
             raise _NonFiniteLoss
@@ -505,6 +511,7 @@ def lbfgs_refine(init_x: torch.Tensor,
         U_proj, _, _ = utility_of_xy(
             x_proj.to(DEVICE), y_proj.to(DEVICE), primary_fixed, fnn, recon,
             mesh_en=mesh_en, penalty_w=OFFMESH_PENALTY, penalty_r0=pen_r0,
+            sample=SAMPLE_SURROGATE,
         )
     # Final frame = the mountain-projected optimum actually returned, so the
     # trajectory ends where the next chunk (or the ensemble) picks up.
@@ -757,6 +764,7 @@ def _run_one_scheme(scheme: str,
                 lbfgs_max_iter=LBFGS_MAX_ITER, lbfgs_lr=LBFGS_LR,
                 lbfgs_history_size=LBFGS_HISTORY_SIZE,
                 offmesh_penalty=OFFMESH_PENALTY,
+                sample_surrogate=SAMPLE_SURROGATE,
                 lbfgs_batch_primaries=LBFGS_BATCH_PRIMARIES,
                 scoring_set_primaries=SCORING_SET_PRIMARIES,
                 scoring_batch_primaries=SCORING_BATCH_PRIMARIES,
@@ -867,6 +875,7 @@ def main():
              else f"  (onset at {PENALTY_ONSET_FRAC:g}x the snap radius)"))
     print(f"Adam epochs  : {N_ADAM_EPOCHS}  (primaries/step={PRIMARIES_PER_STEP})")
     print(f"L-BFGS       : max_iter={LBFGS_MAX_ITER}  batch={LBFGS_BATCH_PRIMARIES}")
+    print(f"surrogate    : {'SAMPLE (forward_sample)' if SAMPLE_SURROGATE else 'MEAN (forward)'}")
 
     primary_all = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt")).float()
     n_total_primaries = int(primary_all.shape[0])
