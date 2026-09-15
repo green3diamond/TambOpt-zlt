@@ -257,8 +257,10 @@ def center_layout(mountain):
 def score(e_det, n_det, primary_batch, fnn, kernel_fnn, recon, device):
     """(U_surrogate, U_true, parts_surrogate, parts_true) for one layout."""
     x, y = e_det.to(device), n_det.to(device)
-    U_s, _, p_s = utility_of_xy(x, y, primary_batch, fnn, recon)
-    U_t, _, p_t = utility_of_xy(x, y, primary_batch, kernel_fnn, recon)
+    # Mean surrogate, matching the optimizer (SAMPLE_SURROGATE=False); a mean-only
+    # Stage 2 has an untrained variance head, so sampling would inject pure noise.
+    U_s, _, p_s = utility_of_xy(x, y, primary_batch, fnn, recon, sample=False)
+    U_t, _, p_t = utility_of_xy(x, y, primary_batch, kernel_fnn, recon, sample=False)
     return float(U_s.item()), float(U_t.item()), p_s, p_t
 
 
