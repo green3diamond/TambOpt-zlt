@@ -120,3 +120,21 @@ run_once eval_traj_lbfgs_chunks \
         --phase lbfgs --lbfgs-chunk 0-9 --fit-view --min-per-chunk 0 \
         --zoom-epochs 0 --seconds 20 --fps 60 \
         -o "$(dirname "$A")/ensemble_lbfgs_chunk0-9.mp4"
+
+# Stage 4, component-balanced ensemble (equal θ/φ/E shares).
+run_step 04_optimize_lbfgs_balanced.py --chains 6
+
+B="$(python -c 'import sys; sys.path.insert(0, "."); from modules.constants import OPT_FOLDER; print(OPT_FOLDER)')_lbfgs_balanced"
+
+for scheme in grid center; do
+    DIR="${B}_${scheme}"
+    flag=""; [ "$scheme" = grid ] && flag="--grid-layout"
+
+    run_once "eval_true_utility_balanced_${scheme}" bash -c \
+        "python -u plots/layouts/true_utility.py $flag \
+             --layout \"\$0/layout_best.pt\" 2>&1 | tee \"\$0/true_utility_eval.txt\"" \
+        "$DIR"
+
+    run_once "eval_utility_vs_energy_balanced_${scheme}" \
+        python -u plots/layouts/utility_vs_energy.py $flag --run-dir "$DIR"
+done
