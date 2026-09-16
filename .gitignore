@@ -27,3 +27,6 @@ plots/paper_figures/
 
 # Shower packs for tests/ live with the run outputs on holylfs05, not in git
 *.npz
+
+# GPU health-gate consecutive-failure counter (slurm/run_all_script_batch.sh)
+.gpu_gate_fails
