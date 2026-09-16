@@ -457,7 +457,11 @@ def train_species(tag:        str,
     # Warm-start: mean-only MSE for the first fraction of Adam epochs, then
     # full Gaussian NLL. Clamp so at least one post-warmup epoch always runs
     # (else Phase 2 below would try to load a checkpoint that was never saved).
-    n_warmup_epochs = min(int(round(NLL_WARMUP_FRAC * n_epochs)), max(0, n_epochs - 1))
+    # NLL_WARMUP_FRAC >= 1.0: pure mean regressor -- MSE for every epoch, MSE
+    # checkpoint selection, and an MSE L-BFGS phase; no NLL anywhere.
+    mean_only = NLL_WARMUP_FRAC >= 1.0
+    n_warmup_epochs = (n_epochs if mean_only else
+                       min(int(round(NLL_WARMUP_FRAC * n_epochs)), max(0, n_epochs - 1)))
     print(f"[{tag}] NLL warm-start: {n_warmup_epochs} mean-only epochs, "
           f"then {n_epochs - n_warmup_epochs} full-NLL epochs")
 
@@ -597,11 +601,12 @@ def train_species(tag:        str,
         # checkpoint whose mean hasn't regressed >2% from the warm-up's final
         # value, so a NLL improvement bought by degrading the mean can never
         # ship.
-        if not is_warmup:
-            val_mse_ok = (warmup_val_mse is None
+        if mean_only or not is_warmup:
+            sel_val = va_tot if mean_only else va_nll_plain
+            val_mse_ok = (mean_only or warmup_val_mse is None
                           or va_mse <= 1.02 * warmup_val_mse)
-            if val_mse_ok and va_nll_plain < best_val - 1e-5:
-                best_val   = va_nll_plain
+            if val_mse_ok and sel_val < best_val - 1e-5:
+                best_val   = sel_val
                 best_epoch = epoch + 1
                 adam_no_improve = 0
                 torch.save({
@@ -633,7 +638,7 @@ def train_species(tag:        str,
         # (the variance head hasn't switched on yet, so there's nothing to
         # plateau against). Phase-0 measured Adam spending 34 of 50 minutes
         # past its best epoch on all three species.
-        if not is_warmup and adam_no_improve >= ADAM_PATIENCE:
+        if (mean_only or not is_warmup) and adam_no_improve >= ADAM_PATIENCE:
             print(f"[{tag}] Adam early stop: {ADAM_PATIENCE} NLL epochs with no "
                   f"checkpoint improvement (best val_nll_plain={best_val:.6f} "
                   f"at epoch {best_epoch})")
@@ -662,7 +667,8 @@ def train_species(tag:        str,
     model.load_state_dict(adam_ckpt["state_dict"])
     # (1c) Same selection key as the Adam phase (val_nll_plain) so "best" means
     # the same thing across both phases; .get falls back for pre-fix checkpoints.
-    adam_best_val = adam_ckpt.get("val_nll_plain", adam_ckpt["val_total"])
+    adam_best_val = (adam_ckpt["val_total"] if mean_only
+                     else adam_ckpt.get("val_nll_plain", adam_ckpt["val_total"]))
     print(f"[lbfgs] loaded Adam best epoch={adam_ckpt['epoch']} val={adam_best_val:.6f}")
     model.eval()
 
@@ -713,9 +719,14 @@ def train_species(tag:        str,
             E_c  = E_all_train[start:end]
             T_c  = T_all_train[start:end]
             mean_c, logvar_c = model.forward_dist(p_c, xy_c)
-            chunk_loss, chunk_mE, chunk_mT = gaussian_nll_normalized(
-                mean_c, logvar_c, E_c, T_c, model.out_mean, model.out_std,
-            )
+            if mean_only:
+                chunk_loss, chunk_mE, chunk_mT = mse_mean_only(
+                    mean_c, E_c, T_c, model.out_mean, model.out_std,
+                )
+            else:
+                chunk_loss, chunk_mE, chunk_mT = gaussian_nll_normalized(
+                    mean_c, logvar_c, E_c, T_c, model.out_mean, model.out_std,
+                )
             weight = chunk_size / n_total
             (chunk_loss * weight).backward()
             sum_loss += chunk_loss.detach() * chunk_size
@@ -735,12 +746,18 @@ def train_species(tag:        str,
                 T_b  = T_b.to(DEVICE, non_blocking=True)
                 B = p_b.shape[0]
                 v_mean, v_logvar = model.forward_dist(p_b, xy_b)
-                v_loss, v_mE, v_mT = gaussian_nll_normalized(
-                    v_mean, v_logvar, E_b, T_b, model.out_mean, model.out_std,
-                )
-                nll_plain_b, mse_b = _val_select_metrics(
-                    v_mean, v_logvar, E_b, T_b, model.out_mean, model.out_std,
-                )
+                if mean_only:
+                    v_loss, v_mE, v_mT = mse_mean_only(
+                        v_mean, E_b, T_b, model.out_mean, model.out_std,
+                    )
+                    nll_plain_b, mse_b = 0.0, v_loss.item()
+                else:
+                    v_loss, v_mE, v_mT = gaussian_nll_normalized(
+                        v_mean, v_logvar, E_b, T_b, model.out_mean, model.out_std,
+                    )
+                    nll_plain_b, mse_b = _val_select_metrics(
+                        v_mean, v_logvar, E_b, T_b, model.out_mean, model.out_std,
+                    )
                 va_tot += v_loss.item() * B
                 va_E   += v_mE.item()   * B
                 va_T   += v_mT.item()   * B
@@ -770,8 +787,9 @@ def train_species(tag:        str,
         # 1e-5 nll and per-iter mse_E/mse_T were unchanged to 5-6 decimals,
         # i.e. this run happened not to drift -- but nothing stops it in
         # general.
-        if va_nll_plain < lbfgs_best_val - 1e-5:
-            lbfgs_best_val = va_nll_plain
+        sel_val = va_tot if mean_only else va_nll_plain
+        if sel_val < lbfgs_best_val - 1e-5:
+            lbfgs_best_val = sel_val
             lbfgs_best_iter = it
             lbfgs_no_improve = 0
             torch.save({
@@ -913,11 +931,10 @@ def main():
     ap.add_argument("--nll-warmup-frac", type=float, default=NLL_WARMUP_FRAC,
                     help="fraction of Adam epochs spent in the mean-only MSE "
                          "warm-start before switching to full Gaussian NLL "
-                         "(default from config). 1.0 never leaves warm-up, "
-                         "i.e. trains a pure mean regressor: the logvar head "
-                         "is still computed every forward pass (shared trunk) "
-                         "but mse_mean_only never includes it in the loss, so "
-                         "it gets no training signal and stays near its init.")
+                         "(default from config). >= 1.0 trains a pure mean "
+                         "regressor: MSE for every Adam epoch and the L-BFGS "
+                         "phase, checkpoints selected on val MSE, no NLL at "
+                         "all. The logvar head stays at its zero init.")
     args = ap.parse_args()
     wanted = {s.strip() for s in args.species.split(",") if s.strip()}
     unknown = wanted - {tag for tag, _ in SPECIES_TAGS}
