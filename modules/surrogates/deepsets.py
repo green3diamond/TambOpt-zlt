@@ -117,7 +117,12 @@ class DeepSetsSurrogate(nn.Module):
                        and only floors variance from below, never above.
         """
         B = primary.shape[0]
-        nd = self.n_det
+        # Broadcast count comes from the caller's layout, not from self.n_det.
+        # The architecture is count-invariant (shared encoder, mean pool), so a
+        # layout with fewer detectors is a genuine forward pass. self.n_det keeps
+        # its other meaning below as the offset into the [E(n_det), T(n_det)]
+        # out_mean/out_std buffers, and must not follow the caller.
+        nd = xy.shape[1]
 
         # Per-feature z-score scalars pulled from the broadcast-shared buffers:
         #   in_mean = [primary(5), x0,y0, x1,y1, ...]  → x stat at idx 5, y at 6.
