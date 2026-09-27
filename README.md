@@ -18,8 +18,37 @@ decay_locations/  # CORSIKA observation-plane source + Julia tau-injection pipel
 notebooks/        # EDA / diagnostic notebooks
 docs/             # THEORY.md (architecture reference) and dev diary
 data/             # mountain mesh geometry (malata.h5)
+AllShowers-flow-matching-surrogate/
+                  # flow-matching shower generator (AllShowers), with
+                  # PointCountFM/ (points-per-layer model) inside it
 .pycache/         # all bytecode, gitignored (see below)
 ```
+
+## Flow-matching shower surrogate
+
+[`AllShowers-flow-matching-surrogate/`](AllShowers-flow-matching-surrogate/README.md)
+holds the generative shower models, copied in from the standalone
+[AllShowers](https://github.com/hamzahanif2210/AllShowers) and
+[PointCountFM](https://github.com/hamzahanif2210/PointCountFM) forks. Their
+git history and training outputs were not copied. The two models run as a chain:
+
+1. **PointCountFM**
+   ([`AllShowers-flow-matching-surrogate/PointCountFM/`](AllShowers-flow-matching-surrogate/PointCountFM/README.md))
+   generates the number of points per layer from the incident particle
+   type, energy and direction. It writes them into a condition file.
+2. **AllShowers** ([`AllShowers-flow-matching-surrogate/allshowers/`](AllShowers-flow-matching-surrogate/README.md))
+   is a transformer conditional flow-matching model. It reads that condition
+   file and generates the shower point clouds.
+
+Both are self-contained and run from their own folder, with no `pip install`.
+Each has its own `mkresultdir.py` for Slurm training runs. Their `results/`,
+`plots/` and `logs/` outputs are gitignored. See each folder's README for
+setup, training and generation.
+
+This folder is for training and developing the models. The pipeline does not
+use it yet. `modules/showers/generate.py` (Step 0) still calls the generator
+and checkpoints in the external `TAMBO-opt` repo
+(`/n/home05/zdimitrov/tambo/TAMBO-opt`).
 
 Bytecode is kept out of the source tree, so no `__pycache__/` dirs appear beside
 the sources. It is set in exactly two places:
