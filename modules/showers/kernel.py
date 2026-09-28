@@ -38,6 +38,48 @@ import torch
 from ..constants import HIT_DEPOSIT_MIN
 
 
+@torch.no_grad()
+def adaptive_bandwidths(samples: torch.Tensor, k: int, sigma_min: float) -> torch.Tensor:
+    """Per-point Gaussian width for the interpolated kernel: the distance to the
+    k-th nearest other real point IN THE SAME PLANE, floored at `sigma_min`.
+
+    AllShowers points are macro-particles: a plane holds ~10^2-10^3 of them over
+    a kilometre-scale footprint, so at a narrow sigma a detector between points
+    reads ~0 purely because of how the generator sampled the shower. Widening
+    each point to its local spacing turns the cloud into a smooth density
+    estimate there, and leaves dense regions (spacing < sigma_min) untouched.
+
+    Distances use the kernel's own transverse coordinates (columns 0, 1); planes
+    are the rounded layer index (column 2). Padding rows (energy 0) are neither
+    searched nor given a width beyond `sigma_min`. A plane with fewer than k+1
+    real points uses its farthest available neighbour; a lone point keeps
+    `sigma_min`. Depends only on the cloud, so gradients w.r.t. detector
+    positions are unaffected.
+
+    Returns (B, P) widths in metres.
+    """
+    B, P, _ = samples.shape
+    h = torch.full((B, P), float(sigma_min), dtype=samples.dtype, device=samples.device)
+    xy = samples[..., :2]
+    layer = samples[..., 2].round().long()
+    real = samples[..., 3] > 0
+    for b in range(B):
+        rb = real[b]
+        if int(rb.sum()) < 2:
+            continue
+        lb = layer[b]
+        for L in torch.unique(lb[rb]):
+            idx = torch.nonzero(rb & (lb == L)).squeeze(-1)
+            n = idx.numel()
+            if n < 2:
+                continue
+            pts = xy[b, idx]
+            kk = min(int(k), n - 1)
+            # k+1 smallest distances include the point itself (distance 0).
+            r = torch.cdist(pts, pts).topk(kk + 1, dim=1, largest=False).values[:, kk]
+            h[b, idx] = r.clamp(min=float(sigma_min))
+    return h
+
 
 def GetCounts_planeaware(
     samples: torch.Tensor,
@@ -49,6 +91,7 @@ def GetCounts_planeaware(
     TimeAverage_vectorized_fn,
     sigma:   float = 200.0,
     hit_deposit_min: float = HIT_DEPOSIT_MIN,
+    bandwidth: torch.Tensor = None,
 ) -> tuple:
     """Plane-aware count extraction + leading-edge arrival time.
 
@@ -68,6 +111,11 @@ def GetCounts_planeaware(
         sigma    : Gaussian spatial kernel width [m].
         hit_deposit_min : a point is DETECTED at a detector when its deposit
                    there (energy * kernel acceptance) exceeds this.
+        bandwidth : optional (B, max_points) per-point width h >= sigma, from
+                   `adaptive_bandwidths`. When given, the spatial factor is
+                   (sigma/h)^2 * exp(-d^2 / 2h^2): area-normalised so every point
+                   deposits the same total as with the fixed kernel, identical to
+                   it wherever h == sigma. None (default) is the fixed kernel.
 
     Returns:
         (local_intensity, arrival_time) : each (B, n_det), raw (no
@@ -83,7 +131,11 @@ def GetCounts_planeaware(
     # dx, dy : (B, P, n_det)
     dx = point_x.unsqueeze(2) - x_det.unsqueeze(0).unsqueeze(0)
     dy = point_y.unsqueeze(2) - y_det.unsqueeze(0).unsqueeze(0)
-    spatial = torch.exp(-(dx ** 2 + dy ** 2) / (2.0 * sigma ** 2))
+    if bandwidth is None:
+        spatial = torch.exp(-(dx ** 2 + dy ** 2) / (2.0 * sigma ** 2))
+    else:
+        h2 = bandwidth.unsqueeze(2) ** 2                          # (B, P, 1)
+        spatial = (sigma ** 2 / h2) * torch.exp(-(dx ** 2 + dy ** 2) / (2.0 * h2))
 
     # delta_l : (B, P, n_det)
     delta_l = point_l.unsqueeze(2) - z_cont.unsqueeze(0).unsqueeze(0)

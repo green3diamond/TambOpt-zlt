@@ -14,7 +14,7 @@ from typing import NamedTuple, Optional, Tuple
 import numpy as np
 import torch
 
-from ..showers import GetCounts_planeaware
+from ..showers import GetCounts_planeaware, adaptive_bandwidths
 
 from ..constants import (BLOB_MEDIAN_E, EAST_ENTRY, LAYER_EAST_DX, N_DETECTORS,
                          PRIMARY_DIM, SPECIES_NAMES, SIGMA_SPATIAL)
@@ -169,7 +169,8 @@ def compute_labels_batch(clouds:   torch.Tensor,
                          east_entry:    float = EAST_ENTRY,
                          layer_east_dx: float = LAYER_EAST_DX,
                          sigma_spatial: float = SIGMA_SPATIAL,
-                         differentiable: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+                         differentiable: bool = False,
+                         interp_k: int = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run the plane-aware kernel on a batch of showers sharing one layout.
 
     Detectors are (East, North), matching the ENU h5 convention; the kernel is
@@ -190,6 +191,11 @@ def compute_labels_batch(clouds:   torch.Tensor,
             (`scripts/04_optimize_lbfgs_kernel.py`); passing True here is that
             flag — default False keeps every existing call site byte-for-byte
             unchanged.
+        interp_k : opt-in interpolated kernel. Each point's Gaussian widens to
+            the distance of its k-th nearest in-plane neighbour (floored at
+            sigma_spatial), so a detector between sparse macro-particles reads
+            their local density instead of ~0 (`adaptive_bandwidths`). None
+            (default) is the fixed-sigma kernel, byte-for-byte as before.
     Returns:
         E, T : (B, n_det) local intensities and leading-edge arrival times
                (seconds; 0 where no point cleared the detection threshold).
@@ -201,12 +207,15 @@ def compute_labels_batch(clouds:   torch.Tensor,
         z_cont = (east_entry - e_det) / layer_east_dx        # depth from defined East
 
         dummy_flux = torch.tensor([0.0], device=clouds.device)
+        bandwidth = (adaptive_bandwidths(clouds, interp_k, sigma_spatial)
+                     if interp_k else None)
         E, T = GetCounts_planeaware(
             clouds, n_det, up, z_cont,                       # transverse plane (North, Up) — kernel unchanged
             SmearN_fn=None,
             fluxB_e=dummy_flux,
             TimeAverage_vectorized_fn=None,
             sigma=sigma_spatial,
+            bandwidth=bandwidth,
         )
         return E, T
 

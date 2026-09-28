@@ -208,6 +208,9 @@ def main():
     ap.add_argument("--m-real",    type=int, default=64,  help="realizations per primary")
     ap.add_argument("--seed",      type=int, default=0)
     ap.add_argument("--gen-batch", type=int, default=32, help="AllShowers gen batch")
+    ap.add_argument("--interp-k", type=int, default=None,
+                    help="label with the interpolated kernel (compute_labels_batch "
+                         "interp_k); default None = the fixed-sigma training kernel")
     ap.add_argument("--out", type=str,
                     default=os.path.join(_V6, f"aleatoric_floor_{time.strftime('%Y%m%d_%H%M%S')}.json"))
     args = ap.parse_args()
@@ -292,7 +295,8 @@ def main():
                 x_det, y_det = fn(mountain, n_det=N_DETECTORS, rng=rng, **kwargs)
                 x_det = x_det.float().to(DEVICE); y_det = y_det.float().to(DEVICE)
                 cl = sp_clouds[p].to(DEVICE)                   # (M, P, 5)
-                E, T = compute_labels_batch(cl, x_det, y_det, surface, sigma_spatial=sigma_spatial)
+                E, T = compute_labels_batch(cl, x_det, y_det, surface, sigma_spatial=sigma_spatial,
+                                            interp_k=args.interp_k)
                 E = torch.log1p(E)                             # → training E space
                 T = torch.log1p(T * T_LOG_SCALE)               # → training T space
                 vE = E.var(dim=0, unbiased=True).cpu()
@@ -335,6 +339,13 @@ def main():
     floor_T_fired_vs_fired = _floor(var_T[fired], t_std_fired) if fired.any() else float("nan")
     floor_total = 0.5 * (floor_E + floor_T)
     floor_total_fired_vs_fired = 0.5 * (floor_E_fired_vs_fired + floor_T_fired_vs_fired)
+    # The corpus denominator above comes from the fixed-kernel training labels, so
+    # it does not describe an --interp-k run. Normalising by the GENERATED labels'
+    # own variance puts raw and interpolated floors on one footing:
+    # floor_gen = within-primary variance / total variance of the same labels.
+    floor_gen_E = float(var_E.mean()) / gen_stats["E"]["std"] ** 2
+    floor_gen_T = float(var_T.mean()) / gen_stats["T"]["std"] ** 2
+    floor_gen_total = 0.5 * (floor_gen_E + floor_gen_T)
 
     # Per-species floors: each species' within-var normalized by THAT species'
     # corpus std, so electron and muon get separate levels (a shared denominator
@@ -371,6 +382,8 @@ def main():
             total_fired_vs_fired=floor_total_fired_vs_fired,
         ),
         floor_zmse_by_species=floor_by_species,
+        floor_vs_generated=dict(E=floor_gen_E, T=floor_gen_T, total=floor_gen_total),
+        interp_k=args.interp_k,
         max_R2=dict(
             E=1 - floor_E, T=1 - floor_T, total=1 - floor_total,
             E_fired_vs_fired=1 - floor_E_fired_vs_fired,
@@ -399,6 +412,10 @@ def main():
     for name, fl in floor_by_species.items():
         print(f"    {name:8s}  E={fl['E']:.4f}  T={fl['T']:.4f}  total={fl['total']:.4f}"
               f"   (max R² total = {1-fl['total']:.3f})")
+    print(f"\n  floor vs generated-label variance (kernel: "
+          f"{'interp k=' + str(args.interp_k) if args.interp_k else 'fixed sigma'}):"
+          f"  E={floor_gen_E:.4f}  T={floor_gen_T:.4f}  total={floor_gen_total:.4f}"
+          f"   (max R² E = {1 - floor_gen_E:.3f})")
     print(f"\n  A surrogate whose val MSE reaches the floor is Bayes-optimal;")
     print(f"  no architecture/optimizer change can go below it.")
     print(f"\n[done] wrote {args.out}")
