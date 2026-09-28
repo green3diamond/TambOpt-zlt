@@ -170,7 +170,8 @@ def compute_labels_batch(clouds:   torch.Tensor,
                          layer_east_dx: float = LAYER_EAST_DX,
                          sigma_spatial: float = SIGMA_SPATIAL,
                          differentiable: bool = False,
-                         interp_k: int = None) -> Tuple[torch.Tensor, torch.Tensor]:
+                         interp_k: int = None,
+                         t_mode: str = "leading") -> Tuple[torch.Tensor, torch.Tensor]:
     """Run the plane-aware kernel on a batch of showers sharing one layout.
 
     Detectors are (East, North), matching the ENU h5 convention; the kernel is
@@ -196,6 +197,8 @@ def compute_labels_batch(clouds:   torch.Tensor,
             sigma_spatial), so a detector between sparse macro-particles reads
             their local density instead of ~0 (`adaptive_bandwidths`). None
             (default) is the fixed-sigma kernel, byte-for-byte as before.
+        t_mode : "leading" (default, the training label) or "mean", the
+            deposit-weighted mean arrival time (`GetCounts_planeaware`).
     Returns:
         E, T : (B, n_det) local intensities and leading-edge arrival times
                (seconds; 0 where no point cleared the detection threshold).
@@ -216,6 +219,7 @@ def compute_labels_batch(clouds:   torch.Tensor,
             TimeAverage_vectorized_fn=None,
             sigma=sigma_spatial,
             bandwidth=bandwidth,
+            t_mode=t_mode,
         )
         return E, T
 

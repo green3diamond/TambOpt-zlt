@@ -108,6 +108,21 @@ def test_padding_and_planes_are_respected():
     assert float(h[0, 4]) == SIGMA                                        # padding untouched
 
 
+def test_mean_time_is_deposit_weighted():
+    # Two points, energies 1 and 3, times 10 and 30 ns, both at the detector.
+    c = _cloud([[0.0, 0.0], [0.0, 0.0]])
+    c[0, :, 3] = torch.tensor([1.0, 3.0])
+    c[0, :, 4] = torch.tensor([10e-9, 30e-9])
+    det = torch.tensor([[0.0, 0.0], [500.0, 0.0]])            # second detector sees nothing
+    z = torch.zeros(2)
+    E, T = GetCounts_planeaware(c, det[:, 0], det[:, 1], z, None, None, None,
+                                sigma=SIGMA, t_mode="mean")
+    assert abs(float(T[0, 0]) - 25e-9) < 1e-12, float(T[0, 0])  # (1*10 + 3*30)/4
+    assert float(T[0, 1]) == 0.0                                # dark -> 0 sentinel
+    _, T_lead = GetCounts_planeaware(c, det[:, 0], det[:, 1], z, None, None, None, sigma=SIGMA)
+    assert abs(float(T_lead[0, 0]) - 10e-9) < 1e-12              # default unchanged
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
     for t in tests:

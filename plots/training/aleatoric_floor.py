@@ -211,6 +211,8 @@ def main():
     ap.add_argument("--interp-k", type=int, default=None,
                     help="label with the interpolated kernel (compute_labels_batch "
                          "interp_k); default None = the fixed-sigma training kernel")
+    ap.add_argument("--t-mode", choices=("leading", "mean"), default="leading",
+                    help="T label: leading edge (training default) or deposit-weighted mean")
     ap.add_argument("--out", type=str,
                     default=os.path.join(_V6, f"aleatoric_floor_{time.strftime('%Y%m%d_%H%M%S')}.json"))
     args = ap.parse_args()
@@ -296,7 +298,7 @@ def main():
                 x_det = x_det.float().to(DEVICE); y_det = y_det.float().to(DEVICE)
                 cl = sp_clouds[p].to(DEVICE)                   # (M, P, 5)
                 E, T = compute_labels_batch(cl, x_det, y_det, surface, sigma_spatial=sigma_spatial,
-                                            interp_k=args.interp_k)
+                                            interp_k=args.interp_k, t_mode=args.t_mode)
                 E = torch.log1p(E)                             # → training E space
                 T = torch.log1p(T * T_LOG_SCALE)               # → training T space
                 vE = E.var(dim=0, unbiased=True).cpu()
@@ -384,6 +386,7 @@ def main():
         floor_zmse_by_species=floor_by_species,
         floor_vs_generated=dict(E=floor_gen_E, T=floor_gen_T, total=floor_gen_total),
         interp_k=args.interp_k,
+        t_mode=args.t_mode,
         max_R2=dict(
             E=1 - floor_E, T=1 - floor_T, total=1 - floor_total,
             E_fired_vs_fired=1 - floor_E_fired_vs_fired,
@@ -413,7 +416,7 @@ def main():
         print(f"    {name:8s}  E={fl['E']:.4f}  T={fl['T']:.4f}  total={fl['total']:.4f}"
               f"   (max R² total = {1-fl['total']:.3f})")
     print(f"\n  floor vs generated-label variance (kernel: "
-          f"{'interp k=' + str(args.interp_k) if args.interp_k else 'fixed sigma'}):"
+          f"{'interp k=' + str(args.interp_k) if args.interp_k else 'fixed sigma'}, T={args.t_mode}):"
           f"  E={floor_gen_E:.4f}  T={floor_gen_T:.4f}  total={floor_gen_total:.4f}"
           f"   (max R² E = {1 - floor_gen_E:.3f})")
     print(f"\n  A surrogate whose val MSE reaches the floor is Bayes-optimal;")

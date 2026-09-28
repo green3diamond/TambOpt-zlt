@@ -92,6 +92,7 @@ def GetCounts_planeaware(
     sigma:   float = 200.0,
     hit_deposit_min: float = HIT_DEPOSIT_MIN,
     bandwidth: torch.Tensor = None,
+    t_mode: str = "leading",
 ) -> tuple:
     """Plane-aware count extraction + leading-edge arrival time.
 
@@ -116,6 +117,15 @@ def GetCounts_planeaware(
                    (sigma/h)^2 * exp(-d^2 / 2h^2): area-normalised so every point
                    deposits the same total as with the fixed kernel, identical to
                    it wherever h == sigma. None (default) is the fixed kernel.
+        t_mode   : "leading" (default) = earliest detected point, as a
+                   photodetector triggers. "mean" = deposit-weighted mean time,
+                   sum(e*w*t) / sum(e*w), where the detector's TOTAL deposit
+                   clears `hit_deposit_min` (else 0). The mean averages over every
+                   point the detector sees instead of taking an extreme value, so
+                   it scatters less and varies smoothly with detector position.
+                   Normalised by the detector's own deposit, unlike the retired
+                   count-weighted mean (see module docstring), so it does not
+                   scale with the corpus's point budget.
 
     Returns:
         (local_intensity, arrival_time) : each (B, n_det), raw (no
@@ -145,6 +155,16 @@ def GetCounts_planeaware(
     energy_kernel = point_e.unsqueeze(2) * kernel                 # (B, P, n_det)
 
     local_intensity = energy_kernel.sum(dim=1)                    # (B, n_det)
+
+    if t_mode == "mean":
+        # Deposit-weighted mean over every point the detector sees. Padding rows
+        # carry energy 0, so they add nothing to either sum.
+        lit = local_intensity > hit_deposit_min
+        t_sum = (energy_kernel * point_t.unsqueeze(2)).sum(dim=1)
+        mean_t = t_sum / local_intensity.clamp(min=torch.finfo(local_intensity.dtype).tiny)
+        return local_intensity, torch.where(lit, mean_t, torch.zeros_like(mean_t))
+    if t_mode != "leading":
+        raise ValueError(f"t_mode must be 'leading' or 'mean', got {t_mode!r}")
 
     # Leading edge: the earliest point whose deposit clears the threshold.
     # Padding rows carry energy 0 (showerdata zero-fills), so they never clear

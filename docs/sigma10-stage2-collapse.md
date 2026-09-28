@@ -32,6 +32,9 @@ All numbers come from `scripts/diagnostics/stage2_zero_inflation.py`
 - **Interpolating between macro-particles (Measurement 5)** helps E modestly
   (explainable fraction 35% → 47%) and not T. Most of the sigma=10 scatter is
   real shower structure at the scale of one detector, not generator sampling.
+  Using a deposit-weighted mean arrival time instead of the leading edge
+  barely changes T's floor either: T is limited by hit/dark flips, not by how
+  the time is summarised.
 
 ## Measurement 1 — zero fractions
 
@@ -275,6 +278,28 @@ Reading:
 - The electron collected deposit falls 38%. Raw electron labels were partly
   lucky near-hits of sparse points, which the area-normalised kernel spreads
   out. That is consistent with sampling noise inflating raw electron readings.
+
+**Mean arrival time instead of the leading edge** (jobs 49029713 / 49029715,
+same primaries, showers and seed). `t_mode="mean"`:
+T = Σ e·w·t / Σ e·w where the detector's total deposit clears
+`HIT_DEPOSIT_MIN`, else 0. Floors vs generated-label variance:
+
+| kernel | T = leading edge: E / T / total | T = mean: E / T / total |
+|---|---|---|
+| fixed sigma = 10 | 0.650 / 0.509 / 0.579 | 0.650 / **0.502** / 0.576 |
+| interpolated, k = 8 | 0.529 / 0.566 / 0.548 | 0.529 / **0.536** / **0.532** |
+
+- The mean barely helps T: −0.007 with the fixed kernel and −0.030 with
+  interpolation, where it undoes part of the leading edge's damage but still
+  leaves T worse than the fixed kernel's.
+- So how the arrival time is summarised is not what limits T. The likely cause
+  (an inference, not measured separately) is that T's within-primary variance
+  is dominated by whether a detector registers at all. Log-T is 0 when dark and
+  ~2.5 when lit, so hit/dark flips between showers outweigh any change in the
+  time value.
+- The best combination is interpolated kernel + mean T: total floor 0.532 vs
+  0.579 for the production kernel (−8%). All of that gain is E's (explainable
+  35% → 47%); T ends slightly below where it started (49% → 46%).
 
 **Verdict.** Interpolation is a real but modest gain for E and none for T.
 Most of sigma=10's scatter is not generator sampling. It is the shower's own
