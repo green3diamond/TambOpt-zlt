@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -p test
+#SBATCH -p serial_requeue
 #SBATCH --mem=90g
 #SBATCH --time=3:00:00
 #SBATCH -c 8
@@ -13,14 +13,18 @@
 # CPU, not GPU. Measurements (1)-(3) are pure tensor reductions and kernel
 # evaluations with no training; (4) is one forward pass over the val split and
 # the script's DEVICE falls back to CPU on its own. Nothing here benefits from
-# a GPU and gpu_test's 64 GB/GPU cap is tighter than what loading run 13's
-# labels needs.
+# a GPU.
+#
+# serial_requeue, not test: requeue partitions can be preempted, so this job
+# must be restartable from scratch. It is -- the script is read-only and
+# recomputes everything from the on-disk corpora each run, writing only stdout
+# and its JSON summary, so a preemption costs wall time and nothing else.
 #
 # Memory: run 13's E.pt and T.pt are 450 MB each but run 13 is the FULL corpus
 # (28.6M val rows in its training log vs run 14's 3.75M), so measure_labels
 # holds several multi-GB float tensors at once. 90 GB is deliberate headroom
 # over the 35.9 GB that the comparable recon-kernel plot job actually used --
-# an OOM here costs a resubmit, and `test` is not contended.
+# an OOM here costs a resubmit.
 #
 # Time: the threshold sweep is the only slow part -- 9 thresholds x 600 showers
 # x however many strategies _STRATEGIES defines, each a (B, P, n_det) kernel
