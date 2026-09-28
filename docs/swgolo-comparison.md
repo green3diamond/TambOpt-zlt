@@ -18,12 +18,20 @@ this session; job IDs are given so the logs can be re-read in `slurm_logs/`.
     uniformly (measured below), so no region is geometrically preferred;
   - `U_PR` is computed but left out of the composite, so there is no
     acceptance term at all.
-- Acceptance is **not** saturated in TambOpt (median event lights ~6 detectors
-  in the kernel, 42% have r < 0.5), so an acceptance term has a gradient to
-  work with.
-- Adding `λ·mean(r)` at gradient parity (λ = 200) turned the grid-start optimum
-  from a near-uniform spread into a **dense spine along the mesh's long axis
-  with sparse flanks**. This is a surrogate result; the kernel check is pending.
+- Whether acceptance has room to move depends on sigma. At sigma = 10 (run 14)
+  it is **not** saturated (median event lights ~6 detectors in the kernel, 42%
+  have r < 0.5). At sigma = 50 (run 12) it **is** mostly saturated: bimodal,
+  80% of events fully lit, ~11% dark.
+- Adding `λ·mean(r)` at gradient parity reshaped the layout in both runs, in
+  opposite directions: a **dense spine along the long axis** at sigma = 10
+  (λ = 200, surrogate result, kernel check not run), and a **hollow centre with
+  detectors pushed to the rim** at sigma = 50 (λ = 640).
+- **Run 12, scored against the kernel on 2,048 held-out events (§8): the
+  reshaping did not change the true utility.** Start 42.36, λ = 0 43.03,
+  λ = 640 42.99. The acceptance term lifted only the worst-lit tail (p10 lit
+  detectors 7.8 → 10.4). At sigma = 50, very different layouts score the same,
+  which is why the unconstrained optimizer settles on a uniform fill: the
+  objective is nearly flat around it.
 - Run 12's kernel-in-the-loop runs never tested the idea fairly: they started
   from a ~30 m "center" blob and moved only 12–34 m.
 
@@ -85,7 +93,7 @@ per-event log E, distance and incidence).
   (median NN ~80 m, NN CV ~0.5), with true U roughly matching the grid
   baseline; from `grid` they gained nothing (ΔU_true +0.8).
 
-## 4. Is acceptance saturated? (`U_PR` as a counterweight)
+## 4. Is acceptance saturated? (`U_PR` as a counterweight) — run 14, σ = 10
 
 Jobs 49014005 (surrogate, 20k primaries) and 49014220 (kernel, held-out
 events). `r` is the production reconstructability gate:
@@ -104,7 +112,7 @@ events). `r` is the production reconstructability gate:
   resolution terms'. `λ·mean(r)` reaches gradient parity at λ ≈ 200 (surrogate)
   / ≈ 240 (kernel, 48 events).
 
-## 5. The acceptance test
+## 5. The acceptance test — run 14, σ = 10
 
 New utility (wrapper only; `modules/optimize/objective.py` is unchanged):
 
@@ -140,14 +148,12 @@ Outputs:
 (layouts, logs, trajectories, standard plots) and
 `14_sigma10_10pct/upr_layouts.npz` (start, Adam-end and best layouts for both).
 
-### Pending
+### Not verified against the kernel
 
-Job 49018463 (`eval_layouts_kernel.sh`) scores the start, λ = 0 and λ = 200
-layouts against the kernel on 2,048 held-out events, and reports detector
-elevation and shower-depth (z_cont) spread to show what the spine lines up with.
-It was still queued when this was written. **Until it reports, the λ = 200
-structure is a surrogate result** (THEORY.md §11.3 documents surrogate gains
-that did not survive the kernel).
+The kernel scoring for these run-14 layouts (job 49018463) was cancelled before
+it ran, when the work moved to run 12 (§8). **The λ = 200 spine is a surrogate
+result.** THEORY.md §11.3 documents surrogate gains that did not survive the
+kernel, and §8 shows run 12's reshaping did not.
 
 ## 6. Caveats found along the way
 
@@ -160,25 +166,125 @@ that did not survive the kernel).
   checkpoints are converted.
 - λ was set by gradient parity on one layout; it is a starting point, not a
   tuned value.
-- One chain per λ, one init scheme (grid). No ensemble spread yet.
+- One chain per λ, one init scheme (grid). No ensemble spread yet, and no
+  error bars on the kernel scores (§8). Differences of a few tenths of a unit on
+  2,048 events should be treated as noise until measured.
 
 ## 7. Suggested next steps
 
-1. Read job 49018463. If the kernel confirms λ = 200 beats λ = 0 on resolution
-   and acceptance, the missing trade-off was the cause.
-2. Sweep λ (e.g. 50 / 200 / 800) and add the `center` init, with ensembles, to
-   see whether the spine is robust.
-3. Rerun kernel-in-the-loop fairly: grid init, SWGOLO-style normalised
+1. Put error bars on the kernel scores (bootstrap over the held-out events) to
+   tell whether λ = 0's +0.67 over the grid start in run 12 is real.
+2. Score run 14's λ = 0 / λ = 200 layouts against the kernel (on a σ = 10
+   checkout). If the spine also leaves the true utility unchanged, the
+   acceptance trade-off is not what TambOpt is missing.
+3. If the objective is genuinely flat around a uniform fill (§8), structure
+   will not emerge from any weighting of these terms. The candidates are a
+   resolution-based score (e.g. the expected direction uncertainty of a
+   plane-front fit, as SWGOLO's C++ uses) and a recon refit or fine-tuned as the
+   layout moves.
+4. Rerun kernel-in-the-loop fairly: grid init, SWGOLO-style normalised
    per-detector steps (~100 m, decaying), fresh held-out events each step.
-4. Longer term, replace the frozen-recon score with a resolution-based one
-   (e.g. the expected direction uncertainty of a plane-front fit), as SWGOLO's
-   C++ does, and fine-tune or refit the recon as the layout moves.
 
-## Files added this session (uncommitted)
+## 8. Run 12 repeat (σ = 50, NLL-head surrogates)
+
+Branch `swgolo-comparison-run12`, based on `run12-nll-sigma50` (commit 5bd292b,
+the last commit before the run-14 config, plus `RUN_LOCATION` set to
+`12_10pct_mean_analytic`). This checkout has `SIGMA_SPATIAL = 50`, the NLL-head
+DeepSets that loads run 12's 4-output checkpoints natively, and
+`RECONSTRUCT_THRESHOLD = 10` (r = 0.5 at 10 lit detectors). The surrogate is
+scored with its mean (`sample=False`), matching the ensemble's
+`SAMPLE_SURROGATE = False`.
+
+**Axis impact (job 49019687):** identical to §2. It depends only on the tau file
+and the mesh, which the two runs share.
+
+**Acceptance saturation (job 49019688):**
+
+| Grid layout | Run 14 (σ = 10) | Run 12 (σ = 50) |
+|---|---|---|
+| Median lit detectors (kernel) | 6.2 | 41.7 |
+| Mean r (kernel) | 0.57 | 0.89 |
+| r < 0.5 (kernel) | 42% | 11% |
+| r > 0.95 (kernel) | 3% | 80% |
+| Mean r (surrogate) | 0.67 | 0.97 |
+| Gradient-parity λ | ≈ 200 | ≈ 640 |
+
+At σ = 50 acceptance is bimodal: an event lights dozens of detectors or almost
+none. The surrogate undercounts the dark fraction (2% vs 11% in the kernel).
+
+**Chains (jobs 49020922 λ = 0, 49020923 λ = 640):** one chain each, grid init
+(identical starts), 5,000 Adam + 500 L-BFGS.
+
+| | Grid start | λ = 0 | λ = 640 |
+|---|---|---|---|
+| Median NN spacing | 55 m | 84 m | 73 m |
+| NN spacing CV | 0.54 | 0.44 | 0.70 |
+| Neighbours within 100 m, inner / outer half | 2.2 / 1.6 | 1.2 / 1.4 | 1.6 / 3.0 |
+| Median radius from mesh centre | 448 m | 498 m | 566 m |
+| Mean displacement from start | — | 83 m | 142 m |
+| Surrogate mean r (Adam, start → end) | — | 0.966 → 0.970 | 0.968 → 0.972 |
+| Surrogate U_res (Adam, end) | — | 62.63 | 62.48 |
+
+The control relaxes into an even, lattice-like fill: the "uniform" behaviour.
+With λ = 640 the centre empties and detectors move to the rim, with a clump in
+the NW corner: the opposite of run 14's spine.
+
+**Kernel scoring (job 49022246), 2,048 held-out events,** plain U_res (the λ
+term is not added; see "How the kernel score is computed" below):
+
+| Layout | U_res | u_θ | u_φ | u_E | Mean r | r < 0.5 | Lit p10 / p50 / p90 |
+|---|---|---|---|---|---|---|---|
+| grid start | 42.36 | 33.01 | 3.57 | 5.78 | 0.892 | 10.5% | 7.8 / 41.9 / 70.1 |
+| λ = 0 | 43.03 | 33.54 | 3.66 | 5.82 | 0.895 | 10.6% | 8.7 / 39.2 / 65.3 |
+| λ = 640 | 42.99 | 33.43 | 3.67 | 5.89 | 0.897 | 10.0% | 10.4 / 37.3 / 62.7 |
+
+Detector elevation spread: 266 / 283 / 293 m; shower-depth (z_cont) spread:
+0.60 / 0.64 / 0.72 layers.
+
+Reading:
+
+- **The rim layout is not better than the uniform one against the truth.**
+  λ = 640 and λ = 0 differ by 0.04 in U_res, well inside noise at this sample
+  size. Both sit about 0.65 (≈1.5%) above the grid start, which is itself
+  unconfirmed without error bars.
+- The acceptance term did its narrow job: it lifted the worst-lit events
+  (p10 lit detectors 7.8 → 10.4, r < 0.5 from 10.5% to 10.0%), at a small cost
+  in median lit count (41.9 → 37.3) and no cost in resolution.
+- At σ = 50, very different layouts score the same. The objective is nearly flat
+  around a uniform fill, which is why the unconstrained optimizer lands there:
+  nothing in U_res prefers a structure. Adding acceptance does not change that,
+  because acceptance is already ~89% saturated.
+
+Outputs:
+`12_10pct_mean_analytic/test_v6_run_04_optimize_lbfgs_ensemble_upr{0,640}_grid/`,
+`12_10pct_mean_analytic/upr_layouts.npz`,
+`12_10pct_mean_analytic/diagnostics/upr_layouts.png` (side-by-side layouts) and
+`12_10pct_mean_analytic/diagnostics/axis_impact_density/`.
+
+### How the kernel score is computed
+
+`scripts/diagnostics/eval_layouts_kernel.py` uses the optimizer's formula with
+kernel readings in place of the surrogate's:
+
+1. The first 2,048 held-out events (never seen by Stages 1–4): real AllShowers
+   clouds per species, placed at the tau's decay vertex along its direction,
+   with the true (E, θ, φ).
+2. Per detector, `weight = exp(−d²/2σ²) · max(0, 1 − |layer − z_cont|)` with
+   σ = `SIGMA_SPATIAL`; E = Σ energy · weight, T = earliest detected time. Species
+   combined (counts add), log1p-encoded.
+3. The run's frozen `recon.pt` gives (Ê, θ̂, φ̂).
+4. `r = sigmoid(0.2·(lit − 10))`, `lit = Σ sigmoid(5·(counts − 1))`;
+   U_θ, U_φ, U_E are r-weighted capped `1/(err² + ε)` (caps 500 / 50 / 80);
+   `U_res = (100·U_θ + 100·U_φ + 250·U_E)/1000`. No gradients.
+
+## Files added this session
 
 | File | Purpose |
 |---|---|
 | `scripts/diagnostics/axis_impact_density.py` + `slurm/axis_impact_density.sh` | §2 axis-impact heatmap |
 | `scripts/diagnostics/upr_saturation.py` + `slurm/upr_saturation.sh` | §4 r distribution and per-term gradient norms (surrogate and kernel) |
 | `scripts/diagnostics/ensemble_with_upr.py` + `slurm/ensemble_with_upr.sh` | §5 runs the production ensemble with `λ·mean(r)` added; `sbatch slurm/ensemble_with_upr.sh <λ> <suffix>` |
-| `scripts/diagnostics/eval_layouts_kernel.py` + `slurm/eval_layouts_kernel.sh` | §5 kernel scoring of saved layouts |
+| `scripts/diagnostics/eval_layouts_kernel.py` + `slurm/eval_layouts_kernel.sh` | §8 kernel scoring of saved layouts |
+
+All committed on branch `swgolo-comparison-run12`. They run against whatever
+`modules/constants.py` points at; on this branch that is run 12 at σ = 50.
