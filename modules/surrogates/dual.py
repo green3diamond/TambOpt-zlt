@@ -79,6 +79,48 @@ def combine_species_outputs(*preds: torch.Tensor) -> torch.Tensor:
     return torch.stack([E_out, T_out], dim=-1)
 
 
+def combine_hurdle_outputs(*parts) -> torch.Tensor:
+    """Combine per-species hurdle outputs `(p, mu)` into the expected event label.
+
+    Each `p`, `mu` is (B, n_det, 2): P(lit) and the lit value, in the same log
+    units as `combine_species_outputs` reads.
+
+    E: every species' expected reading `p * mu` is decoded and summed, as
+    `combine_species_outputs` does with a mean-only head's output.
+
+    T: the event label is the leading edge over the species that are lit, and 0
+    if none is. Its expectation enumerates which subset S is lit:
+
+        E[T] = sum_{S != {}}  prod_{s in S} p_s  prod_{s not in S} (1 - p_s)  min_{s in S} mu_s
+
+    Feeding the per-species expected values `p * mu` to the plain min instead
+    would be wrong: a species that is almost surely dark has p * mu ~ 0, which
+    would win the min and pull the event's arrival to ~0. `log1p(t*scale)` is
+    monotone, so the min runs on the encoded values. 2^n - 1 subsets, n = the
+    number of species (7 for three).
+    """
+    import itertools
+    if not parts:
+        raise ValueError("combine_hurdle_outputs needs at least one species")
+    n_tot = None
+    for p, mu in parts:
+        n_s = torch.expm1(p[..., 0] * mu[..., 0]).clamp(min=0.0)
+        n_tot = n_s if n_tot is None else n_tot + n_s
+    q = [p[..., 1] for p, _ in parts]
+    m = [mu[..., 1].clamp(min=0.0) for _, mu in parts]
+    t_exp = torch.zeros_like(q[0])
+    for r in range(1, len(parts) + 1):
+        for S in itertools.combinations(range(len(parts)), r):
+            w = torch.ones_like(q[0])
+            for s in range(len(parts)):
+                w = w * (q[s] if s in S else 1.0 - q[s])
+            t_min = m[S[0]]
+            for s in S[1:]:
+                t_min = torch.minimum(t_min, m[s])
+            t_exp = t_exp + w * t_min
+    return torch.stack([torch.log1p(n_tot), t_exp], dim=-1)
+
+
 class MultiSpeciesSurrogate(nn.Module):
     """N frozen per-species surrogates behind the single-surrogate contract.
 
@@ -126,6 +168,8 @@ class MultiSpeciesSurrogate(nn.Module):
             (B, n_det, 2) combined event response — col 0 = log1p(N_tot),
             col 1 = log1p(t_tot * T_LOG_SCALE).
         """
+        if all(getattr(m, "hurdle", False) for m in self.models):
+            return combine_hurdle_outputs(*(m.forward_parts(primary, xy) for m in self.models))
         return combine_species_outputs(*(m(primary, xy) for m in self.models))
 
     # `forward_with_var` and `forward_sample` lived here until the surrogate went

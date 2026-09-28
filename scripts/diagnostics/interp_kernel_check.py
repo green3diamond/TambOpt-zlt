@@ -115,7 +115,7 @@ def main():
                     acc[m]["E"].append(torch.nan_to_num(E).cpu())
                     acc[m]["T"].append(torch.nan_to_num(T).cpu())
                 if lo == 0 and li == 0:
-                    E_ref, T_ref = compute_labels_batch(cl, e_det, n_det, surface)
+                    E_ref, T_ref = compute_labels_batch(cl, e_det, n_det, surface, interp_k=None)
                     E_raw, T_raw = acc["raw"]["E"][-1], acc["raw"]["T"][-1]
                     assert torch.equal(E_ref.cpu(), E_raw) and torch.equal(T_ref.cpu(), T_raw), \
                         "mapping drifted from compute_labels_batch"

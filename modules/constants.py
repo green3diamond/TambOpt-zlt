@@ -61,6 +61,24 @@ SIGMA_SPATIAL  = 10.0
 # detected point and therefore T == 0. Do not treat T == 0 as "E == 0".
 HIT_DEPOSIT_MIN = 1e-3
 
+# Interpolated kernel (showers/kernel.py `adaptive_bandwidths`): each point's
+# Gaussian widens to its k-th nearest in-plane neighbour distance, floored at
+# SIGMA_SPATIAL, and is area-normalised. AllShowers points are macro-particles, so
+# at sigma=10 a detector between sparse points otherwise reads ~0 because of how
+# the generator sampled the shower. None = the fixed-sigma kernel. Measured on
+# run 14 (docs/sigma10-stage2-collapse.md, Measurement 5): k=8 lowers the E
+# aleatoric floor 0.650 -> 0.529. Enters the labels at Stage 1, so changing it
+# requires a Stage-1 rebuild, and every kernel caller (Step 1, true-utility
+# scoring, the floor) reads it as compute_labels_batch's default.
+KERNEL_INTERP_K = 8
+
+# Stage 2 head. True = lit/dark hurdle: the decoder also emits P(lit) per
+# channel and regresses the value on lit slots only; forward() returns the
+# expected reading P(lit) * value, so Stages 3-4 are unchanged. False = the
+# mean-only head (runs 12-14). Run 14's production T hit error was 78.5% bias
+# toward "dark" (Measurement 4), which the hurdle removes.
+SURROGATE_HURDLE = True
+
 # Degenerate ("blob") showers: the muon AllShowers checkpoint occasionally emits
 # a shower wrong in both geometry and energy scale — a diffuse cloud spanning
 # ~20 km with median per-point energy orders of magnitude too high, instead of a
@@ -109,7 +127,7 @@ AZIMUTH_MAX  = 360.0 # degrees
 # Every path below derives from this one, so retargeting the whole pipeline at
 # a sibling run folder (e.g. a verbatim copy of Stage 0/1 output used to try a
 # different Stage 2/3/4 config) is a one-line change here.
-RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/14_sigma10_10pct"
+RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/15_sigma10_interp_hurdle_10pct"
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are

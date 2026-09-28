@@ -53,7 +53,7 @@ from modules.surrogates import DeepSetsSurrogate
 from modules.surrogates import compute_normalization
 from modules.constants import (
     N_DETECTORS, PRIMARY_DIM, SPECIES_NAMES, T_LOG_SCALE,
-    TRAINING_DATASET_FOLDER, FNN_FOLDER, TRAIN_FRACTION,
+    TRAINING_DATASET_FOLDER, FNN_FOLDER, TRAIN_FRACTION, SURROGATE_HURDLE,
 )
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -172,6 +172,36 @@ def mse_mean_only(mean_raw, E_tgt, T_tgt, out_mean, out_std):
     return 0.5 * (mse_E + mse_T), mse_E, mse_T
 
 
+def hurdle_loss(out_z, E_tgt, T_tgt, hit_mean, hit_std):
+    """Lit/dark hurdle objective (constants.SURROGATE_HURDLE).
+
+    `out_z` is the decoder's (B, n_det, 4) = (logit_E, logit_T, mu_E, mu_T).
+    Per channel: BCE on lit vs dark over every slot, plus MSE on LIT slots only
+    with the target z-scored by lit-only stats. A slot is lit when its label is
+    > 0 (dark labels are exactly 0 in both channels' log space). Training the
+    value on lit slots removes the pull toward 0 that a joint MSE puts on slots
+    lit only some of the time (docs/sigma10-stage2-collapse.md, Measurement 4).
+    Returns (total, E part, T part), each part = 0.5 * (BCE + lit MSE).
+    """
+    y = torch.stack([E_tgt, T_tgt], dim=-1)
+    lit = y > 0
+    bce = F.binary_cross_entropy_with_logits(out_z[..., :2], lit.float(),
+                                             reduction="none").mean(dim=(0, 1))
+    tz = (y - hit_mean) / hit_std
+    se = (out_z[..., 2:] - tz) ** 2 * lit
+    mse = se.sum(dim=(0, 1)) / lit.sum(dim=(0, 1)).clamp(min=1)
+    part = 0.5 * (bce + mse)
+    return part.sum() * 0.5, part[0], part[1]
+
+
+def stage2_loss(model, p_b, xy_b, E_b, T_b):
+    """The trainer's objective for either head: z-scored MSE (mean-only) or the
+    hurdle loss. Returns (total, E part, T part)."""
+    if getattr(model, "hurdle", False):
+        return hurdle_loss(model._forward_z(p_b, xy_b), E_b, T_b, model.hit_mean, model.hit_std)
+    return mse_mean_only(model(p_b, xy_b), E_b, T_b, model.out_mean, model.out_std)
+
+
 def _plot_curves(log, path, adam_epochs=0, lbfgs_iter_log=None):
     try:
         import matplotlib
@@ -229,7 +259,7 @@ def _ckpt_config(tag: str):
         model_type="deepsets", species=tag,
         n_det=N_DETECTORS, primary_dim=PRIMARY_DIM,
         hidden=DS_HIDDEN, context=DS_CONTEXT, n_enc=DS_N_ENC, n_dec=DS_N_DEC,
-        dropout=DS_DROPOUT,
+        dropout=DS_DROPOUT, hurdle=SURROGATE_HURDLE,
     )
 
 
@@ -316,6 +346,17 @@ def train_species(tag:        str,
         train_idx = train_idx[_perm[:_n_keep]]
         print(f"[subsample] kept {_n_keep} of {_n_orig} train pairs (TRAIN_FRACTION={TRAIN_FRACTION})")
 
+    if SURROGATE_HURDLE:
+        # Lit-only (E, T) stats in the trained log space, from training rows.
+        E_tr, T_tr = E_all[train_idx], T_all[train_idx]
+        e_lit, t_lit = E_tr[E_tr > 0], T_tr[T_tr > 0]
+        norm_stats["hit_mean"] = torch.tensor([float(e_lit.mean()), float(t_lit.mean())])
+        norm_stats["hit_std"] = torch.tensor([max(float(e_lit.std()), 1e-6),
+                                              max(float(t_lit.std()), 1e-6)])
+        print(f"[hurdle] lit fraction E={float((E_tr > 0).float().mean()):.3f} "
+              f"T={float((T_tr > 0).float().mean()):.3f}  lit mean={norm_stats['hit_mean'].tolist()} "
+              f"std={norm_stats['hit_std'].tolist()}")
+        del E_tr, T_tr, e_lit, t_lit
     full_ds  = TensorDataset(primary, xy, E_all, T_all)
     train_ds = Subset(full_ds, train_idx.tolist())
     val_ds   = Subset(full_ds, val_idx.tolist())
@@ -331,6 +372,7 @@ def train_species(tag:        str,
         n_det=N_DETECTORS, primary_dim=PRIMARY_DIM,
         hidden=DS_HIDDEN, context=DS_CONTEXT,
         n_enc=DS_N_ENC, n_dec=DS_N_DEC, dropout=DS_DROPOUT,
+        hurdle=SURROGATE_HURDLE,
     ).to(DEVICE)
     model.set_normalization(norm_stats)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -396,10 +438,7 @@ def train_species(tag:        str,
             # Permutation augmentation: independent perm per sample in the batch
             xy_b, E_b, T_b = permute_detectors_batch(xy_b, E_b, T_b)
 
-            mean_pred = model(p_b, xy_b)                             # (B,100,2)
-            loss, mE, mT = mse_mean_only(
-                mean_pred, E_b, T_b, model.out_mean, model.out_std,
-            )
+            loss, mE, mT = stage2_loss(model, p_b, xy_b, E_b, T_b)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -418,6 +457,7 @@ def train_species(tag:        str,
 
         model.eval()
         va_tot, va_E, va_T, n_va = 0.0, 0.0, 0.0, 0
+        va_mse = 0.0
         with torch.no_grad():
             for p_b, xy_b, E_b, T_b in val_loader:
                 p_b  = p_b.to(DEVICE, non_blocking=True)
@@ -425,10 +465,10 @@ def train_species(tag:        str,
                 E_b  = E_b.to(DEVICE, non_blocking=True)
                 T_b  = T_b.to(DEVICE, non_blocking=True)
                 B = p_b.shape[0]
-                mean_pred = model(p_b, xy_b)
-                loss, mE, mT = mse_mean_only(
-                    mean_pred, E_b, T_b, model.out_mean, model.out_std,
-                )
+                loss, mE, mT = stage2_loss(model, p_b, xy_b, E_b, T_b)
+                if model.hurdle:   # expected-reading MSE, comparable to mean-only runs
+                    va_mse += mse_mean_only(model(p_b, xy_b), E_b, T_b,
+                                            model.out_mean, model.out_std)[0].item() * B
                 va_tot += loss.item() * B
                 va_E   += mE.item()   * B
                 va_T   += mT.item()   * B
@@ -436,17 +476,20 @@ def train_species(tag:        str,
         va_tot /= max(n_va, 1)
         va_E   /= max(n_va, 1)
         va_T   /= max(n_va, 1)
+        va_mse /= max(n_va, 1)
 
         dt = time.time() - t_epoch
         lr_now = optimizer.param_groups[0]["lr"]
         print(f"[{tag} epoch {epoch+1:3d}/{n_epochs}] "
               f"train={tr_tot:.4f} (E={tr_E:.4f} T={tr_T:.4f})  "
               f"val={va_tot:.4f} (E={va_E:.4f} T={va_T:.4f})  "
-              f"lr={lr_now:.1e}  {dt:.1f}s")
+              + (f"expected-MSE={va_mse:.4f}  " if model.hurdle else "")
+              + f"lr={lr_now:.1e}  {dt:.1f}s")
         log.append(dict(
             epoch=epoch + 1, phase="adam",
             train=tr_tot, train_E=tr_E, train_T=tr_T,
             val=va_tot,   val_E=va_E,   val_T=va_T,
+            val_expected_mse=va_mse if model.hurdle else va_tot,
             lr=lr_now, dt=dt,
         ))
 
@@ -560,10 +603,7 @@ def train_species(tag:        str,
             xy_c = xy_all[start:end]
             E_c  = E_all_train[start:end]
             T_c  = T_all_train[start:end]
-            mean_c = model(p_c, xy_c)
-            chunk_loss, chunk_mE, chunk_mT = mse_mean_only(
-                mean_c, E_c, T_c, model.out_mean, model.out_std,
-            )
+            chunk_loss, chunk_mE, chunk_mT = stage2_loss(model, p_c, xy_c, E_c, T_c)
             weight = chunk_size / n_total
             (chunk_loss * weight).backward()
             sum_loss += chunk_loss.detach() * chunk_size
@@ -581,10 +621,7 @@ def train_species(tag:        str,
                 E_b  = E_b.to(DEVICE, non_blocking=True)
                 T_b  = T_b.to(DEVICE, non_blocking=True)
                 B = p_b.shape[0]
-                v_mean = model(p_b, xy_b)
-                v_loss, v_mE, v_mT = mse_mean_only(
-                    v_mean, E_b, T_b, model.out_mean, model.out_std,
-                )
+                v_loss, v_mE, v_mT = stage2_loss(model, p_b, xy_b, E_b, T_b)
                 va_tot += v_loss.item() * B
                 va_E   += v_mE.item()   * B
                 va_T   += v_mT.item()   * B
@@ -755,7 +792,7 @@ def main():
     print(f"lr              : {LR} -> {LR_MAX} -> {LR_MIN} OneCycleLR (pct_start={ONECYCLE_PCT_START})")
     print(f"deepsets        : hidden={DS_HIDDEN} context={DS_CONTEXT} "
           f"enc={DS_N_ENC} dec={DS_N_DEC} dropout={DS_DROPOUT}")
-    print(f"objective       : z-scored MSE (mean-only)   "
+    print(f"objective       : {'lit/dark hurdle (BCE + lit-only MSE)' if SURROGATE_HURDLE else 'z-scored MSE (mean-only)'}   "
           f"adam-patience: {ADAM_PATIENCE}")
     if args.out_suffix:
         print(f"out-suffix      : {args.out_suffix!r} (checkpoints will NOT overwrite production)")

@@ -60,7 +60,7 @@ from modules.data import compute_labels_batch, place_clouds_enu
 from modules.layouts.strategies import _STRATEGIES, _STRATEGY_FNS
 from modules.showers import load_tau_primaries
 from modules.constants import (
-    N_DETECTORS, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
+    N_DETECTORS, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY, KERNEL_INTERP_K,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, SIGMA_SPATIAL,
     TRAINING_DATASET_FOLDER,
     USE_TAU_PRIMARIES, TAU_WHOLESKY_PATH, LOG_E_MIN, LOG_E_MAX,
@@ -208,9 +208,10 @@ def main():
     ap.add_argument("--m-real",    type=int, default=64,  help="realizations per primary")
     ap.add_argument("--seed",      type=int, default=0)
     ap.add_argument("--gen-batch", type=int, default=32, help="AllShowers gen batch")
-    ap.add_argument("--interp-k", type=int, default=None,
-                    help="label with the interpolated kernel (compute_labels_batch "
-                         "interp_k); default None = the fixed-sigma training kernel")
+    ap.add_argument("--interp-k", type=int, default=KERNEL_INTERP_K,
+                    help="interpolated-kernel k (compute_labels_batch interp_k); "
+                         "default = constants.KERNEL_INTERP_K, the run's training "
+                         "kernel; 0 = fixed sigma")
     ap.add_argument("--t-mode", choices=("leading", "mean"), default="leading",
                     help="T label: leading edge (training default) or deposit-weighted mean")
     ap.add_argument("--out", type=str,
@@ -298,7 +299,7 @@ def main():
                 x_det = x_det.float().to(DEVICE); y_det = y_det.float().to(DEVICE)
                 cl = sp_clouds[p].to(DEVICE)                   # (M, P, 5)
                 E, T = compute_labels_batch(cl, x_det, y_det, surface, sigma_spatial=sigma_spatial,
-                                            interp_k=args.interp_k, t_mode=args.t_mode)
+                                            interp_k=args.interp_k or None, t_mode=args.t_mode)
                 E = torch.log1p(E)                             # → training E space
                 T = torch.log1p(T * T_LOG_SCALE)               # → training T space
                 vE = E.var(dim=0, unbiased=True).cpu()

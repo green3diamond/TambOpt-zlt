@@ -62,8 +62,10 @@ class DeepSetsSurrogate(nn.Module):
                  context:     int = 64,
                  n_enc:       int = 3,
                  n_dec:       int = 3,
-                 dropout:     float = 0.0):
+                 dropout:     float = 0.0,
+                 hurdle:      bool = False):
         super().__init__()
+        self.hurdle      = bool(hurdle)
         self.n_det       = n_det
         self.primary_dim = primary_dim
         self.hidden      = hidden
@@ -72,8 +74,10 @@ class DeepSetsSurrogate(nn.Module):
         token_dim = primary_dim + 2                      # [q, x_i, y_i]
         self.encoder = _mlp(token_dim, hidden, hidden, n_enc, dropout)
         self.context_proj = nn.Linear(hidden, context)
-        # 2 outputs per detector: mu_E, mu_T (both z-scored).
-        self.decoder = _mlp(hidden + context, hidden, 2, n_dec, dropout)
+        # 2 outputs per detector: mu_E, mu_T (both z-scored). The hurdle head
+        # adds a lit/dark logit per channel in front: (logit_E, logit_T, mu_E,
+        # mu_T), with mu fitted on lit slots only and z-scored by lit-only stats.
+        self.decoder = _mlp(hidden + context, hidden, 4 if self.hurdle else 2, n_dec, dropout)
 
         # SAME buffer layout as FNNSurrogate so set_normalization is identical
         # and the trainer's log-T stat mutation (out_mean[n_det:]) flows through.
@@ -83,6 +87,11 @@ class DeepSetsSurrogate(nn.Module):
         self.register_buffer("in_std",   torch.ones(in_dim))
         self.register_buffer("out_mean", torch.zeros(out_dim))
         self.register_buffer("out_std",  torch.ones(out_dim))
+        if self.hurdle:
+            # Lit-only (E, T) mean/std in the raw log space, for the value head.
+            # Registered only here, so mean-only state dicts are unchanged.
+            self.register_buffer("hit_mean", torch.zeros(2))
+            self.register_buffer("hit_std",  torch.ones(2))
 
     def set_normalization(self, stats: dict):
         """Identical contract to FNNSurrogate.set_normalization."""
@@ -90,12 +99,17 @@ class DeepSetsSurrogate(nn.Module):
         self.in_std.copy_(stats["in_std"])
         self.out_mean.copy_(stats["out_mean"])
         self.out_std.copy_(stats["out_std"])
+        if self.hurdle:
+            self.hit_mean.copy_(stats["hit_mean"])
+            self.hit_std.copy_(stats["hit_std"])
 
     def _forward_z(self, primary: torch.Tensor, xy: torch.Tensor):
         """Shared encoder/decoder pass, entirely in z-scored space.
 
         Returns:
-            mu_z : (B, nd, 2) z-scored per-channel mean (mu_E, mu_T).
+            (B, nd, 2) z-scored per-channel mean (mu_E, mu_T); for the hurdle
+            head (B, nd, 4) = (logit_E, logit_T, mu_E, mu_T), mu z-scored by
+            the lit-only stats.
         """
         B = primary.shape[0]
         nd = self.n_det
@@ -128,15 +142,31 @@ class DeepSetsSurrogate(nn.Module):
         T_out = mu_z[..., 1] * T_std + T_mean
         return torch.stack([E_out, T_out], dim=-1)                    # (B, nd, 2)
 
+    def forward_parts(self, primary: torch.Tensor, xy: torch.Tensor):
+        """Hurdle head only: (P(lit), lit value), each (B, n_det, 2) in the
+        same raw log units as forward()."""
+        if not self.hurdle:
+            raise AttributeError("forward_parts needs a hurdle surrogate")
+        out = self._forward_z(primary, xy)
+        p = torch.sigmoid(out[..., :2])
+        mu = out[..., 2:] * self.hit_std + self.hit_mean
+        return p, mu
+
     def forward(self, primary: torch.Tensor, xy: torch.Tensor) -> torch.Tensor:
         """
         Args:
             primary : (B, primary_dim)
             xy      : (B, n_det, 2)
         Returns:
-            (B, n_det, 2) — col0 = E, col1 = T, unnormalized units (mean only;
-            drop-in contract for Steps 3-4 and surrogates/dual.py).
+            (B, n_det, 2) — col0 = E, col1 = T, unnormalized units (drop-in
+            contract for Steps 3-4 and surrogates/dual.py). For the hurdle head
+            this is the expected reading P(lit) * value: a dark slot's label is
+            exactly 0 in both channels' log space, so it is the MSE-optimal
+            prediction of the same label the mean-only head regresses.
         """
+        if self.hurdle:
+            p, mu = self.forward_parts(primary, xy)
+            return p * mu
         return self._unnorm_mean(self._forward_z(primary, xy))
 
 
@@ -164,6 +194,7 @@ def build_surrogate_from_ckpt(ckpt: dict, n_det: int, primary_dim: int, device=N
             n_enc=int(cfg.get("n_enc", 3)),
             n_dec=int(cfg.get("n_dec", 3)),
             dropout=float(cfg.get("dropout", 0.0)),
+            hurdle=bool(cfg.get("hurdle", False)),
         )
         # `var_param` / `var_min` may still be present in a pre-mean-only
         # checkpoint's config. They are ignored rather than rejected here; the

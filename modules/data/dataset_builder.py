@@ -17,7 +17,8 @@ import torch
 from ..showers import GetCounts_planeaware, adaptive_bandwidths
 
 from ..constants import (BLOB_MEDIAN_E, EAST_ENTRY, LAYER_EAST_DX, N_DETECTORS,
-                         PRIMARY_DIM, SPECIES_NAMES, SIGMA_SPATIAL)
+                         PRIMARY_DIM, SPECIES_NAMES, SIGMA_SPATIAL,
+                         KERNEL_INTERP_K)
 from ..layouts.strategies import (_STRATEGIES, _STRATEGY_FNS)
 from ..surrogates import encode_primary, compute_normalization  # noqa: F401  (re-export)
 from ..surrogates.fnn import _load_species_sidecar
@@ -170,8 +171,9 @@ def compute_labels_batch(clouds:   torch.Tensor,
                          layer_east_dx: float = LAYER_EAST_DX,
                          sigma_spatial: float = SIGMA_SPATIAL,
                          differentiable: bool = False,
-                         interp_k: int = None,
-                         t_mode: str = "leading") -> Tuple[torch.Tensor, torch.Tensor]:
+                         interp_k: Optional[int] = KERNEL_INTERP_K,
+                         t_mode: str = "leading",
+                         bandwidth: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run the plane-aware kernel on a batch of showers sharing one layout.
 
     Detectors are (East, North), matching the ENU h5 convention; the kernel is
@@ -195,10 +197,14 @@ def compute_labels_batch(clouds:   torch.Tensor,
         interp_k : opt-in interpolated kernel. Each point's Gaussian widens to
             the distance of its k-th nearest in-plane neighbour (floored at
             sigma_spatial), so a detector between sparse macro-particles reads
-            their local density instead of ~0 (`adaptive_bandwidths`). None
-            (default) is the fixed-sigma kernel, byte-for-byte as before.
+            their local density instead of ~0 (`adaptive_bandwidths`). The
+            default is `constants.KERNEL_INTERP_K`, so every kernel caller in a
+            run labels the same way; None is the fixed-sigma kernel.
         t_mode : "leading" (default, the training label) or "mean", the
             deposit-weighted mean arrival time (`GetCounts_planeaware`).
+        bandwidth : precomputed (B, max_points) widths for these clouds. Overrides
+            interp_k; lets a caller that labels the same clouds under many
+            layouts (Step 1) search neighbours once instead of per layout.
     Returns:
         E, T : (B, n_det) local intensities and leading-edge arrival times
                (seconds; 0 where no point cleared the detection threshold).
@@ -210,8 +216,8 @@ def compute_labels_batch(clouds:   torch.Tensor,
         z_cont = (east_entry - e_det) / layer_east_dx        # depth from defined East
 
         dummy_flux = torch.tensor([0.0], device=clouds.device)
-        bandwidth = (adaptive_bandwidths(clouds, interp_k, sigma_spatial)
-                     if interp_k else None)
+        if bandwidth is None and interp_k:
+            bandwidth = adaptive_bandwidths(clouds, interp_k, sigma_spatial)
         E, T = GetCounts_planeaware(
             clouds, n_det, up, z_cont,                       # transverse plane (North, Up) — kernel unchanged
             SmearN_fn=None,
@@ -411,6 +417,14 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
     # _load_clouds before this call, which makes flag_blob_showers alone see an
     # indistinguishable "legitimate empty shower" — see _load_clouds's docstring.
     blob = flag_blob_showers(clouds_chunk) | was_corrupted
+    # The interpolated kernel's widths depend only on the clouds, so they are
+    # searched once per chunk here rather than once per (strategy, sub-batch).
+    bw_chunk = None
+    if KERNEL_INTERP_K:
+        bw_chunk = torch.cat([
+            adaptive_bandwidths(clouds_chunk[lo:lo + batch_size].to(device),
+                                KERNEL_INTERP_K, SIGMA_SPATIAL).cpu()
+            for lo in range(0, csz, batch_size)])
     for s_idx, (s_name, fn_name, kwargs) in enumerate(_STRATEGIES):
         fn = _STRATEGY_FNS[fn_name]
         for sb_lo in range(0, csz, batch_size):
@@ -430,7 +444,8 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
             n_det_xy  = n_det_xy.float().to(device)
 
             clouds = clouds_chunk[sb_lo:sb_hi].to(device)
-            E, T = compute_labels_batch(clouds, e_det, n_det_xy, surface)
+            bw = None if bw_chunk is None else bw_chunk[sb_lo:sb_hi].to(device)
+            E, T = compute_labels_batch(clouds, e_det, n_det_xy, surface, bandwidth=bw)
             E = torch.nan_to_num(E, nan=0.0, posinf=0.0, neginf=0.0)
             T = torch.nan_to_num(T, nan=0.0, posinf=0.0, neginf=0.0)
 

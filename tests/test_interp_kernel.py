@@ -108,6 +108,39 @@ def test_padding_and_planes_are_respected():
     assert float(h[0, 4]) == SIGMA                                        # padding untouched
 
 
+def _bandwidths_reference(samples, k, sigma_min):
+    """The original per-shower, per-plane loop, kept as the parity reference."""
+    B, P, _ = samples.shape
+    h = torch.full((B, P), float(sigma_min))
+    layer, real = samples[..., 2].round().long(), samples[..., 3] > 0
+    for b in range(B):
+        for L in torch.unique(layer[b][real[b]]):
+            idx = torch.nonzero(real[b] & (layer[b] == L)).squeeze(-1)
+            if idx.numel() < 2:
+                continue
+            kk = min(int(k), idx.numel() - 1)
+            pts = samples[b, idx, :2].double()
+            r = torch.cdist(pts, pts).topk(kk + 1, dim=1, largest=False).values[:, kk]
+            h[b, idx] = r.float().clamp(min=float(sigma_min))
+    return h
+
+
+def test_vectorised_bandwidths_match_reference():
+    torch.manual_seed(1)
+    B, P = 5, 300
+    c = torch.zeros((B, P, 5))
+    c[..., :2] = torch.rand(B, P, 2) * 800 + 3000          # far from origin, like ENU
+    c[..., 2] = torch.randint(0, 6, (B, P)).float()        # several planes
+    c[..., 3] = torch.rand(B, P) + 0.1
+    for b, n_real in enumerate([300, 250, 7, 1, 0]):       # padding, tiny, lone, empty
+        c[b, n_real:, 3] = 0.0
+    c[1, 40, 3] = 0.0                                      # an interior zeroed point
+    ref = _bandwidths_reference(c, k=4, sigma_min=SIGMA)
+    for max_pairs in (1 << 27, 5000):                      # one block, then heavy chunking
+        got = adaptive_bandwidths(c, k=4, sigma_min=SIGMA, max_pairs=max_pairs)
+        assert torch.allclose(got, ref, rtol=1e-4, atol=1e-3), (got - ref).abs().max()
+
+
 def test_mean_time_is_deposit_weighted():
     # Two points, energies 1 and 3, times 10 and 30 ns, both at the detector.
     c = _cloud([[0.0, 0.0], [0.0, 0.0]])

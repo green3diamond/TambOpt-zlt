@@ -39,7 +39,8 @@ from ..constants import HIT_DEPOSIT_MIN
 
 
 @torch.no_grad()
-def adaptive_bandwidths(samples: torch.Tensor, k: int, sigma_min: float) -> torch.Tensor:
+def adaptive_bandwidths(samples: torch.Tensor, k: int, sigma_min: float,
+                        max_pairs: int = 1 << 27) -> torch.Tensor:
     """Per-point Gaussian width for the interpolated kernel: the distance to the
     k-th nearest other real point IN THE SAME PLANE, floored at `sigma_min`.
 
@@ -56,28 +57,54 @@ def adaptive_bandwidths(samples: torch.Tensor, k: int, sigma_min: float) -> torc
     `sigma_min`. Depends only on the cloud, so gradients w.r.t. detector
     positions are unaffected.
 
+    Searched plane by plane, vectorised over showers: each plane's points are
+    gathered to the front of a (showers, n_plane) block, so the cost is the sum of
+    per-plane squares rather than (points)^2 across all 24 planes. Distances are
+    float64 on per-shower-centred coordinates, so the fast matmul form stays exact
+    at metre scale. `max_pairs` bounds the (showers, n, n) block held at once.
+
     Returns (B, P) widths in metres.
     """
     B, P, _ = samples.shape
-    h = torch.full((B, P), float(sigma_min), dtype=samples.dtype, device=samples.device)
-    xy = samples[..., :2]
-    layer = samples[..., 2].round().long()
+    sigma_min = float(sigma_min)
+    h = torch.full((B, P), sigma_min, dtype=samples.dtype, device=samples.device)
     real = samples[..., 3] > 0
-    for b in range(B):
-        rb = real[b]
-        if int(rb.sum()) < 2:
-            continue
-        lb = layer[b]
-        for L in torch.unique(lb[rb]):
-            idx = torch.nonzero(rb & (lb == L)).squeeze(-1)
-            n = idx.numel()
-            if n < 2:
-                continue
-            pts = xy[b, idx]
-            kk = min(int(k), n - 1)
-            # k+1 smallest distances include the point itself (distance 0).
-            r = torch.cdist(pts, pts).topk(kk + 1, dim=1, largest=False).values[:, kk]
-            h[b, idx] = r.clamp(min=float(sigma_min))
+    if B == 0 or not bool(real.any()):
+        return h
+    layer = samples[..., 2].round().long()
+    xy = samples[..., :2].double()
+    w = real.unsqueeze(-1).double()
+    xy = xy - (xy * w).sum(1, keepdim=True) / w.sum(1, keepdim=True).clamp(min=1.0)
+    inf = torch.tensor(float("inf"), dtype=torch.float64, device=xy.device)
+
+    for L in torch.unique(layer[real]).tolist():
+        m = real & (layer == L)                                       # (B, P)
+        cnt = m.sum(1)
+        n = int(cnt.max())
+        if n < 2:
+            continue                                                  # lone points keep sigma_min
+        sb = torch.nonzero(cnt > 1).squeeze(-1)                       # showers with >= 2 here
+        # This plane's points first (stable, so original order), padded to n.
+        order = torch.argsort((~m[sb]).to(torch.int8), dim=1, stable=True)[:, :n]
+        valid = torch.arange(n, device=xy.device) < cnt[sb].unsqueeze(1)
+        pts = torch.gather(xy[sb], 1, order.unsqueeze(-1).expand(-1, -1, 2))
+        kk = min(int(k) + 1, n)
+        bs = max(1, max_pairs // (n * n))
+        for c0 in range(0, sb.numel(), bs):
+            c1 = min(c0 + bs, sb.numel())
+            v = valid[c0:c1]
+            d = torch.cdist(pts[c0:c1], pts[c0:c1])                   # (bc, n, n) float64
+            d = torch.where(v.unsqueeze(1), d, inf)                   # padding columns
+            vals = d.topk(kk, dim=-1, largest=False).values           # ascending, self first
+            # k-th neighbour if the plane has one, else its farthest; 0 if alone.
+            r = torch.where(torch.isfinite(vals), vals, torch.zeros_like(vals)).amax(-1)
+            r = r.clamp(min=sigma_min).to(h.dtype)
+            rows = sb[c0:c1]
+            hsub = h[rows]
+            idx = order[c0:c1]
+            # Write only this plane's points; padding slots index other points.
+            hsub.scatter_(1, idx, torch.where(v, r, hsub.gather(1, idx)))
+            h[rows] = hsub
     return h
 
 
