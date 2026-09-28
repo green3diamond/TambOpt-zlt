@@ -5,35 +5,42 @@ https://github.com/tdorigo/SWGOLO, cloned to `~/tambo/SWGOLO`) with TambOpt's
 Stage 4, then tests the leading explanation. All numbers below were measured in
 this session; job IDs are given so the logs can be re-read in `slurm_logs/`.
 
-## TL;DR
+## Findings (current state)
 
-- TambOpt's utility functions were ported directly from SWGOLO's notebook
-  (`SWGOLO7.ipynb`): `reconstructability`, `U_PR`, `U_E`, `U_angle` and
-  `LearnableXY` are the same code. The difference is not the per-event score.
-- SWGOLO's dense-core / sparse-halo layouts come from a **trade-off between
-  resolution (reward packing) and acceptance (reward catching more showers)**,
-  over shower cores thrown uniformly over an area larger than the array.
-- In TambOpt both of those are weak or missing:
-  - every tau axis hits the mesh by construction, and the mesh is lit almost
-    uniformly (measured below), so no region is geometrically preferred;
-  - `U_PR` is computed but left out of the composite, so there is no
-    acceptance term at all.
-- Whether acceptance has room to move depends on sigma. At sigma = 10 (run 14)
-  it is **not** saturated (median event lights ~6 detectors in the kernel, 42%
-  have r < 0.5). At sigma = 50 (run 12) it **is** mostly saturated: bimodal,
-  80% of events fully lit, ~11% dark.
-- Adding `λ·mean(r)` at gradient parity reshaped the layout in both runs, in
-  opposite directions: a **dense spine along the long axis** at sigma = 10
-  (λ = 200, surrogate result, kernel check not run), and a **hollow centre with
-  detectors pushed to the rim** at sigma = 50 (λ = 640).
-- **Run 12, scored against the kernel on 2,048 held-out events (§8): the
-  reshaping did not change the true utility.** Start 42.36, λ = 0 43.03,
-  λ = 640 42.99. The acceptance term lifted only the worst-lit tail (p10 lit
-  detectors 7.8 → 10.4). At sigma = 50, very different layouts score the same,
-  which is why the unconstrained optimizer settles on a uniform fill: the
-  objective is nearly flat around it.
-- Run 12's kernel-in-the-loop runs never tested the idea fairly: they started
-  from a ~30 m "center" blob and moved only 12–34 m.
+**Verdict so far.** TambOpt settles on a uniform fill because its objective is
+nearly flat around one: against the kernel, a grid, a uniform fill and a
+rim-heavy layout all score within ~0.7 of each other (run 12, §8). The leading
+explanation, that TambOpt lacks SWGO's acceptance term, is **not supported at
+σ = 50**: adding the term reshapes the layout but does not improve the true
+utility, because acceptance is already ~89% saturated. It is **still open at
+σ = 10**, where acceptance is far from saturated but the result has not been
+checked against the kernel. The other structural differences from SWGOLO (how
+the score is built, whether the reconstruction adapts to the layout, step size)
+have not been tested.
+
+What is the same in both codes: TambOpt's utility functions were ported
+directly from SWGOLO's notebook (`SWGOLO7.ipynb`). `reconstructability`,
+`U_PR`, `U_E`, `U_angle` and `LearnableXY` are the same code, so the difference
+is not the per-event score. SWGOLO's dense-core / sparse-halo layouts come from
+a **trade-off between resolution (reward packing) and acceptance (reward
+catching more showers)**, over shower cores thrown uniformly over an area larger
+than the array (§1).
+
+| # | Hypothesis | Status | Evidence |
+|---|---|---|---|
+| H1 | SWGO's structure needs cores to land unevenly relative to the array; TambOpt's taus don't | **Confirmed absent in TambOpt** | 100% of tau axes hit the mesh; interior illumination 0.92–1.15 of uniform, same in every energy bin (§2) |
+| H2 | TambOpt lacks the acceptance term (`U_PR` is left out of the composite) | **Not supported at σ = 50; open at σ = 10** | σ = 50: λ = 640 moves detectors to the rim but scores 42.99 vs the control's 43.03 against the kernel (§8). σ = 10: λ = 200 forms a dense spine, surrogate only (§5) |
+| H3 | The objective is nearly flat around a uniform fill | **Supported (σ = 50)** | Grid start 42.36, uniform fill 43.03, rim layout 42.99 on 2,048 held-out events (§8); no error bars yet |
+| H4 | Acceptance has room to move | **Depends on σ** | σ = 10: kernel mean r 0.57, 42% of events r < 0.5 (§4). σ = 50: mean r 0.89, bimodal, 80% fully lit / 11% dark (§8) |
+| H5 | The surrogate misjudges acceptance | **Confirmed** | Optimistic in both runs: median lit 9.8 vs 6.2 (σ = 10); dark events 2% vs 11% (σ = 50) |
+| H6 | The score type matters: frozen-recon point error vs SWGOLO's likelihood-based expected resolution | **Untested** | §1 |
+| H7 | A reconstruction that doesn't adapt to the layout flattens the objective | **Untested** | SWGOLO refits (C++) or fine-tunes (notebook); TambOpt's recon is frozen (§1) |
+| H8 | Kernel-in-the-loop optimization fails | **Untested fairly** | Run 12's attempt started from a ~30 m blob and moved 12–34 m (§3) |
+
+Acceptance effect in detail: at σ = 50 the λ term only lifted the worst-lit
+events (lit detectors, worst 10%: 7.8 → 10.4; r < 0.5: 10.5% → 10.0%), at no
+cost to resolution. Run 14's spine and run 12's rim go in opposite directions,
+so neither is a robust "SWGO-like" structure yet.
 
 ## 1. Architectural comparison
 
