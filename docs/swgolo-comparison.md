@@ -18,6 +18,12 @@ checked against the kernel. The other structural differences from SWGOLO (how
 the score is built, whether the reconstruction adapts to the layout, step size)
 have not been tested.
 
+**Update (§9): σ = 10 is less flat.** Scored against the kernel at σ = 10, five
+layouts span 7.5% of the utility (vs 1.6% at σ = 50), and the acceptance-driven
+spine optimized at σ = 10 scores best (+3.1% over the grid). So a working σ = 10
+pipeline is likely to find more structure than σ = 50. The gains are small and
+not yet bootstrapped.
+
 What is the same in both codes: TambOpt's utility functions were ported
 directly from SWGOLO's notebook (`SWGOLO7.ipynb`). `reconstructability`,
 `U_PR`, `U_E`, `U_angle` and `LearnableXY` are the same code, so the difference
@@ -29,8 +35,8 @@ than the array (§1).
 | # | Hypothesis | Status | Evidence |
 |---|---|---|---|
 | H1 | SWGO's structure needs cores to land unevenly relative to the array; TambOpt's taus don't | **Confirmed absent in TambOpt** | 100% of tau axes hit the mesh; interior illumination 0.92–1.15 of uniform, same in every energy bin (§2) |
-| H2 | TambOpt lacks the acceptance term (`U_PR` is left out of the composite) | **Not supported at σ = 50; open at σ = 10** | σ = 50: λ = 640 moves detectors to the rim but scores 42.99 vs the control's 43.03 against the kernel (§8). σ = 10: λ = 200 forms a dense spine, surrogate only (§5) |
-| H3 | The objective is nearly flat around a uniform fill | **Supported (σ = 50)** | Grid start 42.36, uniform fill 43.03, rim layout 42.99 on 2,048 held-out events (§8); no error bars yet |
+| H2 | TambOpt lacks the acceptance term (`U_PR` is left out of the composite) | **Not supported at σ = 50; weakly supported at σ = 10** | σ = 50: λ = 640 moves detectors to the rim but scores 42.99 vs the control's 43.03 against the kernel (§8). σ = 10: the λ = 200 spine scores best against the kernel, 23.95 vs 23.75 for its control (§9) |
+| H3 | The objective is nearly flat around a uniform fill | **Supported at σ = 50; much less so at σ = 10** | σ = 50: three layouts within 1.6% (§8). σ = 10: five layouts span 7.5% (§9); no error bars yet |
 | H4 | Acceptance has room to move | **Depends on σ** | σ = 10: kernel mean r 0.57, 42% of events r < 0.5 (§4). σ = 50: mean r 0.89, bimodal, 80% fully lit / 11% dark (§8) |
 | H5 | The surrogate misjudges acceptance | **Confirmed** | Optimistic in both runs: median lit 9.8 vs 6.2 (σ = 10); dark events 2% vs 11% (σ = 50) |
 | H6 | The score type matters: frozen-recon point error vs SWGOLO's likelihood-based expected resolution | **Untested** | §1 |
@@ -283,6 +289,38 @@ kernel readings in place of the surrogate's:
 4. `r = sigmoid(0.2·(lit − 10))`, `lit = Σ sigmoid(5·(counts − 1))`;
    U_θ, U_φ, U_E are r-weighted capped `1/(err² + ε)` (caps 500 / 50 / 80);
    `U_res = (100·U_θ + 100·U_φ + 250·U_E)/1000`. No gradients.
+
+## 9. Is σ = 10 less flat? Kernel scoring at σ = 10
+
+Job 49025182: `eval_layouts_kernel.py --run-location 14_sigma10_10pct --sigma 10
+--reconstruct-threshold 5`. Run 14's first 2,048 held-out events and run 14's
+recon; kernel only, no surrogate. The same five layouts are scored on the same
+events, so the comparison is paired.
+
+| Layout | U_res | u_θ | u_φ | u_E | Mean r | r < 0.5 | Median lit | z_cont spread |
+|---|---|---|---|---|---|---|---|---|
+| run-14 spine (λ = 200) | **23.95** | 19.44 | 1.56 | 2.95 | 0.595 | 38.4% | 7.6 | 0.49 |
+| run-14 λ = 0 | 23.75 | 19.15 | 1.68 | 2.92 | 0.584 | 39.5% | 7.1 | 0.57 |
+| grid start | 23.22 | 18.75 | 1.54 | 2.93 | 0.575 | 40.6% | 6.6 | 0.60 |
+| run-12 uniform (λ = 0) | 22.94 | 18.50 | 1.60 | 2.83 | 0.562 | 40.6% | 6.5 | 0.64 |
+| run-12 rim (λ = 640) | 22.20 | 17.86 | 1.56 | 2.79 | 0.550 | 45.3% | 5.6 | 0.72 |
+
+Reading:
+
+- **σ = 10 is less flat than σ = 50.** The five layouts span 1.75 (7.5% of the
+  mean) against 0.67 (1.6%) for the three layouts scored at σ = 50 (§8).
+- **The layouts optimized at σ = 10 beat the grid; the ones optimized at σ = 50
+  lose to it.** The spine is best (+0.73 over the grid, +3.1%), ahead of run 14's
+  control (+0.53). Run 12's rim, neutral at σ = 50, is worst here (−1.02).
+- The ordering in U_res matches the ordering in acceptance (mean r, fraction
+  under-lit, median lit), so the gains come through lighting more detectors per
+  event.
+- The spine concentrates detectors in shower depth: z_cont spread 0.49 layers
+  vs 0.60 for the grid.
+- This supports H2 at σ = 10 (the acceptance term found a layout that is
+  better against the truth) and suggests the flatness in H3 is partly a σ = 50
+  effect. Effect sizes are small and there are no error bars yet; the paired
+  design helps, but a bootstrap over events should confirm the ordering.
 
 ## Files added this session
 

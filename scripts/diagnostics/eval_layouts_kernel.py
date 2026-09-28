@@ -43,19 +43,51 @@ def read_layout(spec):
     return name, torch.as_tensor(L["x"]).float(), torch.as_tensor(L["y"]).float()
 
 
+def override_run(run_location, sigma, reconstruct_threshold):
+    """Score against a different run than modules/constants.py points at.
+
+    Only the kernel and the recon are involved (no surrogate), so three things
+    need repointing: the held-out event files, the kernel's sigma, and the r
+    gate's threshold. Each is patched in the namespace that actually reads it.
+    """
+    import functools
+    import modules.constants as C
+    import plots.layouts.true_utility as tu
+    recon_dir = RECON_FOLDER + "_deepsets"
+    if run_location:
+        swap = lambda p: p.replace(C.RUN_LOCATION, run_location)  # noqa: E731
+        tu.HELDOUT_SHOWER_CACHE_PATH = swap(C.HELDOUT_SHOWER_CACHE_PATH)
+        tu.HELDOUT_POSITIONS_PATH = swap(C.HELDOUT_POSITIONS_PATH)
+        recon_dir = swap(recon_dir)
+        print(f"[override] run={run_location}\n           heldout={tu.HELDOUT_SHOWER_CACHE_PATH}")
+    if sigma is not None:
+        tu.compute_labels_batch = functools.partial(tu.compute_labels_batch, sigma_spatial=sigma)
+        print(f"[override] kernel sigma={sigma} m")
+    if reconstruct_threshold is not None:
+        us.RECONSTRUCT_THRESHOLD = reconstruct_threshold
+        print(f"[override] RECONSTRUCT_THRESHOLD={reconstruct_threshold}")
+    return recon_dir
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n-events", type=int, default=2048)
     ap.add_argument("--chunk", type=int, default=16)
     ap.add_argument("--layout", action="append", required=True)
+    ap.add_argument("--run-location", default=None,
+                    help="score against this run's held-out events and recon")
+    ap.add_argument("--sigma", type=float, default=None, help="kernel sigma [m]")
+    ap.add_argument("--reconstruct-threshold", type=float, default=None)
     args = ap.parse_args()
+    recon_dir = override_run(args.run_location, args.sigma, args.reconstruct_threshold)
 
     mountain = load_tr_mountain(GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
                                east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX,
                                n_planes=N_PLANES)
     surface = SurfaceUpMap.from_mountain(mountain, grid_h=256, grid_w=256).to(DEVICE)
-    ck = torch.load(os.path.join(RECON_FOLDER + "_deepsets", "recon.pt"),
+    ck = torch.load(os.path.join(recon_dir, "recon.pt"),
                     map_location=DEVICE, weights_only=False)
+    print(f"[load] recon <- {recon_dir}  config={ck.get('config')}")
     recon = build_recon_from_ckpt(ck, N_DETECTORS, DEVICE)
 
     clouds, B, _, prim = load_events(args.n_events, DEVICE, mountain)
