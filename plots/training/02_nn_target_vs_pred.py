@@ -7,6 +7,7 @@ shows end-to-end FNN -> recon error.
 
     python plots/training/02_nn_target_vs_pred.py
     python plots/training/02_nn_target_vs_pred.py --dual   # dual-species surrogate
+    python plots/training/02_nn_target_vs_pred.py --kernel-only  # only the *_kernel pair
 
 In --dual mode the FNN scatter is rendered PER SPECIES — each per-species DeepSets
 model against its own species-filtered subset (split on the Step-1 species_ids
@@ -1113,19 +1114,26 @@ def main():
     ap.add_argument("--dual", action="store_true",
                     help="dual-species surrogate: per-species FNN scatters + "
                          "combined-surrogate recon scatter")
+    ap.add_argument("--kernel-only", action="store_true",
+                    help="render only the recon-on-kernel pair "
+                         "(recon_target_vs_pred_kernel.png / "
+                         "recon_conditional_kernel.png) and skip every "
+                         "surrogate-dependent figure -- for back-filling a run "
+                         "whose Step 3 wrote only the surrogate-fed scatter")
     args = ap.parse_args()
 
     print("=" * 72)
     print("v6/plots/training/02_nn_target_vs_pred.py" + ("  [dual]" if args.dual else ""))
     print("=" * 72)
-    if args.dual:
-        plot_fnn_dual()
-        plot_recon_dual()
-    else:
-        plot_fnn_only()
-        plot_recon_only()
+    if not args.kernel_only:
+        if args.dual:
+            plot_fnn_dual()
+            plot_recon_dual()
+        else:
+            plot_fnn_only()
+            plot_recon_only()
     # Recon-on-kernel needs no surrogate at all, so it runs the same way
-    # regardless of --dual.
+    # regardless of --dual -- and is the only thing --kernel-only renders.
     plot_recon_on_kernel()
 
 

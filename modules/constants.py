@@ -29,7 +29,21 @@ LAYER_EAST_DX  = 500.0
 # Detector spatial-response Gaussian width [m]. 200 → 50 for malata: 100 detectors
 # at ~120 m spacing over ~1.4 km, so 200 m over-smoothed neighbours together.
 # Set at dataset-build time; the trained surrogate inherits this resolution.
-SIGMA_SPATIAL  = 50.0
+#
+# 50 → 10: each detector now samples a ~±20 m patch, far narrower than the
+# ~120 m spacing, so detectors stop sharing particles and act as near-independent
+# point samplers. Everything calibrated against the wider kernel moves with it
+# and none of it is auto-derived:
+#   - per-detector counts fall roughly with the acceptance area, ~(10/50)^2 = 1/25
+#     for a shower broad compared to sigma, which drags n_soft down against
+#     optimize.objective's LAYOUT_THRESHOLD = 1.0 ("saw a particle") and so pulls
+#     r toward its floor — re-measure with plots/layouts/activation_counts.py
+#   - overlap_multiplicity (objective.py) defaults to this sigma; its docstring's
+#     "smooth over sigma" assumption is weaker at 10 m, and DISTINCT_SCALE /
+#     PARTICLE_SCALE were both calibrated at 50
+#   - REBUILD REQUIRED: this enters the labels at Stage 1, so E.pt/T.pt and every
+#     Stage 2/3 checkpoint trained on them are stale until Stage 1 is rerun.
+SIGMA_SPATIAL  = 10.0
 
 # A shower point counts as DETECTED at a detector when its deposit there —
 # energy * kernel acceptance — clears this. It defines the T label: T is the
@@ -95,7 +109,7 @@ AZIMUTH_MAX  = 360.0 # degrees
 # Every path below derives from this one, so retargeting the whole pipeline at
 # a sibling run folder (e.g. a verbatim copy of Stage 0/1 output used to try a
 # different Stage 2/3/4 config) is a one-line change here.
-RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/13_full_750k_no_sampling"
+RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/14_sigma10_10pct"
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are
@@ -119,7 +133,12 @@ OPT_FOLDER              = os.path.join(RUN_LOCATION, "test_v6_run_04_optimize")
 TRAIN_FRACTION = 1.00
 # 01: fraction of the dual corpus to load, applied per species so both stay
 # represented. 1.0 is ~501 GB dense and OOMs at --mem=100g.
-DATASET_FRACTION = 1.00
+#
+# 1.00 -> 0.10 for the 14_ run: a tenth of the corpus (~858k rows rather than
+# ~8.58M), which also keeps the Stage-1 build clear of the OOM above. This is
+# the CORPUS fraction read at Step 1, not TRAIN_FRACTION above, which subsamples
+# what Steps 2/3 train on out of whatever Step 1 wrote.
+DATASET_FRACTION = 0.10
 
 # Descriptive only (also the synthetic-primaries fallback count in Step 0).
 # With USE_TAU_PRIMARIES the real event count comes from tau_wholesky_n750k.h5

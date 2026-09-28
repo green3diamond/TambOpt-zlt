@@ -50,7 +50,8 @@ W_DIV   = 1e3
 #     but a LIT one clears it far more easily, pushing the soft trigger count up
 #     and re-flattening `r` toward 1.0 — the exact failure the 5e-2 -> 1.0 change
 #     below was made to fix, arriving from the other direction
-#   - RECONSTRUCT_THRESHOLD = 10.0 is a physical minimum, but TAU_RECONSTRUCT
+#   - RECONSTRUCT_THRESHOLD (10.0 when this was written, 5.0 now) is a physical
+#     minimum, but TAU_RECONSTRUCT
 #     was chosen so the transition spans the *observed* spread of n; a shifted
 #     distribution narrows the fraction of events in the transition and drains
 #     the gradient again
@@ -66,13 +67,22 @@ W_DIV   = 1e3
 # dark detector gives 0.0067 and the count spans p10=13 / p50=48 / p90=82
 # (measured on the 07 e+mu corpus).
 LAYOUT_THRESHOLD      = 1.0
-RECONSTRUCT_THRESHOLD = 10.0   # physical minimum detectors to reconstruct
+# 10.0 -> 5.0: r is now half-on at 5 lit detectors, so an event is credited as
+# reconstructable on half the detector count it used to need. Two consequences
+# at the UNCHANGED tau below, both in the direction of less gradient:
+#   - the dark-layout floor rises, r(n=0) = sigmoid(-1) = 0.269 (was 0.119), so
+#     an event that triggers nothing is suppressed less in the theta/phi/E terms
+#   - saturation arrives sooner (n=20 -> 0.95, n=30 -> 0.99, was 0.88 / 0.98),
+#     shrinking the span of n that still discriminates between layouts
+# Lowering TAU_RECONSTRUCT alongside it would widen the transition back out;
+# left alone here because the request was the threshold alone.
+RECONSTRUCT_THRESHOLD = 5.0    # physical minimum detectors to reconstruct
 
 # tau_reconstruct=5.0 (the upstream default) makes r a step function: it swings
 # 0->1 within ~+-1 detector, so almost no event sits in the transition and the
 # term hands back no gradient. 0.2 spreads the transition over ~20 detectors
-# (n=10 -> r=0.5, n=20 -> 0.88, n=30 -> 0.98), giving r std ~0.20 across the
-# population instead of ~0.
+# (at the current threshold 5: n=5 -> r=0.5, n=20 -> 0.95, n=30 -> 0.99; the
+# std ~0.20 across the population was measured at the old threshold 10).
 TAU_LAYOUT      = 5.0
 TAU_RECONSTRUCT = 0.2
 

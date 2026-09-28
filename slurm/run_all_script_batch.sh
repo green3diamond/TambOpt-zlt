@@ -10,10 +10,13 @@
 #SBATCH -o slurm_logs/slurm-%j-%x.out
 #SBATCH --chdir=/n/home05/zdimitrov/tambo/TambOpt
 
-# stage3-analytic-validation experiment: 10%-data (TRAIN_FRACTION in
-# modules/constants.py), mean-only Stage 2, analytic Stage 4. Runs against
-# RUN_LOCATION = 12_10pct_mean_analytic, whose Stage 0/1 outputs were copied
-# verbatim from the production run (not regenerated here).
+# sigma-10 experiment: SIGMA_SPATIAL 50 -> 10 m and RECONSTRUCT_THRESHOLD
+# 10 -> 5 (both modules/constants.py + optimize/objective.py), on a tenth of the
+# corpus (DATASET_FRACTION = 0.10). Runs against RUN_LOCATION =
+# 14_sigma10_10pct, which holds the shower cache MOVED out of
+# 13_full_750k_no_sampling -- Stage 0 is not rerun, but Stage 1 IS, because
+# SIGMA_SPATIAL enters the kernel labels at build time and every E.pt/T.pt
+# written before this change is stale.
 
 source slurm/env.sh
 source slurm/gpu_gate.sh
@@ -21,6 +24,13 @@ gpu_health_gate
 
 # Own status file: distinct from the production pipeline's, whose keys are
 # already marked "done" under different flags.
+#
+# It ships pre-seeded with 00_generate_data_dual_species.py = "done". Stage 0 is
+# what writes RUN_LOCATION/v6_run_00, and this run's cache was MOVED in from
+# 13_full_750k_no_sampling rather than generated -- regenerating it would be
+# ~284 GB and days of GPU for a corpus that already exists. This runner does not
+# call Stage 0 at all, so the key is belt-and-braces; if you ever reset the file
+# to '{}', put that key back before adding a Stage 0 step.
 STATUS_FILE="pipeline_status.json"
 [ -s "$STATUS_FILE" ] || echo '{}' > "$STATUS_FILE"
 
@@ -54,6 +64,11 @@ run_once () {
     "$@" || exit $?
     _status_mark_done "$key"
 }
+
+# Stage 1: rebuild the corpus. NOT part of this runner before the sigma change
+# -- it is here because SIGMA_SPATIAL is baked into the labels by
+# compute_labels_batch, so the surrogate cannot be retrained on the old E.pt/T.pt.
+run_step 01_build_dataset_northeast.py
 
 # Stage 2: mean-only regressor, no variance head trained.
 run_step 02_train_fnn_deepsets.py --nll-warmup-frac 1.0

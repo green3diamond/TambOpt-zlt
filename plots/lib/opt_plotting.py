@@ -504,7 +504,27 @@ def plot_density_heatmap(aligned_xy: np.ndarray,
     optimizer. `fig_w`/`dpi` are exposed (default unchanged: 14 in / 110 dpi) so a
     caller like 05_paper_figures.py can draw at a different canvas size — paired
     with the FS_* module constants above, which it also overrides — without
-    touching this function's own screen-tuned defaults."""
+    touching this function's own screen-tuned defaults.
+
+    RESOLUTION — what the smallest visible blob means. Both the binning and the
+    smoothing are fixed in BINS, never in metres, so the figure has no fixed
+    physical kernel: `bins` is a scalar passed to histogram2d, i.e. `bins` cells
+    on each axis over two UNEQUAL spans, and `gaussian_filter(sigma=1.0)` below
+    is one bin wide. Cells are therefore rectangular while `aspect="equal"`
+    draws them in true metres, so every blob is stretched along whichever axis
+    spans more — for the malata face at the default bins=60 (~1300 m strike x
+    ~1960 m up-dip) that is ~22 x ~33 m per cell, a 1.5:1 up-dip elongation
+    that is an artifact of the binning and not clustering along dip.
+
+    One detector from one member is one cell, so the smallest thing this figure
+    can draw is that cell blurred by sigma=1 bin: FWHM ~51 x ~77 m, visible out
+    to ~90 x ~130 m. Anything that small IS a single placement. Its peak is not
+    1/K: the Gaussian spreads that count over ~2*pi bins, so with K=6 a lone
+    detector peaks near 0.027 (dim purple, ~13% of a vmax=0.2 bar). Reading the
+    other way — a cell at the top of the bar needs roughly K placements landing
+    within the SAME cell across the ensemble, which is the agreement this plot
+    exists to show. Raising `bins` shrinks the cells and the blobs with them,
+    it does not sharpen a fixed-metre kernel."""
     try:
         import matplotlib
         matplotlib.use("Agg")
