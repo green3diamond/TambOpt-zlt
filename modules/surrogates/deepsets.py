@@ -9,22 +9,32 @@ permutation invariance by augmentation; DeepSets is equivariant by construction
     token_i = [q (8), x_i, y_i]              # 10 features per detector
     h_i     = psi(token_i)                   # shared encoder
     c       = mean_i h_i -> context proj     # permutation-INVARIANT pool
-    (mu_i, logvar_i) = rho([h_i, c])         # shared decoder, per channel
+    mu_i    = rho([h_i, c])                  # shared decoder, per channel
 
-Heteroscedastic: the decoder emits mu AND logvar per channel. `forward()` returns
-the mean only in raw units, preserving FNNSurrogate's contract so Steps 3-4 and
-`dual.py` are unchanged; `forward_dist()` adds the logvar for the Gaussian NLL
-trainer, so the model can express the aleatoric floor instead of collapsing to a
-conditional mean.
+MEAN-ONLY. The decoder emits mu per channel and nothing else; `forward()` returns
+it in raw units, which is FNNSurrogate's contract and what Steps 3-4 and
+`dual.py` consume.
+
+This model used to be heteroscedastic — a second pair of logvar outputs feeding a
+Gaussian-NLL trainer, meant to let it express the aleatoric floor rather than
+collapse to a conditional mean. That path was retired: every run since 13 trained
+with `--nll-warmup-frac 1.0`, i.e. 100% mean-only warm-up and zero NLL epochs, so
+no variance head was ever actually fitted, and Stage 3 had to carry a
+`--fnn-mean-only` flag to avoid sampling from the untrained head. Keeping a head
+that is always dead-weight cost two decoder output rows, a zero-init hack to stop
+it corrupting the trunk at a switch that never happened, and a `var_param`
+branch. Dropping it makes `out_dim` 4 -> 2 per detector.
+
+Checkpoint compatibility: a 2-output decoder CANNOT load a 4-output state dict, so
+checkpoints written before this change (runs 12/13/14) do not load here.
 
 Normalization reuses FNNSurrogate's buffers verbatim (widths 208 and 200), so
 `set_normalization` is identical and the trainer's in-place log-T stat mutation
-flows through. The logvar head stays in z-scored space.
+flows through.
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from ..constants import N_DETECTORS, PRIMARY_DIM
 from .blocks import _mlp
@@ -52,37 +62,18 @@ class DeepSetsSurrogate(nn.Module):
                  context:     int = 64,
                  n_enc:       int = 3,
                  n_dec:       int = 3,
-                 dropout:     float = 0.0,
-                 var_param:   str = "clamp",
-                 var_min:     float = 1e-3):
+                 dropout:     float = 0.0):
         super().__init__()
         self.n_det       = n_det
         self.primary_dim = primary_dim
         self.hidden      = hidden
         self.context     = context
-        if var_param not in ("clamp", "softplus_offset"):
-            raise ValueError(f"var_param must be 'clamp' or 'softplus_offset', got {var_param!r}")
-        self.var_param = var_param
-        self.var_min_z = var_min
 
         token_dim = primary_dim + 2                      # [q, x_i, y_i]
         self.encoder = _mlp(token_dim, hidden, hidden, n_enc, dropout)
         self.context_proj = nn.Linear(hidden, context)
-        # 4 outputs per detector: mu_E, mu_T, logvar_E, logvar_T (all z-scored).
-        self.decoder = _mlp(hidden + context, hidden, 4, n_dec, dropout)
-
-        # Zero-init the logvar readout (rows 2,3 of the final linear) so
-        # logvar_z = 0 (var = 1) at t=0 REGARDLESS of the trunk's scale, instead
-        # of an arbitrary default-init row. Matters most when the mean branch
-        # gets pretrained (MSE warm-start) before the variance head's loss term
-        # is ever switched on: without this the logvar readout at switch-time is
-        # `random_row . pretrained_trunk`, already extreme enough to saturate
-        # the floor immediately (see scripts/02_train_fnn_deepsets.py Phase-0
-        # diagnostics, M2).
-        final_linear = self.decoder[-1]
-        with torch.no_grad():
-            final_linear.weight[2:].zero_()
-            final_linear.bias[2:].zero_()
+        # 2 outputs per detector: mu_E, mu_T (both z-scored).
+        self.decoder = _mlp(hidden + context, hidden, 2, n_dec, dropout)
 
         # SAME buffer layout as FNNSurrogate so set_normalization is identical
         # and the trainer's log-T stat mutation (out_mean[n_det:]) flows through.
@@ -104,17 +95,7 @@ class DeepSetsSurrogate(nn.Module):
         """Shared encoder/decoder pass, entirely in z-scored space.
 
         Returns:
-            mu_z     : (B, nd, 2) z-scored per-channel mean.
-            logvar_z : (B, nd, 2) z-scored per-channel log-variance.
-                       `var_param="clamp"` (legacy): hard-clamped to [-10, 10]
-                       (var in [4.5e-5, 2.2e4]). This has zero gradient at the
-                       bound (torch.clamp's backward masks out pinned elements),
-                       which combined with beta-NLL's var**(beta-1) reweighting
-                       created a self-reinforcing dead zone (Phase-0 diagnostics:
-                       wfrac_floor >> floor_frac). `var_param="softplus_offset"`
-                       (default for new training runs) replaces this with
-                       `var = softplus(raw) + var_min_z`, which has no dead zone
-                       and only floors variance from below, never above.
+            mu_z : (B, nd, 2) z-scored per-channel mean (mu_E, mu_T).
         """
         B = primary.shape[0]
         nd = self.n_det
@@ -136,16 +117,8 @@ class DeepSetsSurrogate(nn.Module):
         h = self.encoder(token)                                       # (B, nd, hidden)
         c = self.context_proj(h.mean(dim=1))                          # (B, context)  invariant pool
         c = c.unsqueeze(1).expand(B, nd, -1)                          # (B, nd, context)
-        out_n = self.decoder(torch.cat([h, c], dim=-1))              # (B, nd, 4)  z-scored
-
-        mu_z = out_n[..., :2]                                         # (B, nd, 2): mu_E, mu_T
-        raw_logvar = out_n[..., 2:]                                   # (B, nd, 2): logvar_E, logvar_T
-        if self.var_param == "clamp":
-            logvar_z = raw_logvar.clamp(min=-10.0, max=10.0)
-        else:  # "softplus_offset"
-            var_z = F.softplus(raw_logvar) + self.var_min_z
-            logvar_z = var_z.log()
-        return mu_z, logvar_z
+        mu_z = self.decoder(torch.cat([h, c], dim=-1))                # (B, nd, 2)  z-scored
+        return mu_z
 
     def _unnorm_mean(self, mu_z: torch.Tensor) -> torch.Tensor:
         nd = self.n_det
@@ -164,32 +137,7 @@ class DeepSetsSurrogate(nn.Module):
             (B, n_det, 2) — col0 = E, col1 = T, unnormalized units (mean only;
             drop-in contract for Steps 3-4 and surrogates/dual.py).
         """
-        mu_z, _ = self._forward_z(primary, xy)
-        return self._unnorm_mean(mu_z)
-
-    def forward_dist(self, primary: torch.Tensor, xy: torch.Tensor):
-        """Full predictive distribution, for the Gaussian-NLL trainer.
-
-        Returns:
-            mean_raw : (B, n_det, 2) — same as `forward()`, unnormalized units.
-            logvar_z : (B, n_det, 2) — z-scored log-variance (dimensionless;
-                       compare directly against z-scored residuals).
-        """
-        mu_z, logvar_z = self._forward_z(primary, xy)
-        return self._unnorm_mean(mu_z), logvar_z
-
-    def forward_var(self, primary: torch.Tensor, xy: torch.Tensor) -> torch.Tensor:
-        """Raw-unit variance (not z-scored) — for downstream consumers that
-        want an explicit per-detector uncertainty channel (recon input,
-        dual-species combination), as opposed to forward_dist()'s z-scored
-        logvar which is only meant for the training loss.
-        """
-        nd = self.n_det
-        _, logvar_z = self._forward_z(primary, xy)
-        E_std, T_std = self.out_std[0], self.out_std[nd]
-        var_E = logvar_z[..., 0].exp() * E_std ** 2
-        var_T = logvar_z[..., 1].exp() * T_std ** 2
-        return torch.stack([var_E, var_T], dim=-1)                    # (B, nd, 2)
+        return self._unnorm_mean(self._forward_z(primary, xy))
 
 
 def build_surrogate_from_ckpt(ckpt: dict, n_det: int, primary_dim: int, device=None):
@@ -216,11 +164,12 @@ def build_surrogate_from_ckpt(ckpt: dict, n_det: int, primary_dim: int, device=N
             n_enc=int(cfg.get("n_enc", 3)),
             n_dec=int(cfg.get("n_dec", 3)),
             dropout=float(cfg.get("dropout", 0.0)),
-            # Defaults reproduce every checkpoint saved before var_param/var_min
-            # existed in the config (hard clamp) — see deepsets.py _forward_z.
-            var_param=cfg.get("var_param", "clamp"),
-            var_min=float(cfg.get("var_min", 1e-3)),
         )
+        # `var_param` / `var_min` may still be present in a pre-mean-only
+        # checkpoint's config. They are ignored rather than rejected here; the
+        # load_state_dict below is what actually refuses such a checkpoint, and
+        # its shape-mismatch error names the decoder layer, which is the more
+        # useful diagnostic.
     else:
         model = FNNSurrogate(
             n_det=n_det, primary_dim=primary_dim,

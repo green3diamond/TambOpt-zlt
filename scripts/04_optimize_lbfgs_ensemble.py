@@ -124,9 +124,10 @@ POS_LOG_EVERY = 1
 # in-band layout scores exactly as it did before.
 OFFMESH_PENALTY = OFFMESH_PENALTY_W
 
-# Whether utility_of_xy draws a fresh stochastic sample from the surrogate's
-# (mean, var) each call (the default everywhere else in this file) or uses
-# its deterministic mean. Hardcoded off: this run scores against the mean.
+# Retained only so the ~6 `sample=SAMPLE_SURROGATE` call sites below keep
+# reading naturally. The surrogate is mean-only now -- there is no variance head
+# to sample from -- so objective._surrogate_predict ignores the argument. It was
+# already hardcoded False here, so nothing about this run's scoring changes.
 SAMPLE_SURROGATE = False
 
 _MESH_CACHE = {}
@@ -875,7 +876,7 @@ def main():
              else f"  (onset at {PENALTY_ONSET_FRAC:g}x the snap radius)"))
     print(f"Adam epochs  : {N_ADAM_EPOCHS}  (primaries/step={PRIMARIES_PER_STEP})")
     print(f"L-BFGS       : max_iter={LBFGS_MAX_ITER}  batch={LBFGS_BATCH_PRIMARIES}")
-    print(f"surrogate    : {'SAMPLE (forward_sample)' if SAMPLE_SURROGATE else 'MEAN (forward)'}")
+    print(f"surrogate    : MEAN (forward) — mean-only surrogate, no variance head")
 
     primary_all = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt")).float()
     n_total_primaries = int(primary_all.shape[0])

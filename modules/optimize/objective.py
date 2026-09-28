@@ -215,32 +215,21 @@ def _surrogate_predict(x_det: torch.Tensor,
     xy_per_det = torch.stack([x_det, y_det], dim=-1)                       # (n_det, 2)
     xy_batch   = xy_per_det.unsqueeze(0).expand(B, -1, -1)                 # (B, n_det, 2)
 
-    # Uncertainty-aware recon input: a fresh stochastic draw from the
-    # surrogate's predicted (mean, var) distribution each call, matching what
-    # recon was actually trained on (03_train_recon_deepsets.py samples too).
-    # Reparameterized, so the gradient into (x_det, y_det) still flows through
-    # mean and var alike. A single-sample version of this was reverted in
-    # f9d688b (2026-07-28) because every Adam chain's "best" collapsed ~10
-    # points on re-eval — but that was at PRIMARIES_PER_STEP=256; per-primary
-    # noise is iid and u_theta/u_E average over the batch (torch.mean), so the
-    # batch has since grown to 5-50k primaries (~20-200x), which should average
-    # the noise out well below what fooled the optimizers back then. Callers
-    # without a variance head (e.g. true_utility.py's kernel-label stand-in,
-    # which IS ground truth — nothing to sample) fall back to the mean, as do
-    # callers that explicitly pass sample=False (e.g. a correctness guard that
-    # must compare against a deterministic reference).
+    # The surrogate is MEAN-ONLY, so there is nothing to sample: stage 2 no
+    # longer trains a variance head and `forward_sample` no longer exists (see
+    # modules/surrogates/deepsets.py). `sample` is kept in the signature because
+    # stage-4 scripts thread it through ~6 call sites, but it is now inert --
+    # and inert in the direction those scripts already chose, since
+    # 04_optimize_lbfgs_ensemble.py has had SAMPLE_SURROGATE = False all along.
     #
-    # `getattr(fnn, "supports_var", False)` rather than
-    # `hasattr(fnn, "forward_sample")`: the dual-species wrapper ALWAYS
-    # defines forward_sample, even when one of its per-species members is a
-    # plain FNNSurrogate with no forward_var -- hasattr would say yes and then
-    # crash inside forward_with_var. `supports_var` is set once in
-    # MultiSpeciesSurrogate.__init__ from whether every member actually has
-    # forward_var, so this is the real precondition.
-    if sample and getattr(fnn, "supports_var", False):
-        pred_ET = fnn.forward_sample(primary_batch, xy_batch)              # (B, n_det, 2)
-    else:
-        pred_ET = fnn(primary_batch, xy_batch)
+    # History, because the reasoning is worth keeping: this used to draw a fresh
+    # reparameterized (mean, var) sample per call so the recon input matched what
+    # recon trained on. A single-sample version was reverted in f9d688b
+    # (2026-07-28) after every Adam chain's "best" collapsed ~10 points on
+    # re-eval at PRIMARIES_PER_STEP=256; the batch has since grown to 5-50k, which
+    # would have averaged that noise out. It never got re-enabled, and the head it
+    # needed is now gone.
+    pred_ET = fnn(primary_batch, xy_batch)
     return xy_batch, pred_ET
 
 

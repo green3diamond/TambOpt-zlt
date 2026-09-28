@@ -99,15 +99,6 @@ class MultiSpeciesSurrogate(nn.Module):
         self.species = tuple(names)
         self.models = nn.ModuleList(models)
         self.n_det = getattr(models[0], "n_det", N_DETECTORS)
-        # A plain attribute (not routed through the custom __getattr__ below,
-        # which only fires for names nn.Module's own lookup misses) so callers
-        # can check whether EVERY member actually supports forward_var before
-        # calling forward_sample/forward_with_var -- this wrapper always
-        # defines those methods, so hasattr(self, "forward_sample") can't
-        # tell a real heteroscedastic ensemble from one with a plain
-        # FNNSurrogate member (which has no forward_var and would raise
-        # AttributeError inside forward_with_var).
-        self.supports_var = all(hasattr(m, "forward_var") for m in models)
 
     def __getattr__(self, name):
         """`self.electron` / `self.muon` / … resolve to that species' model.
@@ -137,32 +128,12 @@ class MultiSpeciesSurrogate(nn.Module):
         """
         return combine_species_outputs(*(m(primary, xy) for m in self.models))
 
-    def forward_with_var(self, primary: torch.Tensor, xy: torch.Tensor):
-        """(mean, var) — mean is identical to forward(). var sums the per-species
-        raw-unit variances (independent noise sources); the physical combination
-        (count-weighted average, log1p) is nonlinear, so this is not a full
-        delta-method propagation, just a reasonable per-detector uncertainty
-        signal for recon/optimizer consumption.
-        """
-        mean = self.forward(primary, xy)
-        var = None
-        for m in self.models:
-            v = m.forward_var(primary, xy)
-            var = v if var is None else var + v
-        return mean, var
-
-    def forward_sample(self, primary: torch.Tensor, xy: torch.Tensor) -> torch.Tensor:
-        """One stochastic draw from the predicted (mean, var) distribution,
-        same (B, n_det, 2) contract as forward() — a fresh noisy realization
-        each call instead of the mean point estimate, so downstream
-        training/optimization sees the surrogate's learned aleatoric spread
-        directly rather than being handed mean and variance as separate,
-        discardable inputs. Reparameterized (mean + eps*std) so gradients
-        into (primary, xy) still flow for stage-4's L-BFGS/Adam.
-        """
-        mean, var = self.forward_with_var(primary, xy)
-        eps = torch.randn_like(mean)
-        return mean + eps * var.clamp(min=0.0).sqrt()
+    # `forward_with_var` and `forward_sample` lived here until the surrogate went
+    # mean-only. Both read the per-species variance head, which no longer exists:
+    # the underlying models emit mu alone (see surrogates/deepsets.py). Their only
+    # consumer was Stage 3's sample/mix recon input, which had already been pinned
+    # to the mean via `--fnn-mean-only` because the variance head was never
+    # trained under `--nll-warmup-frac 1.0`. `forward` is the whole contract now.
 
 
 # The pipeline ran on exactly two species for its first three generations, and

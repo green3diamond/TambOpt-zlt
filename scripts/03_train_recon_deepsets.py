@@ -11,10 +11,11 @@ Architecture:
 
 E_comb/T_comb come from one of three sources, chosen with --recon-input:
 
-  sample  (default, historical behaviour) — a stochastic SAMPLE drawn from the
-          stage-2 heteroscedastic surrogate's predicted (mean, var) distribution
-          (DualSpeciesSurrogate.forward_sample), not the mean point estimate, so
-          recon sees the surrogate's learned aleatoric spread directly.
+  sample  (default, historical name) — the stage-2 surrogate's prediction for
+          each row. The surrogate is mean-only, so this is its deterministic
+          mean; it was a draw from a (mean, var) distribution back when stage 2
+          trained a variance head. The name is kept because it appears in run
+          logs, saved configs and --recon-input strings across past runs.
   kernel  — the REAL kernel-computed detector responses Step 1 already wrote
           (E.pt / T.pt), i.e. the same labels Step 2 trained the surrogate to
           predict.
@@ -178,27 +179,24 @@ def compute_fnn_predictions(model: nn.Module,
                              xy:      torch.Tensor,
                              device:  torch.device,
                              batch_size: int = 1024,
-                             mean_only: bool = False,
                              ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Draw one stochastic sample per row from the dual surrogate's predicted
-    distribution (not the mean) over the whole corpus. Returns CPU tensors.
-    Sampled once here and reused for every epoch — the same "one fixed
-    realization per (primary, layout) row" convention the real kernel-labeled
-    corpus already uses, not a fresh draw every epoch.
+    """The dual surrogate's prediction per row over the whole corpus, on CPU.
 
-    `mean_only=True` calls `model.forward(...)` instead of `forward_sample`.
-    Needed whenever the surrogate's variance head was never trained (Stage 2
-    run with `--nll-warmup-frac 1.0`): `forward_sample`'s `eps*std` draw is
-    then noise from an untrained head, not a calibrated aleatoric sample, so
-    treating it as "the sample regime" would be actively misleading rather
-    than merely conservative. Opt-in, not the default -- the historical
-    stochastic-sample behavior stays intact for callers that trained a real
-    variance head."""
+    Computed once here and reused for every epoch — the same "one fixed
+    realization per (primary, layout) row" convention the real kernel-labeled
+    corpus already uses.
+
+    This used to take `mean_only` and dispatch to `forward_sample` by default,
+    drawing `mean + eps*std` from the stage-2 variance head. That head no longer
+    exists (the surrogate is mean-only), and in practice it was never trained
+    anyway — every run since 13 passed `--nll-warmup-frac 1.0` and then had to
+    pass `--fnn-mean-only` here to avoid sampling untrained-head noise. The mean
+    is now the only path, so the parameter and the flag are both gone."""
     model.eval()
     N = int(primary.shape[0])
     E_pred = torch.empty((N, N_DETECTORS), dtype=torch.float32)
     T_pred = torch.empty((N, N_DETECTORS), dtype=torch.float32)
-    predict = model.forward if mean_only else model.forward_sample
+    predict = model.forward
     for lo in range(0, N, batch_size):
         hi = min(lo + batch_size, N)
         pred = predict(
@@ -439,13 +437,6 @@ def main():
                          "'_deepsets_expB1' instead of the production "
                          "recon.pt. Use for any run that is not meant to "
                          "become the checkpoint Stage 4 / true_utility.py load.")
-    ap.add_argument("--fnn-mean-only", action="store_true",
-                    help="use the surrogate's deterministic mean (model.forward) "
-                         "instead of a forward_sample() draw for --recon-input "
-                         "sample/mix. Required whenever the loaded FNN_FOLDER "
-                         "checkpoint was trained with --nll-warmup-frac 1.0 "
-                         "(no variance head), since forward_sample's draw would "
-                         "otherwise be untrained-head noise, not a real sample.")
     args = ap.parse_args()
     RECON_INPUT, MIX_FRAC = args.recon_input, float(args.mix_frac)
     N_EPOCHS, LBFGS_MAX_ITER = int(args.epochs), int(args.lbfgs_iters)
@@ -491,9 +482,8 @@ def main():
     # far apart the two response distributions actually are — the quantity the
     # whole surrogate-vs-true artifact gap comes from.
     t0 = time.time()
-    E_samp, T_samp = compute_fnn_predictions(dual, primary, xy, DEVICE,
-                                             mean_only=args.fnn_mean_only)
-    print(f"[dual] {'mean' if args.fnn_mean_only else 'sampled'} predictions "
+    E_samp, T_samp = compute_fnn_predictions(dual, primary, xy, DEVICE)
+    print(f"[dual] mean predictions "
           f"in {time.time() - t0:.1f}s  "
           f"E mean={E_samp.mean():.3g} std={E_samp.std():.3g}  "
           f"T mean={T_samp.mean():.3g} std={T_samp.std():.3g}")

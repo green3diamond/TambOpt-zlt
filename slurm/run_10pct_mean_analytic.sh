@@ -54,11 +54,11 @@ run_once () {
 }
 
 # Stage 2: mean-only regressor, no variance head trained.
-run_step 02_train_fnn_deepsets.py --nll-warmup-frac 1.0
+run_step 02_train_fnn_deepsets.py
 
 # Stage 3: Stage-2 mean input, mixed 0.7 mean / 0.3 real kernel labels.
 run_step 03_train_recon_deepsets.py \
-    --recon-input mix --mix-frac 0.3 --fnn-mean-only
+    --recon-input mix --mix-frac 0.3
 
 # Stage 4, kernel-in-the-loop, two utility variants. --out-suffix keeps their
 # output dirs apart; explicit keys since both calls are the same script.

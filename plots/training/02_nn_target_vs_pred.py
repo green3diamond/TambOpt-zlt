@@ -16,7 +16,6 @@ the combined DualSpeciesSurrogate on the full corpus, as Step 3 does. Outputs:
 
     FNN_FOLDER/fnn_<species>_target_vs_pred.png
     FNN_FOLDER/fnn_<species>_conditional.png    P(pred | target), hit-only
-    FNN_FOLDER/fnn_<species>_calibration.png    predicted sigma vs realised error
     RECON_FOLDER_deepsets/recon_target_vs_pred.png
     RECON_FOLDER_deepsets/recon_conditional.png
 
@@ -51,8 +50,7 @@ for _p in (_V6, _HERE):
 # back down to a fraction of \textwidth.
 FS_PANEL_TITLE      = 11   # _conditional_panel's per-channel title
 FS_LEGEND           = 8    # _scatter / _conditional_panel legends
-FS_LEGEND_DENSE     = 7    # _calibration_panel legend (denser figure)
-FS_SUPTITLE         = 12   # _render_fnn_conditional / _render_fnn_calibration suptitles
+FS_SUPTITLE         = 12   # _render_fnn_conditional suptitle
 FS_SUPTITLE_SCATTER = 13   # _render_fnn_scatter / _render_recon_scatter suptitles
 
 # Figsizes, externalized the same way — 05_paper_figures.py overrides these
@@ -60,7 +58,6 @@ FS_SUPTITLE_SCATTER = 13   # _render_fnn_scatter / _render_recon_scatter suptitl
 # calling in, so the drawn canvas can shrink or grow for the paper without
 # editing the render functions themselves.
 FIGSIZE_CONDITIONAL = (13, 5.6)    # _render_fnn_conditional
-FIGSIZE_CALIBRATION = (7.5, 10)    # _render_fnn_calibration
 FIGSIZE_SCATTER      = (10, 4.8)   # _render_fnn_scatter
 FIGSIZE_RECON        = (10, 10.6)  # _render_recon_scatter (2x2 grid)
 
@@ -188,110 +185,6 @@ def _scatter(ax, x, y, title: str, vmin=None, vmax=None, lo=None, hi=None, legen
     ax.set_title(title)
     if legend:
         ax.legend(loc="upper left", fontsize=FS_LEGEND, framealpha=1)
-
-
-def _calibration_panel(ax, sigma, err, channel: str, legend: bool = True):
-    """Predicted uncertainty vs realised error, as a 2σ-vs-|error| density, in
-    the z-scored space the network is trained in.
-
-    x = 2σ (the nominal 95% half-width the head predicts for that detector),
-    y = |prediction − target|. For a calibrated Gaussian head the cloud sits
-    mostly BELOW the y = x diagonal: |err| exceeds 2σ only 4.6% of the time.
-    Two binned curves cut through the density — the per-σ-bin median and 95th
-    percentile of |err| — against their ideal Gaussian values (0.337·x and
-    0.98·x), which is what turns "looks about right" into a readable
-    over/under-confidence verdict: a p95 curve above y = x means the head is
-    over-confident in that σ range, below means it over-inflates σ.
-
-    σ bins are quantile bins (equal counts), so every marker carries the same
-    statistical weight regardless of how skewed the σ distribution is."""
-    import numpy as np
-
-    two_sig = 2.0 * sigma
-    abs_err = np.abs(err)
-    hi = float(max(np.percentile(two_sig, 99.5), np.percentile(abs_err, 99.5)))
-
-    # LINEAR colour, clipped at the p99 occupied bin. Plain linear is unusable
-    # here: counts span 1 to ~1e7, so the single densest cell takes the entire
-    # ramp and every other bin renders as one flat background tone. Clipping the
-    # top keeps a linear scale — equal count steps are equal colour steps, which
-    # LogNorm does not give — while letting the bulk of the distribution occupy
-    # the range. For the sparse tail structure instead, use norm=LogNorm(vmin=1).
-    hb = ax.hexbin(two_sig, abs_err, gridsize=80, cmap="viridis",
-                   mincnt=1, extent=(0.0, hi, 0.0, hi))
-    counts = np.asarray(hb.get_array())
-    cb_label = "count"
-    if counts.size:
-        vmax = float(np.percentile(counts, 95.0))
-        hb.set_clim(0.0, vmax)
-        # Say so on the bar, otherwise the saturated core reads as a real plateau.
-        cb_label = f"count  (linear, clipped at p95)"
-    plt.colorbar(hb, ax=ax, label=cb_label, pad=0.02, fraction=0.046)
-
-    # Quantile bins over σ so each point aggregates the same number of samples.
-    n_bins = 25
-    edges = np.unique(np.percentile(two_sig, np.linspace(0, 100, n_bins + 1)))
-    if edges.size >= 3:
-        idx = np.clip(np.digitize(two_sig, edges[1:-1]), 0, edges.size - 2)
-        centers, med, p95 = [], [], []
-        for b in range(edges.size - 1):
-            m = idx == b
-            if m.sum() < 50:
-                continue
-            centers.append(np.median(two_sig[m]))
-            med.append(np.median(abs_err[m]))
-            p95.append(np.percentile(abs_err[m], 95.0))
-        ax.plot(centers, p95, color="#d95f02", marker="o", ms=4, lw=2.0,
-                label="p95 |err| per σ-bin")
-        ax.plot(centers, med, color="#7570b3", marker="s", ms=4, lw=2.0,
-                label="median |err| per σ-bin")
-
-    ax.plot([0, hi], [0, hi], color="red", ls="--", lw=2.0, alpha=0.85,
-            label="y = x  (ideal p95)")
-    ax.plot([0, hi], [0, 0.337 * hi], color="red", ls=":", lw=1.6, alpha=0.7,
-            label="0.337·x  (ideal median)")
-
-    cover = float((abs_err <= two_sig).mean())
-    ax.set_xlim(0, hi); ax.set_ylim(0, hi)
-    # No "(z-scored)" on the labels: the panel title already says "[z]", and
-    # the long ylabel ran into the lower panel's title in the stacked figure.
-    ax.set_xlabel("2σ  (predicted)")
-    ax.set_ylabel("|prediction − target|")
-    # `pad` scaled with the active title fontsize (matplotlib's own default,
-    # ~6pt, doesn't scale with fontsize) -- in the stacked 2-panel figure this
-    # is what keeps the lower panel's title clear of the upper panel's
-    # xlabel; subplot/tight_layout spacing knobs didn't move this at all.
-    title_fs = matplotlib.rcParams.get("axes.titlesize", 12)
-    if not isinstance(title_fs, (int, float)):
-        title_fs = matplotlib.rcParams["font.size"]
-    ax.set_title(f"{channel}: 2σ cov. {100 * cover:.1f}% (exp. 95.4%)",
-                pad=1.8 * title_fs)
-    if legend:
-        ax.legend(loc="upper left", fontsize=FS_LEGEND_DENSE, framealpha=1)
-
-
-# --------------------------------------------------------------------------- #
-# Conditional-density figure (fnn_<species>_conditional.png)
-#
-# Why it exists, in one paragraph. The joint hexbin in *_target_vs_pred.png
-# understates the surrogate for two reasons that have nothing to do with model
-# quality: a spike of DARK detectors (target exactly 0) owns the colour scale,
-# and the mean head is fitted to a stochastic target, so its cloud is *supposed*
-# to be narrower than the data. This figure drops the dark samples and normalises
-# per target-column, then overlays the mean and ±1σ of the SAME conditional
-# (prediction | target) so image and curve agree. Its slope is read against
-# Var(pred)/Var(target), not against 1.00 — see `_conditional_panel`.
-# --------------------------------------------------------------------------- #
-
-# p16/p84 — the ±1σ interval of a Gaussian, so the drawn band is directly
-# comparable to the head's own predicted σ.
-SIGMA_QUANTILES = (0.16, 0.84)
-
-# Axis window: p99.9 of the target, not its max. A handful of extreme targets
-# would otherwise spend most of the axis on whitespace.
-AXIS_PERCENTILE = 99.9
-
-BinnedProfile = namedtuple("BinnedProfile", "bin_center mean p16 p84 count")
 
 
 def profile_by_bin(key, value, edges, min_count):
@@ -428,7 +321,7 @@ def _conditional_panel(ax, target, pred, channel: str,
 
     both from measured moments alone.
 
-    MEAN, not median: the mean is what the Gaussian NLL fits the head to, and
+    MEAN, not median: the mean is what the MSE objective fits the head to, and
     the conditional is strongly right-skewed in log1p space near zero.
 
     Only the slope and its expected value reach the title; the rest goes to
@@ -495,7 +388,7 @@ def _render_fnn_conditional(fnn, primary, xy, E_true, T_true, val_idx,
     density dominated by the dark-detector population. Needs no variance head:
     every reference on this figure comes from measured moments (see
     `_conditional_panel`), so it renders identically for a mean-only checkpoint.
-    The predicted σ is tested in fnn_*_calibration.png instead."""
+    The surrogate is mean-only, so there is no predicted σ to test."""
     p, x = primary[val_idx], xy[val_idx]
     E_pred, T_pred = (a.flatten().numpy() for a in fnn_predict(fnn, p, x))
     channels = (
@@ -545,84 +438,6 @@ def _print_conditional_stats(stats, E_target, E_pred):
             continue
         print(f"       [{tag}] hit {100 * st['hit_frac']:.2f}% "
               f"(n={st['n_hit']:,})  1σ band {st['band_sigma']:.3f}")
-
-
-@torch.no_grad()
-def fnn_predict_sigma(fnn, primary: torch.Tensor, xy: torch.Tensor):
-    """Per-detector predicted σ in raw target units, (N, n_det) for E and T.
-
-    Uses the heteroscedastic head's `forward_var` (raw-unit variance), which is
-    the un-z-scored counterpart of the logvar the NLL loss trains on."""
-    N = primary.shape[0]
-    E_sig = torch.empty((N, N_DETECTORS), dtype=torch.float32)
-    T_sig = torch.empty((N, N_DETECTORS), dtype=torch.float32)
-    for lo in range(0, N, BATCH):
-        hi = min(lo + BATCH, N)
-        var = fnn.forward_var(primary[lo:hi].to(DEVICE), xy[lo:hi].to(DEVICE))
-        sig = var.clamp_min(1e-24).sqrt().cpu()
-        E_sig[lo:hi] = sig[..., 0]
-        T_sig[lo:hi] = sig[..., 1]
-    return E_sig, T_sig
-
-
-def _render_fnn_calibration(fnn, primary, xy, E_true, T_true, val_idx,
-                            output_path, formats=("png",)):
-    """Uncertainty-calibration figure for one surrogate: one panel per channel.
-
-    Drawn in the Z-SCORED space the network is actually trained in. The logvar
-    head lives entirely in z-scored space and `gaussian_nll_normalized` computes
-    its loss there, so plotting raw log1p units showed the head against a scale
-    it never optimises. Dividing σ and the error by the channel's `out_std` is
-    the exact transform the loss applies, so every ratio (and the coverage
-    number) is unchanged — only the axes move into training units.
-
-    Requires a heteroscedastic (mean+variance) head — callers check `forward_var`."""
-    import numpy as np
-
-    p   = primary[val_idx]
-    x   = xy[val_idx]
-    E_t = E_true[val_idx]
-    T_t = T_true[val_idx]
-    E_p, T_p = fnn_predict(fnn, p, x)
-    E_s, T_s = fnn_predict_sigma(fnn, p, x)
-
-    # Per-channel output scale, from the same broadcast-shared buffers forward()
-    # reads: E stat at index 0, T stat at index n_det.
-    nd = int(getattr(fnn, "n_det", N_DETECTORS))
-    E_std = float(fnn.out_std[0])
-    T_std = float(fnn.out_std[nd])
-
-    E_err = ((E_p - E_t).flatten().numpy()) / E_std
-    T_err = ((T_p - T_t).flatten().numpy()) / T_std
-    E_sig = (E_s.flatten().numpy()) / E_std
-    T_sig = (T_s.flatten().numpy()) / T_std
-
-    fig, axes = plt.subplots(2, 1, figsize=FIGSIZE_CALIBRATION)
-    _calibration_panel(axes[0], E_sig, E_err, "log1p(E)  [z]", legend=False)
-    _calibration_panel(axes[1], T_sig, T_err, f"log1p(T·{T_LOG_SCALE:.0e})  [z]", legend=False)
-    fig.suptitle(f"Predicted σ vs error (N={E_err.size:,})", fontsize=FS_SUPTITLE)
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", fontsize=FS_LEGEND_DENSE,
-              ncol=2, bbox_to_anchor=(0.5, -0.12))
-    # `rect` top=0.94 reserves headroom for the suptitle; bottom=0.1 reserves
-    # headroom below the lower panel's own xlabel for the legend two rows
-    # below it (bbox_to_anchor alone doesn't -- tight_layout has no idea a
-    # legend exists outside the axes it's fitting).
-    fig.tight_layout(rect=(0, 0.1, 1, 0.94))
-    # tight_layout's own h_pad is only advisory and empirically does nothing
-    # here -- subplots_adjust after it is what actually forces a bigger gap,
-    # which the lower panel's title needs to clear the upper panel's xlabel.
-    fig.subplots_adjust(hspace=0.6)
-    _savefig_multi(fig, output_path, dpi=130, formats=formats)
-    plt.close(fig)
-    # z-scored, matching the figure and the NLL loss. mean(err^2/var) is the
-    # quantity the NLL balances: 1.0 is calibrated, >1 over-confident.
-    E_r = float((E_err ** 2 / np.maximum(E_sig ** 2, 1e-30)).mean())
-    T_r = float((T_err ** 2 / np.maximum(T_sig ** 2, 1e-30)).mean())
-    print(f"       [z-scored] E: RMSE={np.sqrt((E_err**2).mean()):.4f}  "
-          f"mean σ={E_sig.mean():.4f}  mean err²/σ²={E_r:.3f}   "
-          f"T: RMSE={np.sqrt((T_err**2).mean()):.4f}  "
-          f"mean σ={T_sig.mean():.4f}  mean err²/σ²={T_r:.3f}")
 
 
 def load_fnn() -> FNNSurrogate:
@@ -956,10 +771,6 @@ def plot_fnn_only(*, fnn=None,
     _render_fnn_conditional(
         fnn, primary, xy, E_true, T_true, val_idx,
         base.replace("target_vs_pred", "conditional") + ext)
-    if hasattr(fnn, "forward_var"):
-        _render_fnn_calibration(
-            fnn, primary, xy, E_true, T_true, val_idx,
-            base.replace("target_vs_pred", "calibration") + ext)
 
 
 def plot_recon_only(*, fnn=None, recon=None,
@@ -1086,14 +897,6 @@ def plot_fnn_dual(output_dir=None):
         _render_fnn_conditional(
             fnn, primary[idx], xy[idx], E_true[idx], T_true[idx], val_idx,
             os.path.join(output_dir, f"fnn_{tag}_conditional.png"))
-        # Calibration only exists for the heteroscedastic (mean+var) head; a
-        # plain FNNSurrogate checkpoint has no forward_var and is skipped.
-        if hasattr(fnn, "forward_var"):
-            _render_fnn_calibration(
-                fnn, primary[idx], xy[idx], E_true[idx], T_true[idx], val_idx,
-                os.path.join(output_dir, f"fnn_{tag}_calibration.png"))
-        else:
-            print(f"[skip] {tag}: no forward_var (not a mean+variance head)")
 
 
 def plot_recon_dual(output_path=None, recon_folder=RECON_DEEPSETS_FOLDER, formats=("png",)):

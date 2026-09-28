@@ -99,8 +99,6 @@ FIGURE_SPECS = {
     "detector_patterns_representative": 1.0,
     "fnn_conditional_electron":       1.0,
     "fnn_conditional_muon":           1.0,
-    "fnn_calibration_electron":       0.5,
-    "fnn_calibration_muon":           0.5,
     # The paper uses the CONDITIONAL density (P(pred|target) with the mean and
     # +/-1 sigma overlay), not the raw joint hexbin: the joint is dominated by
     # where the targets happen to sit, so it reads as quality when it is really
@@ -508,7 +506,6 @@ def make_deepsets_figures(outdir, frac_by_name, textwidth_pt):
     species_ids = torch.load(os.path.join(nnplot.TRAINING_DATASET_FOLDER, "species_ids.pt")).long()
 
     cond_w = nnplot.FIGSIZE_CONDITIONAL[0]     # 13
-    calib_w = nnplot.FIGSIZE_CALIBRATION[0]    # 7.5
     for tag, species_val in nnplot.SPECIES_TAGS:
         idx = torch.nonzero(species_ids == species_val).squeeze(-1)
         if idx.numel() == 0:
@@ -528,20 +525,6 @@ def make_deepsets_figures(outdir, frac_by_name, textwidth_pt):
                 fnn, primary[idx], xy[idx], E_true[idx], T_true[idx], val_idx,
                 os.path.join(outdir, f"fnn_conditional_{tag}.png"), formats=("pdf",))
 
-        if hasattr(fnn, "forward_var"):
-            calib_frac = frac_by_name[f"fnn_calibration_{tag}"]
-            # This legend's own entries are long ("0.337·x  (ideal median)"),
-            # and at 0.5\textwidth the panel is narrow -- a smaller target
-            # than TARGET_LEGEND_PT keeps the box from spanning the panel.
-            nnplot.FS_LEGEND_DENSE = pf(5.5, calib_w, calib_frac)
-            nnplot.FS_SUPTITLE = pf(ps.TARGET_TITLE_PT, calib_w, calib_frac)
-            with matplotlib.rc_context(rc=ps.paper_rc(
-                    calib_w, calib_frac, textwidth_pt, legend_pt=5.5)):
-                nnplot._render_fnn_calibration(
-                    fnn, primary[idx], xy[idx], E_true[idx], T_true[idx], val_idx,
-                    os.path.join(outdir, f"fnn_calibration_{tag}.png"), formats=("pdf",))
-        else:
-            print(f"[skip] {tag}: no forward_var (not a mean+variance head)")
 
     recon_w = nnplot.FIGSIZE_RECON[0]          # 18
     recon_frac = frac_by_name["recon_conditional"]
@@ -708,20 +691,6 @@ RESULTS_SECTION = r"""\section{Results}
 \end{figure}
 
 
-\begin{figure}
-    \centering
-    \includegraphics[width=0.5\linewidth]{figures/results/fnn_calibration_electron.pdf}
-    \caption{Caption}
-    \label{fig:electrons-std}
-\end{figure}
-
-\begin{figure}
-    \centering
-    \includegraphics[width=0.5\linewidth]{figures/results/fnn_calibration_muon.pdf}
-    \caption{Caption}
-    \label{fig:muons-std}
-\end{figure}
-
 \subsection{Reconstruction network}
 \begin{figure}
     \centering
@@ -757,7 +726,6 @@ def write_includegraphics(outdir, frac_by_name):
         shower_over_mountain_global -> showers_overlaid_mountain
         shower_over_mountain_activation -> detector_patterns_representative
         fnn_electron_conditional    -> fnn_conditional_electron
-        electrons_std / muons_std   -> fnn_calibration_electron / _muon
         recon_target_vs_output      -> recon_conditional
         optimized_simple            -> layout_density_activation_{center,grid} composite
         optimized                   -> layout_density_k6_{center,grid} composite
