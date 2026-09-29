@@ -14,9 +14,17 @@ explanation, that TambOpt lacks SWGO's acceptance term, is **not supported at
 σ = 50**: adding the term reshapes the layout but does not improve the true
 utility, because acceptance is already ~89% saturated. It is **still open at
 σ = 10**, where acceptance is far from saturated but the result has not been
-checked against the kernel. The other structural differences from SWGOLO (how
-the score is built, whether the reconstruction adapts to the layout, step size)
-have not been tested.
+checked against the kernel.
+
+**Which differences matter.** Of the SWGOLO-vs-TambOpt differences (§1), the
+forward model in the loop (analytic simulator vs learned surrogate), whether the
+recon adapts to the layout, the optimizer and step size, and the starting layout
+are **arbitrary implementation choices**. They change how well an optimizer
+finds the optimum of an objective, not where that optimum is, so they are not an
+explanation for why SWGO's optimum has structure and TambOpt's does not. The
+differences that can move the optimum are the problem definition: **where showers
+land relative to the array** (H1) and **what the objective rewards** (H2/H3:
+acceptance traded against resolution).
 
 **Update (§9): σ = 10 is less flat.** Scored against the kernel at σ = 10, five
 layouts span 7.5% of the utility (vs 1.6% at σ = 50), and the acceptance-driven
@@ -40,8 +48,8 @@ than the array (§1).
 | H4 | Acceptance has room to move | **Depends on σ** | σ = 10: kernel mean r 0.57, 42% of events r < 0.5 (§4). σ = 50: mean r 0.89, bimodal, 80% fully lit / 11% dark (§8) |
 | H5 | The surrogate misjudges acceptance | **Confirmed** | Optimistic in both runs: median lit 9.8 vs 6.2 (σ = 10); dark events 2% vs 11% (σ = 50) |
 | H6 | The score type matters: frozen-recon point error vs SWGOLO's likelihood-based expected resolution | **Untested** | §1 |
-| H7 | A reconstruction that doesn't adapt to the layout flattens the objective | **Untested** | SWGOLO refits (C++) or fine-tunes (notebook); TambOpt's recon is frozen (§1) |
-| H8 | Kernel-in-the-loop optimization fails | **Untested fairly** | Run 12's attempt started from a ~30 m blob and moved 12–34 m (§3) |
+| H7 | A reconstruction that doesn't adapt to the layout flattens the objective | **Untested; implementation choice** | SWGOLO refits (C++) or fine-tunes (notebook); TambOpt's recon is frozen (§1). Affects how well the optimum is found, not where it is |
+| H8 | Kernel-in-the-loop optimization fails | **Untested fairly; implementation choice** | Run 12's attempt started from a ~30 m blob and moved 12–34 m (§3). Simulator vs surrogate in the loop is an implementation choice |
 
 Acceptance effect in detail: at σ = 50 the λ term only lifted the worst-lit
 events (lit detectors, worst 10%: 7.8 → 10.4; r < 0.5: 10.5% → 10.0%), at no
@@ -59,6 +67,15 @@ so neither is a robust "SWGO-like" structure yet.
 | Reconstruction vs layout | C++ refits every event by likelihood; notebook fine-tunes the recon every 5 steps on showers from the current layout | Recon frozen, trained on 7 fixed layout strategies; also takes (x, y) as direct inputs |
 | Step size | Each detector's step normalised to ~0.25 × maxDispl (up to 400 m) with a floor; per-detector adaptive LR from the angle between consecutive moves | Adam, lr = 1 m/step |
 | Starting layout | Rings to 1 km, or SWGO benchmark layouts | `center` = all 100 detectors inside ~30 m, or `grid` |
+
+**Fundamental vs arbitrary.** Only two rows describe the problem itself:
+*where cores land* (the shower geometry, §2) and the *score* (what the objective
+rewards, in particular whether acceptance is traded against resolution). The
+forward model, showers per step, recon-vs-layout, step size and starting layout
+are **arbitrary implementation choices**: they decide how well and how fast an
+optimizer reaches the objective's optimum, not what that optimum is. They are
+not an explanation for the structure difference, and matching them to SWGOLO
+would not by itself produce SWGO-like layouts.
 
 Evidence that SWGOLO's notebook layout really moved: rings (median radius
 750 m, nearest-neighbour CV 0.17) → final median radius 1,800 m, NN CV 0.93;
