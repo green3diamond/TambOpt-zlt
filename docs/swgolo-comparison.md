@@ -339,6 +339,74 @@ Reading:
   effect. Effect sizes are small and there are no error bars yet; the paired
   design helps, but a bootstrap over events should confirm the ordering.
 
+## 10. Possible future work: the event population and what bounds an acceptance term
+
+Both items concern the problem definition, not the implementation (§1,
+"Fundamental vs arbitrary").
+
+### 10.1 Near-miss taus (where showers land)
+
+The flat illumination in §2 is plausibly TAMBO physics: Earth-skimming taus
+come from all azimuths onto one slope, so no part of the mesh sees more or
+better-contained showers than another. Expecting a SWGO-style dense core from
+geometry would be the mistake.
+
+The **axis-hit cut** is a different matter. `tau_wholesky.jl` keeps a tau only
+if its axis ray crosses the detector mesh (`before_obs_mesh`). A shower is
+hundreds of metres wide and its footprint on the slope is stretched ~3.3× (§2),
+so taus whose axis passes just outside the mesh can still light edge detectors.
+Those near-miss events:
+
+- are real events a real array would record;
+- are absent from the corpus, so the optimizer never learns that edge detectors
+  could catch them;
+- are the analogue of SWGO's partly-contained, beyond-the-edge showers, the
+  population that rewards spreading toward the boundary.
+
+So the cut may remove exactly the physics that could create edge structure in
+TambOpt. That is a simulation selection choice, not TAMBO physics.
+
+**Test.** Rerun `tau_wholesky.jl` with the axis-hit cut relaxed to "axis passes
+within D of the mesh" (e.g. D = 500 m), other cuts unchanged; measure what
+fraction of the added events light at least a few edge detectors under the
+kernel. If it is substantial, those events belong in the corpus. Needs a
+TamboSim checkout and a Stage-0 regeneration for the added events.
+
+### 10.2 What bounds SWGO's expansion, and what would bound TambOpt's
+
+SWGO's layout expands because showers land beyond its edge and the acceptance
+term rewards catching them (notebook: median radius 750 m → 1,800 m). Three
+things stop it:
+
+1. **The trigger needs several detectors** (3 lit in the notebook,
+   `Ntrigger = 50` of 150 units in the C++). Spread too thin, footprints cover
+   too few detectors, events stop triggering, and acceptance itself falls. So
+   acceptance peaks at some spacing rather than rising with radius.
+2. **Resolution falls with sparser sampling**, the other side of the trade-off.
+3. **Showers stop at the edge of the throw region.**
+   - Notebook: cores in a fixed ±3 km box. The final layout (median radius
+     1.8 km, p90 2.8 km) presses against it and its utility was still rising,
+     so part of its "halo" may be set by the arbitrary box size rather than a
+     real optimum.
+   - C++: cores within `Rslack = 2000 m` of the array's own extent
+     (`TotalRspan = Rslack + ⟨R⟩ + 2·rms(R)`), so the throw region grows with the
+     array, with an `ExposureFactor` scaling utility by illuminated area. Optional
+     area / cable-length costs (`UseAreaCost`, `UseLengthCost`, off by default)
+     would penalise expansion directly.
+
+SWGO's optimum sits where the marginal acceptance gain from spreading equals the
+marginal resolution and trigger loss. **The size of the throw region is an input
+to that result**, just as TambOpt's axis-hit cut is an input to ours.
+
+**Implication.** If TambOpt adds acceptance (λ·mean(r), §5) and near-miss events
+(10.1), the same balance decides how far edge detectors should reach. That
+depends on two inputs to be set physically, not copied from SWGO:
+
+- the trigger requirement (the reconstructability gate's threshold and
+  steepness, currently tuned by hand, see `objective.py`'s TODO);
+- how far beyond the mesh events are included (D in 10.1), which should follow
+  from where showers can actually light the array, not from a box size.
+
 ## Files added this session
 
 | File | Purpose |
