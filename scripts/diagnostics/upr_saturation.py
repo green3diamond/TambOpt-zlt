@@ -56,6 +56,13 @@ _build = _dual.build_surrogate_from_ckpt
 
 
 def _build_mean_only(ckpt, *a, **kw):
+    # Only when the model can't take the checkpoint as-is: NLL-head code (e.g.
+    # branch run12-nll-sigma50) loads 4-output checkpoints unchanged.
+    try:
+        return _build(ckpt, *a, **kw)
+    except RuntimeError as exc:
+        if "size mismatch" not in str(exc):
+            raise
     sd = ckpt["state_dict"]
     dec = sorted({int(k.split(".")[1]) for k in sd if k.startswith("decoder.")})
     if dec:
@@ -88,14 +95,19 @@ def layouts(mountain):
     return out
 
 
+RT = RECONSTRUCT_THRESHOLD   # overridden per --reconstruct-thresholds entry
+SUMMARY = []
+
+
 def terms(x, y, primary, fnn, recon):
     """Each weighted utility term as its own scalar, plus per-event r and soft count."""
-    E_det, E_pred, th_pred, ph_pred = _predict_primary(x, y, primary, fnn, recon)
+    E_det, E_pred, th_pred, ph_pred = _predict_primary(x, y, primary, fnn, recon,
+                                                         sample=False)
     E_true, th_true, ph_true = primary_to_physical_labels(primary)
     counts = torch.expm1(E_det)
     soft = torch.sigmoid(TAU_LAYOUT * (counts - LAYOUT_THRESHOLD)).sum(1)
     r = reconstructability(counts, layout_threshold=LAYOUT_THRESHOLD, tau_layout=TAU_LAYOUT,
-                           reconstruct_threshold=RECONSTRUCT_THRESHOLD,
+                           reconstruct_threshold=RT,
                            tau_reconstruct=TAU_RECONSTRUCT)
     t = dict(
         u_theta=W_THETA * U_angle(th_pred, th_true, r, cap=CAP_THETA) / W_DIV,
@@ -112,7 +124,7 @@ def report(tag, name, x0, y0, primary, fnn, recon):
     t, r, soft = terms(x, y, primary, fnn, recon)
     rn = r.detach().cpu().numpy()
     sn = soft.detach().cpu().numpy()
-    print(f"\n[{tag}] layout={name}  B={len(rn)}")
+    print(f"\n[{tag}] layout={name}  B={len(rn)}  reconstruct_threshold={RT}")
     print(f"    soft lit-detector count p10/p50/p90 = {np.percentile(sn, [10, 50, 90]).round(1)}")
     print(f"    r p5/p25/p50 = {np.percentile(rn, [5, 25, 50]).round(3)}  "
           f"frac r>0.95 = {(rn > 0.95).mean():.3f}  frac r<0.5 = {(rn < 0.5).mean():.3f}")
@@ -130,6 +142,8 @@ def report(tag, name, x0, y0, primary, fnn, recon):
     if gn["u_pr"] > 0:
         print(f"    -> weight on u_pr for gradient parity with resolution terms: "
               f"x{res / gn['u_pr']:.3e} (current weight 1)")
+    SUMMARY.append((RT, tag, name, rn.mean(), (rn < 0.5).mean(),
+                    sum(t[k].item() for k in ("u_theta", "u_phi", "u_e")), res))
     return dict(r=rn, soft=sn, grad=gn)
 
 
@@ -141,7 +155,13 @@ def main():
     ap.add_argument("--n-kernel-r", type=int, default=1024,
                     help="events for the no-grad kernel r distribution")
     ap.add_argument("--skip-surrogate", action="store_true")
+    ap.add_argument("--layout", action="append", default=[],
+                    help="extra layout name=path.pt or name=file.npz:key (x=East, y=North)")
+    ap.add_argument("--reconstruct-thresholds", type=float, nargs="+",
+                    default=[RECONSTRUCT_THRESHOLD],
+                    help="lit-detector count at which r = 0.5; each value is a separate pass")
     args = ap.parse_args()
+    global RT
     print(f"RUN_LOCATION={RUN_LOCATION}  device={DEVICE}")
 
     mountain = load_tr_mountain(GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
@@ -150,9 +170,20 @@ def main():
     surface = SurfaceUpMap.from_mountain(mountain, grid_h=256, grid_w=256).to(DEVICE)
     fnn, recon = load_models(DEVICE)
     L = layouts(mountain)
+    for spec in args.layout:
+        name, path = spec.split("=", 1)
+        if ".npz:" in path:
+            f, key = path.split(":", 1)
+            import numpy as _np
+            A = _np.load(f)[key]
+            L[name] = (torch.as_tensor(A[:, 0]).float(), torch.as_tensor(A[:, 1]).float())
+        else:
+            d = torch.load(path, map_location="cpu", weights_only=False)
+            L[name] = (torch.as_tensor(d["x"]).float(), torch.as_tensor(d["y"]).float())
 
     if not args.skip_surrogate:
-        surrogate_pass(args, L, fnn, recon)
+        for RT in args.reconstruct_thresholds:
+            surrogate_pass(args, L, fnn, recon)
     del fnn
     torch.cuda.empty_cache()
 
@@ -160,25 +191,40 @@ def main():
     clouds, B, _, prim_k = load_events(args.n_kernel_r, DEVICE, mountain)
     kern = KernelDualLabels(clouds, surface, DEVICE, chunk=args.chunk, expected_primary=prim_k)
     with torch.no_grad():
+        E_true, th_true, ph_true = primary_to_physical_labels(prim_k)
         for name, (x, y) in L.items():
-            counts = torch.expm1(kern(prim_k, torch.stack([x, y], -1).to(DEVICE)[None].expand(B, -1, -1))[..., 0])
+            E_det, E_pred, th_pred, ph_pred = _predict_primary(
+                x.to(DEVICE), y.to(DEVICE), prim_k, kern, recon, sample=False)
+            counts = torch.expm1(E_det)
             soft = torch.sigmoid(TAU_LAYOUT * (counts - LAYOUT_THRESHOLD)).sum(1).cpu().numpy()
-            r = reconstructability(counts, layout_threshold=LAYOUT_THRESHOLD, tau_layout=TAU_LAYOUT,
-                                   reconstruct_threshold=RECONSTRUCT_THRESHOLD,
-                                   tau_reconstruct=TAU_RECONSTRUCT).cpu().numpy()
             print(f"\n[kernel no-grad] layout={name}  B={B}")
             print(f"    soft lit-detector count p10/p50/p90 = {np.percentile(soft, [10, 50, 90]).round(1)}")
-            print(f"    r p5/p25/p50 = {np.percentile(r, [5, 25, 50]).round(3)}  "
-                  f"frac r>0.95 = {(r > 0.95).mean():.3f}  frac r<0.5 = {(r < 0.5).mean():.3f}  mean r = {r.mean():.4f}")
+            for rt in args.reconstruct_thresholds:
+                rr = reconstructability(counts, layout_threshold=LAYOUT_THRESHOLD, tau_layout=TAU_LAYOUT,
+                                        reconstruct_threshold=rt,
+                                        tau_reconstruct=TAU_RECONSTRUCT)
+                ures = (W_THETA * U_angle(th_pred, th_true, rr, cap=CAP_THETA)
+                        + W_PHI * U_angle(ph_pred, ph_true, rr, cap=CAP_PHI, period=2 * math.pi)
+                        + W_E * U_E(E_pred, E_true, rr, cap=CAP_E)).item() / W_DIV
+                r = rr.cpu().numpy()
+                print(f"    threshold={rt:g}: r p5/p25/p50 = {np.percentile(r, [5, 25, 50]).round(3)}  "
+                      f"frac r>0.95 = {(r > 0.95).mean():.3f}  frac r<0.5 = {(r < 0.5).mean():.3f}  "
+                      f"mean r = {r.mean():.4f}  U_res = {ures:.3f}")
+                SUMMARY.append((rt, "kern1024", name, r.mean(), (r < 0.5).mean(), ures, float("nan")))
     del kern, clouds
     torch.cuda.empty_cache()
 
     clouds, B, _, prim_k = load_events(args.n_kernel, DEVICE, mountain)
     kern = KernelDualLabels(clouds, surface, DEVICE, chunk=args.chunk,
                             differentiable=True, expected_primary=prim_k)
-    for name, (x, y) in L.items():
-        report("kernel", name, x, y, prim_k, kern, recon)
-        torch.cuda.empty_cache()
+    for RT in args.reconstruct_thresholds:
+        for name, (x, y) in L.items():
+            report("kernel", name, x, y, prim_k, kern, recon)
+            torch.cuda.empty_cache()
+
+    print("\n[summary] threshold  source     layout             mean_r  frac_r<0.5  U_res   |grad U_res|")
+    for rt, tag, name, mr, fd, ures, g in SUMMARY:
+        print(f"[summary] {rt:9g}  {tag:9s}  {name:17s}  {mr:.4f}  {fd:.3f}      {ures:7.3f}  {g:.3e}")
 
 
 def surrogate_pass(args, L, fnn, recon):

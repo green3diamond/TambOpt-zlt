@@ -61,6 +61,15 @@ FIGSIZE_CONDITIONAL = (13, 5.6)    # _render_fnn_conditional
 FIGSIZE_SCATTER      = (10, 4.8)   # _render_fnn_scatter
 FIGSIZE_RECON        = (10, 10.6)  # _render_recon_scatter (2x2 grid)
 
+# Conditional-density band: p16/p84, the ±1σ interval of a Gaussian. Restored
+# after 31633e0 deleted the definition but kept its uses (NameError in every
+# *_conditional.png render since).
+SIGMA_QUANTILES = (0.16, 0.84)
+
+# Axis window: p99.9 of the target, not its max. A handful of extreme targets
+# would otherwise spend most of the axis on whitespace.
+AXIS_PERCENTILE = 99.9
+
 import torch
 import matplotlib
 matplotlib.use("Agg")
@@ -185,6 +194,9 @@ def _scatter(ax, x, y, title: str, vmin=None, vmax=None, lo=None, hi=None, legen
     ax.set_title(title)
     if legend:
         ax.legend(loc="upper left", fontsize=FS_LEGEND, framealpha=1)
+
+
+BinnedProfile = namedtuple("BinnedProfile", "bin_center mean p16 p84 count")
 
 
 def profile_by_bin(key, value, edges, min_count):

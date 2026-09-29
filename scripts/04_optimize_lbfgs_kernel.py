@@ -77,8 +77,10 @@ import modules  # noqa: F401 — package import; keeps modules on the path
 from modules.constants import (
     N_DETECTORS, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, RECON_FOLDER, OPT_FOLDER,
-    LOG_E_MIN, LOG_E_MAX, T_LOG_SCALE,
+    LOG_E_MIN, LOG_E_MAX, T_LOG_SCALE, KERNEL_INTERP_K, SIGMA_SPATIAL,
 )
+from modules.data.dataset_builder import compute_labels_batch
+from modules.showers.kernel import adaptive_bandwidths
 from modules.layouts import LearnableXY
 from modules.geometry import load_tr_mountain, SurfaceUpMap
 from modules.geometry import project_to_mountain_ne, sample_initial_layout_ne
@@ -111,6 +113,28 @@ _plt_spec.loader.exec_module(_opt_plotting)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEED = 4200
+
+
+class CachedKernel(KernelDualLabels):
+    """KernelDualLabels that searches neighbours once. The interpolated kernel's
+    bandwidths depend only on the (fixed) clouds, so each species/chunk slice's
+    widths are computed on first use and reused every epoch. Output is identical
+    to KernelDualLabels; only the per-step neighbour search is skipped."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._bw = {}
+
+    def _labels(self, clouds, e_det, n_det):
+        key = (clouds.data_ptr(), tuple(clouds.shape))
+        if key not in self._bw:
+            with torch.no_grad():
+                self._bw[key] = (adaptive_bandwidths(clouds, KERNEL_INTERP_K, SIGMA_SPATIAL)
+                                 if KERNEL_INTERP_K else None)
+        E, T = compute_labels_batch(clouds, e_det, n_det, self.surface,
+                                    differentiable=self.differentiable,
+                                    bandwidth=self._bw[key])
+        return torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1)
 
 
 def plot_layout_density(best_x, best_y, mountain, out_dir):
@@ -387,6 +411,9 @@ def main():
                     help="min fired detectors for the analytic plane fit -- "
                          "see analytic_eval's docstring")
     ap.add_argument("--analytic-ldf-steps", type=int, default=200)
+    ap.add_argument("--ckpt-every", type=int, default=250,
+                    help="save optimizer state every N epochs; a rerun with the "
+                         "same --out-suffix resumes from it (requeue-safe)")
     ap.add_argument("--skip-analytic-eval", action="store_true",
                     help="skip the analytic (plane-front + LDF) evaluation "
                          "of the init/best layouts -- it never affects the "
@@ -417,9 +444,9 @@ def main():
     species_clouds, B, n_pairs, primary_batch = load_events(args.n_events, DEVICE, mountain)
     print(f"[load] {B} held-out events (of {n_pairs} available) in "
           f"{time.time() - t0:.1f}s")
-    kernel_fnn = KernelDualLabels(species_clouds, surface, DEVICE,
-                                 chunk=args.chunk, differentiable=True,
-                                 expected_primary=primary_batch)
+    kernel_fnn = CachedKernel(species_clouds, surface, DEVICE,
+                             chunk=args.chunk, differentiable=True,
+                             expected_primary=primary_batch)
 
     e_init, n_init = init_layout(mountain, args.init, DEVICE)
     xy_module = LearnableXY(e_init, n_init, device=str(DEVICE)).to(DEVICE)
@@ -441,8 +468,20 @@ def main():
     best_u = -float("inf")
     best_x = e_init.detach().cpu().clone()
     best_y = n_init.detach().cpu().clone()
+    start = 0
 
-    for epoch in range(args.epochs):
+    # Resume after a requeue: same out_dir means same run.
+    state_path = os.path.join(out_dir, "opt_state.pt")
+    if os.path.exists(state_path):
+        st = torch.load(state_path, map_location=DEVICE, weights_only=False)
+        xy_module.load_state_dict(st["xy"])
+        optimizer.load_state_dict(st["optimizer"])
+        start, log, best_u = st["epoch"], st["log"], st["best_u"]
+        best_x, best_y = st["best_x"], st["best_y"]
+        print(f"[resume] {state_path} at epoch {start}, best U={best_u:+.3f}")
+    t_loop = time.time()
+
+    for epoch in range(start, args.epochs):
         x_det, y_det = xy_module()
         if args.utility == "analytic":
             U, r, parts = analytic_utility_of_xy(
@@ -474,11 +513,20 @@ def main():
                         u_theta=float(parts["u_theta"].item()),
                         u_phi=float(parts["u_phi"].item()),
                         u_e=float(parts["u_e"].item())))
-        if epoch == 0 or (epoch + 1) % args.log_every == 0 or epoch == args.epochs - 1:
+        if epoch == start or (epoch + 1) % args.log_every == 0 or epoch == args.epochs - 1:
             print(f"  [{epoch+1:4d}/{args.epochs}] U={u_val:+.3f}  "
                   f"(u_theta={float(parts['u_theta']):.3f} "
                   f"u_phi={float(parts['u_phi']):.3f} "
-                  f"u_e={float(parts['u_e']):.3f})")
+                  f"u_e={float(parts['u_e']):.3f})  "
+                  f"r={log[-1]['r_mean']:.3f}  "
+                  f"{(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
+        if (epoch + 1) % args.ckpt_every == 0:
+            os.makedirs(out_dir, exist_ok=True)
+            torch.save(dict(xy=xy_module.state_dict(), optimizer=optimizer.state_dict(),
+                            epoch=epoch + 1, log=log, best_u=best_u,
+                            best_x=best_x, best_y=best_y),
+                       state_path + ".tmp")
+            os.replace(state_path + ".tmp", state_path)
 
     print(f"[done] best U={best_u:+.3f}")
     os.makedirs(out_dir, exist_ok=True)
