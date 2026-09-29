@@ -71,6 +71,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 from _pathfix import V6_ROOT  # noqa: F401 — idempotent, registers v6 root
 
+import numpy as np
+import showerdata
 import torch
 
 import modules  # noqa: F401 — package import; keeps modules on the path
@@ -79,8 +81,15 @@ from modules.constants import (
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, RECON_FOLDER, OPT_FOLDER,
     LOG_E_MIN, LOG_E_MAX, T_LOG_SCALE, KERNEL_INTERP_K, SIGMA_SPATIAL,
 )
-from modules.data.dataset_builder import compute_labels_batch
+from modules.constants import (
+    DUAL_SHOWER_CACHE_PATH, DATASET_FRACTION, NUM_SHOWERS, SPECIES_NAMES,
+    TRAINING_DATASET_FOLDER,
+)
+from modules.data.dataset_builder import (
+    compute_labels_batch, place_clouds_enu, _load_corpus_metadata,
+)
 from modules.showers.kernel import adaptive_bandwidths
+from modules.surrogates import combine_species_outputs
 from modules.layouts import LearnableXY
 from modules.geometry import load_tr_mountain, SurfaceUpMap
 from modules.geometry import project_to_mountain_ne, sample_initial_layout_ne
@@ -135,6 +144,242 @@ class CachedKernel(KernelDualLabels):
                                     differentiable=self.differentiable,
                                     bandwidth=self._bw[key])
         return torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1)
+
+
+# ── Main-corpus pool (--pool main) ────────────────────────────────────────────
+# The same events Stage 4 (04_optimize_lbfgs_ensemble.py) samples: Step 1 keeps
+# the first k_sp events of each species block, and primary.pt is those events'
+# primaries repeated over the layout strategies. Here every step draws a fresh
+# contiguous slice of them (corpus order is random: corr(index, log E) ~ 0), and
+# a fixed slice at the end of the pool is held out as the scoring set that picks
+# the best layout, as Stage 4's scoring set does. Held-out true utility is then
+# measured on the separate held-out corpus, so nothing overlaps.
+MAX_SHOWERS = (0 if DATASET_FRACTION >= 1.0 else
+               int(DATASET_FRACTION * len(SPECIES_NAMES) * NUM_SHOWERS))
+
+
+def bw_path(species):
+    return os.path.join(TRAINING_DATASET_FOLDER,
+                        f"kernel_bw_k{KERNEL_INTERP_K}_{species}.npy")
+
+
+class MainPool:
+    """Random access to the Stage-1 events' placed clouds and precomputed widths."""
+
+    def __init__(self, mountain):
+        self.meta = _load_corpus_metadata(mountain, DUAL_SHOWER_CACHE_PATH, MAX_SHOWERS)
+        self.n = self.meta.k_sp
+        self.bw = None
+        if KERNEL_INTERP_K:
+            paths = [bw_path(s) for s in SPECIES_NAMES]
+            missing = [p for p in paths if not os.path.exists(p)]
+            if missing:
+                raise FileNotFoundError(f"bandwidth cache missing, run --precompute-bw: {missing}")
+            self.bw = [np.load(p, mmap_mode="r") for p in paths]
+
+    def clouds(self, s, a, b):
+        m = self.meta
+        pts = showerdata.load(DUAL_SHOWER_CACHE_PATH, start=s * m.per_sp + a,
+                              stop=s * m.per_sp + b).points
+        c = torch.as_tensor(pts, dtype=torch.float32)
+        place_clouds_enu(c, m.positions[a:b], m.dirs[a:b],
+                         east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
+        return c
+
+    def load(self, a, b):
+        """Events [a, b): per-species clouds and widths (CPU), and primaries.
+        Events with a non-finite cloud in any species are dropped (as load_events)."""
+        clouds = [self.clouds(s, a, b) for s in range(len(SPECIES_NAMES))]
+        # Widths are stored at the file's padded width; trailing slots are padding.
+        bws = ([torch.from_numpy(np.asarray(w[a:b, :c.shape[1]], dtype=np.float32))
+                for w, c in zip(self.bw, clouds)]
+               if self.bw is not None else [None] * len(clouds))
+        prim = self.meta.primaries[a:b]
+        keep = torch.ones(b - a, dtype=torch.bool)
+        for c in clouds:
+            keep &= torch.isfinite(c).all(dim=(1, 2))
+        if not keep.all():
+            clouds = [c[keep] for c in clouds]
+            bws = [w[keep] if w is not None else None for w in bws]
+            prim = prim[keep]
+        return clouds, bws, prim
+
+
+class BatchKernel:
+    """Kernel forward for one sub-batch of pool events, same call signature as
+    KernelDualLabels: (primary_batch, xy_batch) -> (B, n_det, 2) log-encoded."""
+
+    def __init__(self, clouds, bws, surface, differentiable):
+        self.clouds, self.bws = clouds, bws
+        self.surface, self.differentiable = surface, differentiable
+
+    def __call__(self, primary_batch, xy_batch):
+        e_det, n_det = xy_batch[0, :, 0], xy_batch[0, :, 1]
+        outs = []
+        for c, w in zip(self.clouds, self.bws):
+            E, T = compute_labels_batch(c, e_det, n_det, self.surface,
+                                        differentiable=self.differentiable, bandwidth=w)
+            outs.append(torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1))
+        return combine_species_outputs(*outs)
+
+
+def pool_utility(xy_module, batch, surface, recon, chunk, backward):
+    """U over a pool batch, sub-batch by sub-batch. U is a mean of per-event terms,
+    so weighting each sub-batch by its share and calling backward per sub-batch
+    gives the full-batch gradient with memory set by `chunk`, not the batch."""
+    clouds, bws, prim = batch
+    N = prim.shape[0]
+    tot = dict(U=0.0, r_mean=0.0, u_theta=0.0, u_phi=0.0, u_e=0.0)
+    ctx = torch.enable_grad() if backward else torch.no_grad()
+    with ctx:
+        for lo in range(0, N, chunk):
+            hi = min(lo + chunk, N)
+            kern = BatchKernel([c[lo:hi].to(DEVICE, non_blocking=True) for c in clouds],
+                               [w[lo:hi].to(DEVICE) if w is not None else None for w in bws],
+                               surface, differentiable=backward)
+            x, y = xy_module()
+            U, r, parts = utility_of_xy(x, y, prim[lo:hi].to(DEVICE), kern, recon)
+            share = (hi - lo) / N
+            if backward:
+                (-share * U).backward()
+            tot["U"] += share * float(U)
+            tot["r_mean"] += share * float(r.mean())
+            for k in ("u_theta", "u_phi", "u_e"):
+                tot[k] += share * float(parts[k])
+    return tot
+
+
+def precompute_bandwidths(mountain, species_index, block=512):
+    """Write one species' interpolated-kernel widths for the whole pool to a
+    float16 .npy (resumable: a progress file records the next event)."""
+    pool = MainPool.__new__(MainPool)
+    pool.meta = _load_corpus_metadata(mountain, DUAL_SHOWER_CACHE_PATH, MAX_SHOWERS)
+    pool.n, pool.bw = pool.meta.k_sp, None
+    name = SPECIES_NAMES[species_index]
+    final = bw_path(name)
+    if os.path.exists(final):
+        print(f"[bw] {final} exists")
+        return
+    part, prog = final + ".partial", final + ".progress"
+    n_pts = showerdata.load(DUAL_SHOWER_CACHE_PATH, start=0, stop=1).points.shape[1]
+    if os.path.exists(part):
+        out = np.lib.format.open_memmap(part, mode="r+")
+        start = int(open(prog).read()) if os.path.exists(prog) else 0
+    else:
+        out = np.lib.format.open_memmap(part, mode="w+", dtype=np.float16,
+                                        shape=(pool.n, n_pts))
+        start = 0
+    print(f"[bw] {name}: events {start}..{pool.n} of pool, k={KERNEL_INTERP_K} -> {final}")
+    t0 = time.time()
+    for a in range(start, pool.n, block):
+        b = min(a + block, pool.n)
+        c = pool.clouds(species_index, a, b).to(DEVICE)
+        if c.shape[1] > n_pts:
+            raise RuntimeError(f"events {a}..{b} padded to {c.shape[1]} > {n_pts} points")
+        h = adaptive_bandwidths(c, KERNEL_INTERP_K, SIGMA_SPATIAL)
+        out[a:b, :c.shape[1]] = h.clamp(max=6e4).cpu().numpy().astype(np.float16)
+        out.flush()
+        with open(prog, "w") as f:
+            f.write(str(b))
+        if (a // block) % 20 == 0:
+            print(f"  [bw] {b}/{pool.n}  {(time.time() - t0) / (b - start):.4f}s/event", flush=True)
+    del out
+    os.replace(part, final)
+    os.remove(prog)
+    print(f"[bw] wrote {final}")
+
+
+def run_main_pool(args, mountain, surface, recon, out_dir):
+    pool = MainPool(mountain)
+    n_score = args.n_score
+    n_sweep = pool.n - n_score
+    B = args.batch_events
+    print(f"[pool] {pool.n} Stage-1 events; sweep {n_sweep}, scoring set {n_score} "
+          f"(events {n_sweep}..{pool.n}); {B} fresh events per step")
+    t0 = time.time()
+    score_set = pool.load(n_sweep, pool.n)
+    print(f"[pool] scoring set loaded ({score_set[2].shape[0]} events) in {time.time() - t0:.0f}s")
+
+    e_init, n_init = init_layout(mountain, args.init, DEVICE)
+    xy_module = LearnableXY(e_init, n_init, device=str(DEVICE)).to(DEVICE)
+    optimizer = torch.optim.Adam(xy_module.parameters(), lr=args.lr)
+
+    def score():
+        return pool_utility(xy_module, score_set, surface, recon, args.score_chunk,
+                            backward=False)["U"]
+
+    log, score_log = [], []
+    start = 0
+    state_path = os.path.join(out_dir, "opt_state.pt")
+    if os.path.exists(state_path):
+        st = torch.load(state_path, map_location=DEVICE, weights_only=False)
+        xy_module.load_state_dict(st["xy"])
+        optimizer.load_state_dict(st["optimizer"])
+        start, log, score_log = st["epoch"], st["log"], st["score_log"]
+        best_u, best_x, best_y = st["best_u"], st["best_x"], st["best_y"]
+        print(f"[resume] {state_path} at epoch {start}, best scoring-set U={best_u:+.3f}")
+    else:
+        best_u = score()
+        best_x, best_y = e_init.detach().cpu().clone(), n_init.detach().cpu().clone()
+        score_log.append(dict(epoch=0, U_score=best_u))
+        print(f"[score] init U={best_u:+.3f} on the scoring set")
+
+    def offset(epoch):
+        return int(np.random.default_rng([args.seed, epoch]).integers(0, n_sweep - B + 1))
+
+    from concurrent.futures import ThreadPoolExecutor
+    ex = ThreadPoolExecutor(max_workers=1)
+    nxt = ex.submit(lambda a: pool.load(a, a + B), offset(start)) if start < args.epochs else None
+    t_loop = time.time()
+    for epoch in range(start, args.epochs):
+        batch = nxt.result()
+        if epoch + 1 < args.epochs:
+            nxt = ex.submit(lambda a: pool.load(a, a + B), offset(epoch + 1))
+
+        optimizer.zero_grad(set_to_none=True)
+        tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True)
+        torch.nn.utils.clip_grad_norm_(xy_module.parameters(), max_norm=args.grad_clip)
+        optimizer.step()
+        with torch.no_grad():
+            e_new, n_new = project_to_mountain_ne(mountain, xy_module.x.detach().cpu(),
+                                                  xy_module.y.detach().cpu())
+            xy_module.x.data.copy_(e_new.to(DEVICE).to(xy_module.x.dtype))
+            xy_module.y.data.copy_(n_new.to(DEVICE).to(xy_module.y.dtype))
+        log.append(dict(epoch=epoch + 1, **tot))
+
+        if (epoch + 1) % args.score_every == 0 or epoch == args.epochs - 1:
+            s = score()
+            score_log.append(dict(epoch=epoch + 1, U_score=s))
+            if s > best_u:
+                best_u = s
+                best_x = xy_module.x.detach().cpu().clone()
+                best_y = xy_module.y.detach().cpu().clone()
+            print(f"  [score {epoch+1}] U_score={s:+.3f}  best={best_u:+.3f}", flush=True)
+        if epoch == start or (epoch + 1) % args.log_every == 0:
+            print(f"  [{epoch+1:5d}/{args.epochs}] U_batch={tot['U']:+.3f}  "
+                  f"(u_theta={tot['u_theta']:.3f} u_phi={tot['u_phi']:.3f} "
+                  f"u_e={tot['u_e']:.3f})  r={tot['r_mean']:.3f}  "
+                  f"{(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
+        if (epoch + 1) % args.ckpt_every == 0:
+            os.makedirs(out_dir, exist_ok=True)
+            torch.save(dict(xy=xy_module.state_dict(), optimizer=optimizer.state_dict(),
+                            epoch=epoch + 1, log=log, score_log=score_log, best_u=best_u,
+                            best_x=best_x, best_y=best_y), state_path + ".tmp")
+            os.replace(state_path + ".tmp", state_path)
+    ex.shutdown()
+
+    print(f"[done] best scoring-set U={best_u:+.3f}")
+    os.makedirs(out_dir, exist_ok=True)
+    torch.save(dict(x=best_x, y=best_y), os.path.join(out_dir, "layout_best.pt"))
+    with open(os.path.join(out_dir, "optimize_log.json"), "w") as f:
+        json.dump(dict(config=vars(args), log=log, score_log=score_log, best_u=best_u),
+                  f, indent=2)
+    print(f"[write] {out_dir}/layout_best.pt, optimize_log.json")
+    try:
+        plot_layout_density(best_x, best_y, mountain, out_dir)
+        print(f"[write] {out_dir}/layout_density.png")
+    except Exception as exc:
+        print(f"[plot] layout_density skipped ({exc!r})")
 
 
 def plot_layout_density(best_x, best_y, mountain, out_dir):
@@ -414,6 +659,18 @@ def main():
     ap.add_argument("--ckpt-every", type=int, default=250,
                     help="save optimizer state every N epochs; a rerun with the "
                          "same --out-suffix resumes from it (requeue-safe)")
+    ap.add_argument("--pool", choices=("heldout", "main"), default="heldout",
+                    help="'heldout': the first --n-events held-out events, fixed "
+                         "(original behaviour). 'main': Stage 4's own Step-1 events, "
+                         "a fresh --batch-events slice per step, best layout chosen "
+                         "on a separate --n-score scoring set")
+    ap.add_argument("--batch-events", type=int, default=512)
+    ap.add_argument("--n-score", type=int, default=1024)
+    ap.add_argument("--score-every", type=int, default=250)
+    ap.add_argument("--score-chunk", type=int, default=32)
+    ap.add_argument("--precompute-bw", type=int, default=None, metavar="SPECIES_INDEX",
+                    help="write the pool's interpolated-kernel widths for one species "
+                         "(needed once before --pool main) and exit")
     ap.add_argument("--skip-analytic-eval", action="store_true",
                     help="skip the analytic (plane-front + LDF) evaluation "
                          "of the init/best layouts -- it never affects the "
@@ -434,6 +691,17 @@ def main():
                                east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX,
                                n_planes=N_PLANES)
     surface = SurfaceUpMap.from_mountain(mountain, grid_h=256, grid_w=256).to(DEVICE)
+
+    if args.precompute_bw is not None:
+        precompute_bandwidths(mountain, args.precompute_bw)
+        return
+
+    if args.pool == "main":
+        if args.utility != "recon":
+            raise SystemExit("--pool main supports --utility recon only")
+        recon = load_recon(args.recon_folder, DEVICE)
+        run_main_pool(args, mountain, surface, recon, out_dir)
+        return
 
     # 'analytic' never touches the frozen recon -- that is the whole point of
     # this utility variant (a reconstruction-independent objective) -- so

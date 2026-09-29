@@ -196,7 +196,7 @@ def _scatter(ax, x, y, title: str, vmin=None, vmax=None, lo=None, hi=None, legen
         ax.legend(loc="upper left", fontsize=FS_LEGEND, framealpha=1)
 
 
-BinnedProfile = namedtuple("BinnedProfile", "bin_center mean p16 p84 count")
+BinnedProfile = namedtuple("BinnedProfile", "bin_center mean median p16 p84 count")
 
 
 def profile_by_bin(key, value, edges, min_count):
@@ -234,6 +234,7 @@ def profile_by_bin(key, value, edges, min_count):
     return BinnedProfile(
         bin_center=bin_center[keep],
         mean=mean[keep],
+        median=quantile(0.5)[keep],
         p16=quantile(lo_q)[keep],
         p84=quantile(hi_q)[keep],
         count=count[keep].astype(np.float64),
@@ -272,12 +273,12 @@ def _draw_column_density(ax, target, pred, edges, min_count):
 
 
 def _draw_forward_conditional(ax, profile):
-    """Draw mean-prediction-per-target-bin, its ±1σ band, and the y = x line.
+    """Draw median-prediction-per-target-bin, its ±1σ band, and the y = x line.
 
     Binned on the TARGET, which is the X axis — so the bin centre is the X
     coordinate and every prediction statistic is a Y coordinate, and the calls
     below read in the natural `(bin_center, statistic)` order. This is the same
-    conditioning the column-normalised image behind it uses, so the mean curve
+    conditioning the column-normalised image behind it uses, so the median curve
     lands inside the bright ridge instead of cutting across it.
     """
     target_bin = profile.bin_center
@@ -289,8 +290,8 @@ def _draw_forward_conditional(ax, profile):
             zorder=4, label="±1σ  (p16 / p84 of prediction)")
     ax.plot(target_bin, profile.p84, color=pink, ls=":", lw=1.5, alpha=0.9,
             zorder=4)
-    ax.plot(target_bin, profile.mean, color=pink, marker="s", ms=3.5, lw=2.2,
-            zorder=5, label="mean prediction | target")
+    ax.plot(target_bin, profile.median, color=pink, marker="s", ms=3.5, lw=2.2,
+            zorder=5, label="median prediction | target")
 
     lo, hi = ax.get_xlim()
     ax.plot([lo, hi], [lo, hi], color="red", ls="--", lw=2.0, alpha=0.9,
@@ -333,8 +334,10 @@ def _conditional_panel(ax, target, pred, channel: str,
 
     both from measured moments alone.
 
-    MEAN, not median: the mean is what the MSE objective fits the head to, and
-    the conditional is strongly right-skewed in log1p space near zero.
+    MEDIAN, not mean: the conditional is strongly right-skewed in log1p space
+    near zero, and the median follows the bright ridge the image shows, where a
+    few large predictions pull the mean off it. The MSE head fits the mean, so
+    the two curves can differ where the conditional is skewed.
 
     Only the slope and its expected value reach the title; the rest goes to
     stdout via the caller.

@@ -21,6 +21,8 @@ this builds on is `docs/swgolo-comparison.md` on branch `swgolo-comparison-run12
   spread-out layout has kernel mean r ≈ 0.88 (run 14's raw σ = 10 kernel: 0.57).
   An acceptance term (λ·U_PR) has nothing to act on, as at σ = 50. Skip it
   until near-miss taus are in the corpus.
+- **Nothing beats the grid.** Kernel-in-the-loop from grid: −4% true U
+  (overfits 64 events); surrogate ensemble from grid: +1.2% (§5).
 - **Next step: new primaries** that include taus whose axis misses the mesh but
   passes close to it (requested from the tau-corpus author, §6).
 
@@ -44,7 +46,7 @@ run 14 (run 14 keeps a symlink):
 | 1 labels | Lit fraction E ≈ 92%, T ≈ 45–49% (run 14 raw kernel: E 22%, T 5%) |
 | 2 surrogate | Best val (hurdle loss, not comparable to run 14): electron 0.342, muon 0.392, photon 0.360 |
 | 3 recon | Val 0.066 (run 14: 0.142) |
-| 4 ensemble (surrogate U) | Grid: best 58.98 after L-BFGS, mean spread σ ≈ 30 m. Center: Adam chains 59.5–59.7; L-BFGS and true-utility eval still running |
+| 4 ensemble (surrogate U) | Grid: best 58.98 after L-BFGS, mean spread σ ≈ 30 m; true U 30.48 → 30.85 (+1.2%). Center: true U 7.13 → 30.79 (grid baseline 30.48) |
 
 ## 3. Acceptance saturation on run 15
 
@@ -78,8 +80,27 @@ Job 49177589, thresholds 5 / 10 / 15 / 20 / 30 lit detectors, same layouts plus
 run 15's own Stage 4 grid result. Per threshold: mean r, fraction r < 0.5 and
 the resolution utility on the kernel (1,024 events).
 
-**Pending.** The question is whether a stricter definition of "reconstructable"
-separates the layouts (today 0.881–0.887).
+Kernel, 1,024 events, spread-out layouts only (grid, run 12 uniform, run 12
+optimized, run 14 spine, run 15 Stage 4 grid):
+
+| Threshold | mean r | frac r < 0.5 | U_res range | Spread |
+|---|---|---|---|---|
+| 5 | 0.881–0.888 | 0.10–0.12 | 29.84–30.76 | 3.0% |
+| 10 | 0.824–0.829 | 0.15–0.17 | 27.77–28.52 | 2.7% |
+| 15 | 0.762–0.766 | 0.24 | 25.54–26.09 | 2.1% |
+| 20 | 0.698–0.710 | 0.30–0.31 | 23.37–23.70 | 1.4% |
+| 30 | 0.581–0.614 | 0.39–0.43 | 19.02–19.71 | 3.6% |
+
+- A higher threshold removes the saturation (mean r 0.89 → 0.60, dark events
+  10% → 41%) but lowers every layout by about the same amount. The layouts stay
+  within 1.4–3.6% of each other at every threshold.
+- The events that go dark are dark for every layout: with 100 detectors on
+  1.4 km² and flat illumination, no placement lights more detectors on average.
+- Only hint of separation: at threshold 30 the acceptance-driven run 14 spine
+  has the best mean r (0.614 vs 0.58–0.60) and U_res (19.71 vs 19.02–19.57).
+  Small, 1,024 events, no error bars.
+- Caveat: these layouts were optimized at threshold 5 or 10. A Stage 4 run
+  optimized at a high threshold was not tested.
 
 ## 5. Kernel-in-the-loop optimization
 
@@ -106,7 +127,30 @@ Jobs 49175728 (center) and 49175729 (grid), `slurm/kernel_opt_run15.sh`:
 recon utility, Adam lr = 10, 20,000 epochs, 64 events, 0.12 s/epoch. Outputs in
 `test_v6_run_04_optimize_lbfgs_kernel_recon_utility_lr10_{center,grid}/`.
 
-**Pending.** Held-out true utility vs the init layout.
+True utility on 5,120 held-out events (`true_utility_eval.txt`), vs run 15's
+surrogate ensemble:
+
+| Run | Start → optimized (true U) | U on its own 64 events |
+|---|---|---|
+| Kernel, center init | 7.13 → 26.13 | 43.3 |
+| Kernel, grid init | 30.48 → 29.24 (−4%) | 47.0 |
+| Surrogate ensemble, grid init | 30.48 → 30.85 (+1.2%) | — |
+
+- Larger steps fix the stall: from the blob the kernel run gains +19 true U, but
+  still ends below the plain grid (30.48).
+- From the grid, kernel-in-the-loop overfits its 64 fixed events and loses 4%
+  on held-out events. The surrogate ensemble gains 1.2%.
+- Nothing measurably beats the grid. With flat illumination the objective has
+  no structured optimum to find, consistent with the summary.
+
+**Rerun on Stage 4's dataset (pending, overwrites the table above).** The runs
+above used 64 fixed events; Stage 4 draws 5,000 fresh primaries per step from
+1,125,000 rows (75,000 events × 3 species × 5 strategies) and picks its best
+layout on a separate 20,000-primary scoring set. `--pool main` now uses the
+same 75,000 events: 512 fresh events per step, backward in chunks of 32
+(checked to reproduce the full-batch gradient), best layout on a separate
+1,024-event scoring set. Jobs 49187556 (grid) and 49187557 (center), after the
+width precompute (array job 49187518).
 
 ## 6. Near-miss primaries (requested)
 
