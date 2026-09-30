@@ -71,3 +71,32 @@ def U_angle(angle_preds, angle_trues, r, cap=None, period=None):
         inv_err = _soft_cap(inv_err, cap)
     u = torch.mean(r * inv_err)
     return u
+
+
+def angle_between_deg(u, v):
+    """Angle between direction vectors (..., 3) in degrees. Uses 2*atan2(|u-v|, |u+v|)
+    on unit vectors, which keeps a finite gradient at perfect alignment (arccos of
+    the dot product does not)."""
+    u = u / u.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+    v = v / v.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+    return torch.rad2deg(2.0 * torch.atan2((u - v).norm(dim=-1), (u + v).norm(dim=-1)))
+
+
+def U_two_tier(a_deg, e_err, theta_good=5.0, e_good=0.2, s_theta=1.0, s_e=0.05,
+               theta_ref=20.0, e_ref=0.5, lam=0.3):
+    """Two-tier utility in reconstruction-accuracy space.
+
+    a_deg : per-shower angle error [deg]; e_err : per-shower |dlog10 E|.
+
+        g = sigmoid((theta_good - a) / s_theta) * sigmoid((e_good - e) / s_e)
+        q = 1 / (1 + (a / theta_ref)^2 + (e / e_ref)^2)
+        U = mean[ g + lam * (1 - g) * q ]
+
+    g is a soft "reconstructed well"; once a shower is good it stops paying, so
+    the optimizer gains most by making more showers good. q gives the rest partial,
+    bounded credit with diminishing returns; lam < 1 lets the count of good showers
+    dominate. Returns (U, g) so callers can report the good fraction.
+    """
+    g = torch.sigmoid((theta_good - a_deg) / s_theta) * torch.sigmoid((e_good - e_err) / s_e)
+    q = 1.0 / (1.0 + (a_deg / theta_ref) ** 2 + (e_err / e_ref) ** 2)
+    return torch.mean(g + lam * (1.0 - g) * q), g

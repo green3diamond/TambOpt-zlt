@@ -25,7 +25,36 @@ from ..constants import (
 from ..surrogates import load_dual_surrogate
 from ..surrogates import build_recon_from_ckpt
 # modules/__init__ injected the v3 (`modules`) path on package import.
-from .utility import reconstructability, U_E, U_angle, U_PR
+from .utility import reconstructability, U_E, U_angle, U_PR, U_two_tier, angle_between_deg
+
+# Utility selector (run 17). "current" = the weighted 1/err^2 composite below; "two_tier" =
+# U_two_tier (count showers reconstructed well, bounded partial credit for the rest), with
+# thresholds from a calibration JSON (kernel accuracy targets translated to what the recon
+# shows through the surrogate). Set per job through the environment so the same code serves
+# every Stage-4 invocation; unset = "current", i.e. unchanged behaviour.
+UTILITY_MODE      = os.environ.get("TAMBOPT_UTILITY", "current")
+TWO_TIER_LAMBDA   = float(os.environ.get("TAMBOPT_TWO_TIER_LAMBDA", "0.3"))
+TWO_TIER_CALIB    = os.environ.get("TAMBOPT_TWO_TIER_CALIB", "")
+# U_two_tier lives in (0, 1); Stage 4's penalty weight and gradient clip are quoted "in units
+# of U" for a composite of order 30, so the two-tier value is scaled to that range.
+TWO_TIER_SCALE    = 30.0
+_TT_PARAMS = None
+
+
+def _two_tier_params():
+    global _TT_PARAMS
+    if _TT_PARAMS is None:
+        import json
+        if not TWO_TIER_CALIB:
+            raise RuntimeError("TAMBOPT_UTILITY=two_tier needs TAMBOPT_TWO_TIER_CALIB (calibration JSON)")
+        c = json.load(open(TWO_TIER_CALIB))
+        _TT_PARAMS = {k: float(c[k]) for k in ("theta_good", "e_good", "s_theta", "s_e", "theta_ref", "e_ref")}
+    return _TT_PARAMS
+
+
+def _sph(theta, phi):
+    return torch.stack([torch.sin(theta) * torch.cos(phi), torch.sin(theta) * torch.sin(phi),
+                        torch.cos(theta)], dim=-1)
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repo root
 
@@ -307,6 +336,17 @@ def utility_of_xy(x_det: torch.Tensor,
         reconstruct_threshold=RECONSTRUCT_THRESHOLD,
         tau_reconstruct=TAU_RECONSTRUCT,
     )
+    if UTILITY_MODE == "two_tier":
+        p = _two_tier_params()
+        a = angle_between_deg(_sph(theta_pred, phi_pred), _sph(theta_true, phi_true))
+        e = (torch.log10(E_pred_phys) - torch.log10(E_true)).abs()
+        u_tt, g = U_two_tier(a, e, p["theta_good"], p["e_good"], p["s_theta"], p["s_e"],
+                             p["theta_ref"], p["e_ref"], TWO_TIER_LAMBDA)
+        U = TWO_TIER_SCALE * u_tt
+        zero = torch.zeros((), device=U.device)
+        parts = dict(u_theta=U, u_phi=zero, u_e=zero, u_pr=TWO_TIER_SCALE * g.mean())  # u_pr slot: good share
+        U = _apply_offmesh_penalty(U, parts, x_det, y_det, mesh_en, penalty_w, penalty_r0)
+        return U, r, parts
     u_theta = U_angle(theta_pred, theta_true, r, cap=CAP_THETA)
     u_phi   = U_angle(phi_pred,   phi_true,   r, cap=CAP_PHI,
                       period=2.0 * math.pi)

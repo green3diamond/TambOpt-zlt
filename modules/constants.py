@@ -7,8 +7,9 @@ import os
 # anchored at the mesh's own `location`, so detector centroids share the origin
 # used by the tau corpus. `malata` = 266-face detector region, ENU bbox
 # North [-956, 716], East [-499, 777], Up [2748, 3712] m.
-GEOMETRY_PATH = "/n/home05/zdimitrov/tambo/TambOpt/data/malata.h5"
-GEOMETRY_GROUP = "malata"
+# Run 17: synthetic 3x3 km plane at 45 deg facing East (scripts/17_make_plane_inputs.py).
+GEOMETRY_PATH = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/17_plane45_interp_hurdle_100k/inputs/plane45.h5"
+GEOMETRY_GROUP = "plane45"
 DET_KEY        = "detector1"
 
 # Prefer a copy of the mesh next to the repo, else the absolute path. Centralized
@@ -127,7 +128,7 @@ AZIMUTH_MAX  = 360.0 # degrees
 # Every path below derives from this one, so retargeting the whole pipeline at
 # a sibling run folder (e.g. a verbatim copy of Stage 0/1 output used to try a
 # different Stage 2/3/4 config) is a one-line change here.
-RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/15_sigma10_interp_hurdle_10pct"
+RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/17_plane45_interp_hurdle_100k"
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are
@@ -156,14 +157,15 @@ TRAIN_FRACTION = 1.00
 # ~8.58M), which also keeps the Stage-1 build clear of the OOM above. This is
 # the CORPUS fraction read at Step 1, not TRAIN_FRACTION above, which subsamples
 # what Steps 2/3 train on out of whatever Step 1 wrote.
-DATASET_FRACTION = 0.10
+# Run 17: the whole (100k-event) corpus; 01 treats >= 1.0 as "no cap".
+DATASET_FRACTION = 1.00
 
 # Descriptive only (also the synthetic-primaries fallback count in Step 0).
 # With USE_TAU_PRIMARIES the real event count comes from tau_wholesky_n750k.h5
 # (~751,931 surviving events) minus the HOLDOUT_FRAC reserve below; Step 1's
 # MAX_SHOWERS no longer derives from this (see 01_build_dataset_northeast.py),
 # so an approximate value here can't silently truncate the corpus.
-NUM_SHOWERS = 750_000
+NUM_SHOWERS = 105_300   # run 17: plane_taus.h5 (100k train + 5% held out)
 BATCH_SIZE  = 60
 BATCH_SIZE_TRAIN  = 20
 
@@ -199,7 +201,7 @@ SPECIES_NAMES = ("electron", "muon", "photon")
 # origin. Energies are filtered to [10**LOG_E_MIN, 10**LOG_E_MAX] in the loader.
 USE_TAU_PRIMARIES = True
 # TAU_WHOLESKY_PATH = "/n/home05/zdimitrov/tambo/TambOpt/decay_locations/tau_wholesky_balanced_1e5_1e8_max.h5"
-TAU_WHOLESKY_PATH = "/n/home05/zdimitrov/tambo/TambOpt/decay_locations/tau_wholesky_n750k.h5"
+TAU_WHOLESKY_PATH = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/17_plane45_interp_hurdle_100k/inputs/plane_taus.h5"   # run 17: LHS decays aimed at the plane
 
 # TAU_WHOLESKY_PATH = ".../decay_locations/tau_wholesky_n2M_83k.h5"  # built the current corpus
 TAU_CORPUS_PATH   = os.path.join(SHOWER_CACHE, "cashed_showers_tau_dual.pt")

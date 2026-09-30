@@ -629,7 +629,8 @@ def _run_one_scheme(scheme: str,
         run_scores = [dict(chunk=-1, closure=0, U_chunk=None, U_score=best_S,
                            best=True, kept=True)]
         print(f"  [lbfgs] refine {k} adam-best scores {best_S:+.3f} on the scoring set")
-        for c, primary_chunk in enumerate(primary_chunks):
+        # --lbfgs-iters 0: Adam only -- each chain keeps its Adam best, scored on the set.
+        for c, primary_chunk in enumerate(primary_chunks if LBFGS_MAX_ITER > 0 else []):
             xp, yp, Up, lg, ghist, phist = lbfgs_refine(
                 xp, yp, fnn, recon, primary_chunk, mountain)
             run_logs.extend(lg)
