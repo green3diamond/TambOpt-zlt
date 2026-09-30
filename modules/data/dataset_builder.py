@@ -18,7 +18,7 @@ from ..showers import GetCounts_planeaware, adaptive_bandwidths
 
 from ..constants import (BLOB_MEDIAN_E, EAST_ENTRY, LAYER_EAST_DX, N_DETECTORS,
                          PRIMARY_DIM, SPECIES_NAMES, SIGMA_SPATIAL,
-                         KERNEL_INTERP_K)
+                         KERNEL_INTERP_K, KERNEL_E_MODE)
 from ..layouts.strategies import (_STRATEGIES, _STRATEGY_FNS)
 from ..surrogates import encode_primary, compute_normalization  # noqa: F401  (re-export)
 from ..surrogates.fnn import _load_species_sidecar
@@ -173,7 +173,8 @@ def compute_labels_batch(clouds:   torch.Tensor,
                          differentiable: bool = False,
                          interp_k: Optional[int] = KERNEL_INTERP_K,
                          t_mode: str = "leading",
-                         bandwidth: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+                         bandwidth: Optional[torch.Tensor] = None,
+                         e_mode: str = KERNEL_E_MODE) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run the plane-aware kernel on a batch of showers sharing one layout.
 
     Detectors are (East, North), matching the ENU h5 convention; the kernel is
@@ -205,6 +206,8 @@ def compute_labels_batch(clouds:   torch.Tensor,
         bandwidth : precomputed (B, max_points) widths for these clouds. Overrides
             interp_k; lets a caller that labels the same clouds under many
             layouts (Step 1) search neighbours once instead of per layout.
+        e_mode : "sum" (energy density) or "mean" (kernel-weighted mean point
+            energy), `GetCounts_planeaware`. Default `constants.KERNEL_E_MODE`.
     Returns:
         E, T : (B, n_det) local intensities and leading-edge arrival times
                (seconds; 0 where no point cleared the detection threshold).
@@ -226,6 +229,7 @@ def compute_labels_batch(clouds:   torch.Tensor,
             sigma=sigma_spatial,
             bandwidth=bandwidth,
             t_mode=t_mode,
+            e_mode=e_mode,
         )
         return E, T
 

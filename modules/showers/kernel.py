@@ -120,6 +120,7 @@ def GetCounts_planeaware(
     hit_deposit_min: float = HIT_DEPOSIT_MIN,
     bandwidth: torch.Tensor = None,
     t_mode: str = "leading",
+    e_mode: str = "sum",
 ) -> tuple:
     """Plane-aware count extraction + leading-edge arrival time.
 
@@ -153,6 +154,13 @@ def GetCounts_planeaware(
                    Normalised by the detector's own deposit, unlike the retired
                    count-weighted mean (see module docstring), so it does not
                    scale with the corpus's point budget.
+        e_mode   : "sum" (default) = sum(e*w), the energy density times the
+                   kernel's area. "mean" = sum(e*w) / max(sum(w), 1) over real
+                   points: the kernel-weighted mean point energy where the
+                   detector sees at least one point's worth of weight, falling
+                   back to the sum (and so to 0 far away) where it sees less.
+                   Treats points as samples of an energy field rather than as
+                   quanta whose local count is signal. T is unaffected.
 
     Returns:
         (local_intensity, arrival_time) : each (B, n_det), raw (no
@@ -182,6 +190,13 @@ def GetCounts_planeaware(
     energy_kernel = point_e.unsqueeze(2) * kernel                 # (B, P, n_det)
 
     local_intensity = energy_kernel.sum(dim=1)                    # (B, n_det)
+    if e_mode == "mean":
+        weight = (kernel * (point_e > 0).unsqueeze(2)).sum(dim=1)     # real points only
+        e_out = local_intensity / weight.clamp(min=1.0)
+    elif e_mode == "sum":
+        e_out = local_intensity
+    else:
+        raise ValueError(f"e_mode must be 'sum' or 'mean', got {e_mode!r}")
 
     if t_mode == "mean":
         # Deposit-weighted mean over every point the detector sees. Padding rows
@@ -189,7 +204,7 @@ def GetCounts_planeaware(
         lit = local_intensity > hit_deposit_min
         t_sum = (energy_kernel * point_t.unsqueeze(2)).sum(dim=1)
         mean_t = t_sum / local_intensity.clamp(min=torch.finfo(local_intensity.dtype).tiny)
-        return local_intensity, torch.where(lit, mean_t, torch.zeros_like(mean_t))
+        return e_out, torch.where(lit, mean_t, torch.zeros_like(mean_t))
     if t_mode != "leading":
         raise ValueError(f"t_mode must be 'leading' or 'mean', got {t_mode!r}")
 
@@ -205,4 +220,4 @@ def GetCounts_planeaware(
     arrival_time = torch.where(torch.isinf(arrival_time),
                                torch.zeros_like(arrival_time), arrival_time)
 
-    return local_intensity, arrival_time
+    return e_out, arrival_time

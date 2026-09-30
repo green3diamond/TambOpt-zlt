@@ -72,6 +72,13 @@ HIT_DEPOSIT_MIN = 1e-3
 # scoring, the floor) reads it as compute_labels_batch's default.
 KERNEL_INTERP_K = 8
 
+# How the kernel turns points into a detector's E (showers/kernel.py e_mode):
+# "sum" = energy density x kernel area (points as quanta; runs <= 15), "mean" =
+# kernel-weighted mean point energy (points as samples of an energy field; run
+# 16). Env-overridable so a pipeline can set it per job without touching jobs
+# already running from this checkout. Enters the labels at Stage 1.
+KERNEL_E_MODE = os.environ.get("TAMBOPT_KERNEL_E_MODE", "mean")
+
 # Stage 2 head. True = lit/dark hurdle: the decoder also emits P(lit) per
 # channel and regresses the value on lit slots only; forward() returns the
 # expected reading P(lit) * value, so Stages 3-4 are unchanged. False = the
@@ -127,7 +134,11 @@ AZIMUTH_MAX  = 360.0 # degrees
 # Every path below derives from this one, so retargeting the whole pipeline at
 # a sibling run folder (e.g. a verbatim copy of Stage 0/1 output used to try a
 # different Stage 2/3/4 config) is a one-line change here.
-RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/15_sigma10_interp_hurdle_10pct"
+# TAMBOPT_RUN_LOCATION overrides it per job (e.g. run 16's pipeline), so other
+# jobs running from this checkout keep their own run.
+RUN_LOCATION = os.environ.get(
+    "TAMBOPT_RUN_LOCATION",
+    "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/16_sigma10_interp_emean_10pct")
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are

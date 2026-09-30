@@ -156,6 +156,25 @@ def test_mean_time_is_deposit_weighted():
     assert abs(float(T_lead[0, 0]) - 10e-9) < 1e-12              # default unchanged
 
 
+def test_mean_energy_mode():
+    # Dense cluster at the detector: weight >> 1, so E is the mean point energy,
+    # independent of how many points there are. Far detector: weight << 1, so E
+    # falls back to the sum and reads ~0. T and the default E are unchanged.
+    g = torch.arange(-4, 5, 1.0)
+    xy = torch.stack(torch.meshgrid(g, g, indexing="ij"), -1).reshape(-1, 2)
+    c = _cloud(xy, energy=2.0)
+    c = torch.cat([c, torch.zeros(1, 20, 5)], dim=1)            # padding rows at the origin
+    det = torch.tensor([[0.0, 0.0], [500.0, 0.0]])
+    z = torch.zeros(2)
+    E_sum, T_sum = GetCounts_planeaware(c, det[:, 0], det[:, 1], z, None, None, None, sigma=SIGMA)
+    E_mean, T_mean = GetCounts_planeaware(c, det[:, 0], det[:, 1], z, None, None, None,
+                                          sigma=SIGMA, e_mode="mean")
+    assert abs(float(E_mean[0, 0]) - 2.0) < 1e-4, float(E_mean[0, 0])   # padding not counted
+    assert float(E_sum[0, 0]) > 50.0                                     # the sum counts points
+    assert float(E_mean[0, 1]) == float(E_sum[0, 1]) < 1e-6              # far: sum fallback
+    assert torch.equal(T_sum, T_mean)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
     for t in tests:

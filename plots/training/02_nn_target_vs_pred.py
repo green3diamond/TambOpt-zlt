@@ -938,7 +938,15 @@ def main():
                          "recon_conditional_kernel.png) and skip every "
                          "surrogate-dependent figure -- for back-filling a run "
                          "whose Step 3 wrote only the surrogate-fed scatter")
+    ap.add_argument("--fnn-only", action="store_true",
+                    help="render only the Stage-2 FNN figures (fnn_<species>_"
+                         "target_vs_pred / _conditional) -- for a run stopped "
+                         "after Stage 2, with no recon checkpoint yet")
     args = ap.parse_args()
+
+    if args.fnn_only:
+        plot_fnn_dual() if args.dual else plot_fnn_only()
+        return
 
     print("=" * 72)
     print("v6/plots/training/02_nn_target_vs_pred.py" + ("  [dual]" if args.dual else ""))
