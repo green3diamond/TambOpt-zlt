@@ -27,7 +27,7 @@ python -c 'import sys; sys.path.insert(0, "."); from modules.constants import RU
     || { echo "constants.py does not point to run 15"; exit 1; }
 
 if [ "$POOL" = main ]; then
-    EXTRA="--pool main --batch-events 512 --chunk 32--n-score 1024 --score-every 250"
+    EXTRA="--pool main --batch-events 512 --chunk 32 --n-score 1024 --score-every 250"
 else
     EXTRA="--pool heldout --n-events 64 --chunk 8"
 fi
@@ -38,4 +38,4 @@ python -u scripts/04_optimize_lbfgs_kernel.py --utility recon --init "$INIT" \
 DIR="$(python -c 'import sys; sys.path.insert(0, "."); from modules.constants import OPT_FOLDER; print(OPT_FOLDER)')_lbfgs_kernel_${SUFFIX}"
 flag=""; [ "$INIT" = grid ] && flag="--grid-layout"
 python -u plots/layouts/true_utility.py --layout "$DIR/layout_best.pt" $flag 2>&1 | tee "$DIR/true_utility_eval.txt"
-python -u plots/layouts/utility_vs_energy.py --run-dir "$DIR"
+python -u plots/layouts/utility_vs_energy.py $flag --run-dir "$DIR"
