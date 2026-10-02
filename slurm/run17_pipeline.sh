@@ -95,8 +95,9 @@ for scheme in ("grid", "center"):
     e, n = project_to_mountain_ne(m, torch.as_tensor(e).float(), torch.as_tensor(n).float())
     torch.save(dict(x=e.float(), y=n.float()), f"{sys.argv[1]}/start_{scheme}.pt")
 EOF
-    # Kernel-in-the-loop layouts only (kernel_opt_run17.sh); the surrogate Stage-4 layouts and their
-    # scores were moved to <run>/archive/stage4_surrogate_2026-10-01.
+    # Kernel-in-the-loop layouts only (kernel_opt_run17.sh), judged with the recon they were optimized
+    # with (trained on 100% kernel responses); the surrogate Stage-4 layouts and their scores were moved
+    # to <run>/archive/stage4_surrogate_2026-10-01.
     ARGS="--layout start_grid=$D/start_grid.pt --layout start_center=$D/start_center.pt"
     for s in _current _twotier_l0 _twotier_l0p3; do
         for scheme in grid center; do
@@ -104,6 +105,7 @@ EOF
             [ -f "$K" ] && ARGS="$ARGS --layout kernel${s}_${scheme}=$K"
         done
     done
-    python -u scripts/diagnostics/score_layouts.py --theta-good 2.5 $ARGS --out "$D/scores.json"
+    RK=$(python -c 'import sys; sys.path.insert(0, "."); import modules.constants as C; print(C.RECON_FOLDER + "_deepsets_kernel100")')
+    python -u scripts/diagnostics/score_layouts.py --theta-good 2.5 --recon-dir "$RK" $ARGS --out "$D/scores.json"
     ;;
 esac

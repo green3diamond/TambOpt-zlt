@@ -33,12 +33,14 @@ def main():
     ap.add_argument("--e-good", type=float, default=0.2)
     ap.add_argument("--n-kernel", type=int, default=1536)
     ap.add_argument("--chunk", type=int, default=64)
+    ap.add_argument("--recon-dir", default=None,
+                    help="recon checkpoint folder (default: RECON_FOLDER + '_deepsets')")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     mountain = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY,
                                 east_entry=C.EAST_ENTRY, layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
     surface = SurfaceUpMap.from_mountain(mountain, grid_h=256, grid_w=256).to(DCS.DEVICE)
-    _, recon = load_models(DCS.DEVICE)
+    _, recon = load_models(DCS.DEVICE, recon_dir=args.recon_dir)
     gate = GS.settings(float(OBJ.RECONSTRUCT_THRESHOLD))[0]
     clouds, _, _, prim_k = load_events(args.n_kernel, DCS.DEVICE, mountain)
     kern = GS.CachedKernel(clouds, surface, DCS.DEVICE, chunk=args.chunk, expected_primary=prim_k)

@@ -15,6 +15,8 @@
 # Usage: sbatch slurm/kernel_opt_run17.sh <grid|center> <current|twotier> [lambda] [lr] [epochs]
 # Two-tier uses the KERNEL thresholds (5 deg, 0.2): the recon sees kernel responses here, so the
 # surrogate calibration (two_tier_calibration_5deg.json) does not apply. Resumes from opt_state.pt.
+# Recon: the one trained on 100% kernel responses (recon_kernel_run17.sh -> *_deepsets_kernel100),
+# since the optimizer only ever feeds it kernel responses.
 source slurm/env.sh
 source slurm/gpu_gate.sh
 gpu_health_gate
@@ -23,6 +25,8 @@ INIT=${1:-grid}; UTIL=${2:-current}; LAM=${3:-0.3}; LR=${4:-10}; EPOCHS=${5:-200
 python -c 'import sys; sys.path.insert(0, "."); from modules.constants import RUN_LOCATION as R; sys.exit(0 if "17_plane45_interp_hurdle_100k" in R else 1)' \
     || { echo "constants.py does not point to run 17"; exit 1; }
 R=$(python -c 'import sys; sys.path.insert(0, "."); import modules.constants as C; print(C.RUN_LOCATION)')
+RK=$(python -c 'import sys; sys.path.insert(0, "."); import modules.constants as C; print(C.RECON_FOLDER + "_deepsets_kernel100")')
+[ -f "$RK/recon.pt" ] || { echo "kernel-trained recon missing: $RK/recon.pt (run recon_kernel_run17.sh)"; exit 1; }
 if [ "$UTIL" = current ]; then
     TAG=current
 else
@@ -34,4 +38,4 @@ SUFFIX="${TAG}_lr${LR}_${INIT}"
 python -u scripts/04_optimize_lbfgs_kernel.py --utility recon --init "$INIT" \
     --lr "$LR" --epochs "$EPOCHS" --log-every 100 \
     --pool main --batch-events 512 --chunk 32 --n-score 1024 --score-every 250 \
-    --out-suffix "$SUFFIX" --skip-analytic-eval || exit 1
+    --recon-folder "$RK" --out-suffix "$SUFFIX" --skip-analytic-eval || exit 1
