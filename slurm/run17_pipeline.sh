@@ -95,7 +95,7 @@ for scheme in ("grid", "center"):
     torch.save(dict(x=e.float(), y=n.float()), f"{sys.argv[1]}/start_{scheme}.pt")
 EOF
     ARGS="--layout start_grid=$D/start_grid.pt --layout start_center=$D/start_center.pt"
-    for s in _current _twotier_l0 _twotier_l0p3; do
+    for s in _current _twotier_l0 _twotier_l0p1 _twotier_l0p3; do
         for scheme in grid center; do
             P="${R}/test_v6_run_04_optimize_lbfgs_ensemble${s}_${scheme}/layout_best.pt"
             [ -f "$P" ] && ARGS="$ARGS --layout ${s#_}_${scheme}=$P"
