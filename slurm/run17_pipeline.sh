@@ -9,9 +9,9 @@
 #SBATCH --open-mode=append
 #SBATCH -J run17
 #SBATCH -o slurm_logs/slurm-%j-%x.out
-#SBATCH --chdir=/n/home05/zdimitrov/tambo/TambOpt/.claude/worktrees/run17-plane
+#SBATCH --chdir=/n/home05/zdimitrov/tambo/TambOpt
 
-# Run 17 (branch run17-plane, own worktree): synthetic 3x3 km plane at 45 deg facing East,
+# Run 17 (branch run17-plane): synthetic 3x3 km plane at 45 deg facing East,
 # 105,300 LHS tau decays in a 3x3x3 km cube east of it aimed at LHS points on the plane
 # (scripts/17_make_plane_inputs.py, already written to <RUN_LOCATION>/inputs), sigma = 10 m
 # adaptive kernel (k = 8), lit/dark Stage 2, all 100k training events.
