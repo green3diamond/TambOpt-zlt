@@ -20,8 +20,8 @@
 #   sbatch slurm/run17_pipeline.sh opt current          Stage 4, current utility
 #   sbatch slurm/run17_pipeline.sh opt twotier 0        Stage 4, two-tier lambda = 0
 #   sbatch slurm/run17_pipeline.sh opt twotier 0.3      Stage 4, two-tier lambda = 0.3
-#   sbatch slurm/run17_pipeline.sh score                score every Stage-4 layout (and kernel_opt_run17.sh
-#                                                       layout) at 5 and 2.5 deg
+#   sbatch slurm/run17_pipeline.sh score                score the kernel_opt_run17.sh layouts (and the grid /
+#                                                       center starts) at 5 and 2.5 deg
 #
 # Stage 4: Adam only, 10,000 epochs, grid and center starts, 3 chains each. Status keys in
 # pipeline_status_run17_<mode>.json make requeues resume from the last finished step.
@@ -95,12 +95,12 @@ for scheme in ("grid", "center"):
     e, n = project_to_mountain_ne(m, torch.as_tensor(e).float(), torch.as_tensor(n).float())
     torch.save(dict(x=e.float(), y=n.float()), f"{sys.argv[1]}/start_{scheme}.pt")
 EOF
+    # Kernel-in-the-loop layouts only (kernel_opt_run17.sh); the surrogate Stage-4 layouts and their
+    # scores were moved to <run>/archive/stage4_surrogate_2026-10-01.
     ARGS="--layout start_grid=$D/start_grid.pt --layout start_center=$D/start_center.pt"
-    for s in _current _twotier_l0 _twotier_l0p1 _twotier_l0p3; do
+    for s in _current _twotier_l0 _twotier_l0p3; do
         for scheme in grid center; do
-            P="${R}/test_v6_run_04_optimize_lbfgs_ensemble${s}_${scheme}/layout_best.pt"
-            [ -f "$P" ] && ARGS="$ARGS --layout ${s#_}_${scheme}=$P"
-            K="${R}/test_v6_run_04_optimize_lbfgs_kernel${s}_lr10_${scheme}/layout_best.pt"   # kernel-in-the-loop
+            K="${R}/test_v6_run_04_optimize_lbfgs_kernel${s}_lr10_${scheme}/layout_best.pt"
             [ -f "$K" ] && ARGS="$ARGS --layout kernel${s}_${scheme}=$K"
         done
     done
