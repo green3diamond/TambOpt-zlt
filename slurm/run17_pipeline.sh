@@ -20,7 +20,8 @@
 #   sbatch slurm/run17_pipeline.sh opt current          Stage 4, current utility
 #   sbatch slurm/run17_pipeline.sh opt twotier 0        Stage 4, two-tier lambda = 0
 #   sbatch slurm/run17_pipeline.sh opt twotier 0.3      Stage 4, two-tier lambda = 0.3
-#   sbatch slurm/run17_pipeline.sh score                score every Stage-4 layout at 5 and 2.5 deg
+#   sbatch slurm/run17_pipeline.sh score                score every Stage-4 layout (and kernel_opt_run17.sh
+#                                                       layout) at 5 and 2.5 deg
 #
 # Stage 4: Adam only, 10,000 epochs, grid and center starts, 3 chains each. Status keys in
 # pipeline_status_run17_<mode>.json make requeues resume from the last finished step.
@@ -99,6 +100,8 @@ EOF
         for scheme in grid center; do
             P="${R}/test_v6_run_04_optimize_lbfgs_ensemble${s}_${scheme}/layout_best.pt"
             [ -f "$P" ] && ARGS="$ARGS --layout ${s#_}_${scheme}=$P"
+            K="${R}/test_v6_run_04_optimize_lbfgs_kernel${s}_lr10_${scheme}/layout_best.pt"   # kernel-in-the-loop
+            [ -f "$K" ] && ARGS="$ARGS --layout kernel${s}_${scheme}=$K"
         done
     done
     python -u scripts/diagnostics/score_layouts.py --theta-good 2.5 $ARGS --out "$D/scores.json"
