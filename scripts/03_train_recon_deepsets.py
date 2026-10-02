@@ -88,6 +88,9 @@ POOL     = "maxmean"   # "mean" or "maxmean"; maxmean doubles context_proj input
 # ── Training ─────────────────────────────────────────────────────────────────
 BATCH_SIZE = 256
 N_EPOCHS   = 600
+# Adam epochs with no val improvement before stopping early (0 = off, run all N_EPOCHS).
+# Runs 15 and 17 peaked at epochs 101 and 142 and then only overfit for ~450 epochs.
+ADAM_PATIENCE = 0
 LR         = 3e-5
 GRAD_CLIP  = 10.0
 VAL_FRAC   = 0.10
@@ -417,10 +420,12 @@ def _plot_curves(log, path: str, adam_epochs: int = 0,
 
 
 def main():
-    global N_EPOCHS, LBFGS_MAX_ITER
+    global N_EPOCHS, LBFGS_MAX_ITER, ADAM_PATIENCE
     global RECON_INPUT, MIX_FRAC, OUTPUT_FOLDER
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs",      type=int, default=N_EPOCHS)
+    ap.add_argument("--adam-patience", type=int, default=ADAM_PATIENCE,
+                    help="stop Adam after this many epochs without val improvement (0 = off)")
     ap.add_argument("--lbfgs-iters", type=int, default=LBFGS_MAX_ITER)
     ap.add_argument("--recon-input", choices=("sample", "kernel", "mix"),
                     default=RECON_INPUT,
@@ -440,6 +445,7 @@ def main():
     args = ap.parse_args()
     RECON_INPUT, MIX_FRAC = args.recon_input, float(args.mix_frac)
     N_EPOCHS, LBFGS_MAX_ITER = int(args.epochs), int(args.lbfgs_iters)
+    ADAM_PATIENCE = int(args.adam_patience)
     if args.out_suffix:
         OUTPUT_FOLDER = OUTPUT_FOLDER + "_" + args.out_suffix
 
@@ -658,6 +664,12 @@ def main():
             }, tmp)
             os.replace(tmp, resume_path)
 
+        # Counted from the stored best epoch, so a resumed run stops at the same epoch.
+        if ADAM_PATIENCE and epoch + 1 - best_epoch >= ADAM_PATIENCE:
+            print(f"[adam] early stop: {ADAM_PATIENCE} epochs with no val improvement "
+                  f"(best val={best_val:.6f} at epoch {best_epoch})")
+            break
+
     if not adam_done:
         with open(os.path.join(OUTPUT_FOLDER, "recon_train_log.json"), "w") as f:
             json.dump({
@@ -665,7 +677,7 @@ def main():
                 "best_val_total": best_val,
                 "best_epoch": best_epoch,
                 "config": dict(
-                    batch_size=BATCH_SIZE, n_epochs=N_EPOCHS, lr=LR,
+                    batch_size=BATCH_SIZE, n_epochs=N_EPOCHS, adam_patience=ADAM_PATIENCE, lr=LR,
                     grad_clip=GRAD_CLIP, val_frac=VAL_FRAC, seed=SEED,
                     hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
                     recon_input=RECON_INPUT,
