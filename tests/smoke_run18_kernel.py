@@ -34,7 +34,7 @@ CORPUS = f"{R17}/v6_run_00/cashed_showers_tau_dual.pt"
 HELDOUT = f"{R17}/v6_run_00/cashed_showers_tau_dual_heldout.pt"
 RECON = f"{R17}/test_v6_run_03_recentered_deepsets_kernel100"
 dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"KERNEL_FRAME={C.KERNEL_FRAME} T_INTERP={C.KERNEL_T_INTERP} CIRCULAR={C.KERNEL_CIRCULAR} "
+print(f"KERNEL_FRAME={C.KERNEL_FRAME} T_INTERP={C.KERNEL_T_INTERP} TRANSVERSE={C.KERNEL_TRANSVERSE} "
       f"BW_MAX={C.KERNEL_INTERP_MAX} device={dev}")
 
 mountain = load_tr_mountain(f"{R17}/inputs/plane45.h5", "plane45", "detector1", east_entry=C.EAST_ENTRY,
@@ -48,8 +48,8 @@ prim, xy, E, T, strat, species, blob = build_training_pairs(
     load_chunk=120)
 assert torch.isfinite(E).all() and torch.isfinite(T).all()
 lit = (E > torch.log1p(torch.tensor(1.0))).float().mean()
-print(f"[1] Stage 1: {E.shape[0]} rows in {time.time() - t0:.0f}s; detectors >= 1 count {lit:.1%}; "
-      f"T > 0 {(T > 0).float().mean():.1%}; E (log1p) mean {E.mean():.3f}")
+print(f"[1] Stage 1: {E.shape[0]} rows in {time.time() - t0:.0f}s; detectors with E > log1p(1) {lit:.1%}; "
+      f"T > 0 {(T > 0).float().mean():.1%}; E mean {E.mean():.3f} counts")
 
 # 2. widths on shower-frame clouds
 species_clouds, B, n_pairs, primary_batch = None, None, None, None
@@ -61,7 +61,7 @@ for s, c in enumerate(species_clouds):
     h = adaptive_bandwidths(c.to(dev), C.KERNEL_INTERP_K, C.SIGMA_SPATIAL)
     real = c[..., 3] > 0
     print(f"[2] {C.SPECIES_NAMES[s]}: widths median {h[real.to(dev)].median():.1f} m, max {h.max():.1f} m; "
-          f"|t2| median {c[..., 1][real].abs().median():.0f} m vs |t1| {c[..., 0][real].abs().median():.0f} m")
+          f"ring radius median {c[..., 0][real].abs().median():.0f} m; widths at the cap {(h[real.to(dev)] >= C.KERNEL_INTERP_MAX - 1e-3).float().mean():.0%}")
     assert float(h.max()) <= C.KERNEL_INTERP_MAX + 1e-3
 
 # 3. held-out kernel -> recon utility and gradient

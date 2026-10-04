@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(_HERE))
 from modules.showers.kernel import GetCounts_planeaware, adaptive_bandwidths
 
 SIGMA = 10.0
+INF = float("inf")       # the algorithm uncapped; runs may cap widths (constants.KERNEL_INTERP_MAX)
 
 
 def _cloud(xy, energy=1.0, layer=0.0, time=1e-7):
@@ -59,7 +60,7 @@ def test_dense_cloud_unchanged():
     g = torch.arange(0, 60, 2.0)                       # 2 m spacing << sigma
     xy = torch.stack(torch.meshgrid(g, g, indexing="ij"), -1).reshape(-1, 2)
     cloud = _cloud(xy)
-    h = adaptive_bandwidths(cloud, k=8, sigma_min=SIGMA)
+    h = adaptive_bandwidths(cloud, k=8, sigma_min=SIGMA, sigma_max=INF)
     assert torch.all(h == SIGMA), f"dense cloud got h up to {h.max():.1f}"
     det = torch.rand(30, 2) * 60
     assert torch.allclose(_read(cloud, det)[0], _read(cloud, det, bandwidth=h)[0], rtol=1e-6)
@@ -67,7 +68,7 @@ def test_dense_cloud_unchanged():
 
 def test_detector_between_sparse_points_reads_more():
     cloud = _cloud([[-30.0, 0.0], [30.0, 0.0]])
-    h = adaptive_bandwidths(cloud, k=1, sigma_min=SIGMA)
+    h = adaptive_bandwidths(cloud, k=1, sigma_min=SIGMA, sigma_max=INF)
     assert torch.allclose(h, torch.full_like(h, 60.0)), h
     E_raw, _ = _read(cloud, [[0.0, 0.0]])
     E_int, _ = _read(cloud, [[0.0, 0.0]], bandwidth=h)
@@ -84,7 +85,7 @@ def test_deposit_is_conserved_over_a_fine_grid():
     e = torch.rand(40) + 0.5
     cloud = _cloud(xy)
     cloud[0, :, 3] = e
-    h = adaptive_bandwidths(cloud, k=4, sigma_min=SIGMA)
+    h = adaptive_bandwidths(cloud, k=4, sigma_min=SIGMA, sigma_max=INF)
     assert float(h.max()) > 3 * SIGMA                   # interpolation actually kicks in
     pad, step = 4 * float(h.max()), 4.0
     g = torch.arange(-pad, 600 + pad, step)
@@ -102,7 +103,7 @@ def test_padding_and_planes_are_respected():
     c[0, :, :2] = torch.tensor([[0, 0], [50, 0], [0, 0], [500, 0], [25, 0]], dtype=torch.float32)
     c[0, :, 2] = torch.tensor([0, 0, 1, 1, 0], dtype=torch.float32)
     c[0, :, 3] = torch.tensor([1, 1, 1, 1, 0], dtype=torch.float32)
-    h = adaptive_bandwidths(c, k=1, sigma_min=SIGMA)
+    h = adaptive_bandwidths(c, k=1, sigma_min=SIGMA, sigma_max=INF)
     assert torch.allclose(h[0, :2], torch.tensor([50.0, 50.0])), h      # own plane only
     assert torch.allclose(h[0, 2:4], torch.tensor([500.0, 500.0])), h
     assert float(h[0, 4]) == SIGMA                                        # padding untouched
@@ -137,7 +138,7 @@ def test_vectorised_bandwidths_match_reference():
     c[1, 40, 3] = 0.0                                      # an interior zeroed point
     ref = _bandwidths_reference(c, k=4, sigma_min=SIGMA)
     for max_pairs in (1 << 27, 5000):                      # one block, then heavy chunking
-        got = adaptive_bandwidths(c, k=4, sigma_min=SIGMA, max_pairs=max_pairs)
+        got = adaptive_bandwidths(c, k=4, sigma_min=SIGMA, max_pairs=max_pairs, sigma_max=INF)
         assert torch.allclose(got, ref, rtol=1e-4, atol=1e-3), (got - ref).abs().max()
 
 

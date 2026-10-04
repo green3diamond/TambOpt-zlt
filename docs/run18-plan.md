@@ -3,7 +3,10 @@
 Status (2026-10-04): code done on branch `run18-showerframe` (tests: `tests/test_shower_frame.py`,
 `tests/smoke_run18_kernel.py`); inputs written; pipeline submitted as a dependency chain
 (`slurm/run18_pipeline.sh` gen → {build → recon, `kernel_bw_run18.sh`} → 6 × `kernel_opt_run18.sh` → score + core test).
-Smoke finding: with circular showers most widths sit at the 50 m cap (points spread in 2-D, not on a line).
+Transverse shape changed before Stage 1 (user, 2026-10-04): every super-particle is a RING of radius |t1| around
+the axis (`KERNEL_TRANSVERSE = "ring"`; closed-form ring kernel (sigma/h)^2 exp(-(rho-r)^2/2h^2) i0e(rho r/h^2),
+detectors read by their distance rho from the axis) instead of the random t1/t2 pairing. Smoke on run 17 data:
+widths median 10 m (2-6% at the 50 m cap); detectors with E > 0.69: 13.5% (pairing 3.3%); with a time: 40% (10%).
 
 ## Context
 Run 17's diagnostics (2026-10-04) found five problems with the detector-response kernel and its inputs:

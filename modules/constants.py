@@ -93,9 +93,14 @@ KERNEL_FRAME = os.environ.get("TAMBOPT_KERNEL_FRAME", "shower")
 # Carry each point's time along the axis at c to the detector's depth, so arrival
 # times are not quantized in steps of one plane (500 m / c ~ 1.67 us).
 KERNEL_T_INTERP = True
-# Circular showers: t2 = the t1 of a randomly paired point in the same (event,
-# species, layer), so the vertical spread follows the measured horizontal one.
-KERNEL_CIRCULAR = True
+# Transverse shape in the shower frame (C8 recorded only t1, the horizontal offset):
+#   "ring": circularly symmetric showers. Each point is a ring of radius |t1| around
+#           the axis with its energy spread evenly around it; detectors are read by
+#           their distance from the axis (GetCounts_planeaware(ring=True)). Run 18.
+#   "pair": t2 = the t1 of a randomly paired point in the same (event, species, layer).
+#   "line": t2 = 0 (every layer a line).
+KERNEL_TRANSVERSE = "ring"
+KERNEL_CIRCULAR = KERNEL_TRANSVERSE != "line"     # kept for older callers/logs
 C8_PLANE_DX = 500.0               # spacing of the C8 ObservationPlanes along the axis [m]
 # Event ids of held-out showers in the circular-t2 hash (main-corpus ids are the
 # row index within a species block), so the two corpora never share a pairing.

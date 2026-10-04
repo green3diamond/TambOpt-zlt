@@ -5,7 +5,10 @@
     interpolation, the shower frame reproduces the global frame with the layer fix;
   - t1 is C8's horizontal transverse coordinate, exactly, for an inclined shower;
   - time interpolation carries a point's time along the axis at c;
-  - circular t2 is deterministic in the event ids and a within-layer permutation of t1;
+  - circular t2 ("pair") is deterministic in the event ids and a within-layer permutation of t1;
+  - ring showers ("ring", run 18): the closed-form ring kernel equals the point kernel
+    averaged around the ring, reduces to it at r = 0, depends only on the distance
+    from the axis, conserves the deposit, and has finite gradients (also on the axis);
   - KERNEL_FRAME == "shower" without frames raises instead of mislabelling.
 
     python tests/test_shower_frame.py
@@ -91,7 +94,8 @@ def test_shower_frame_equals_global_for_horizontal_west_shower():
 
     sfc = raw.clone()
     frames = DB.place_clouds_shower(sfc, pos, dirs, torch.arange(B), 0, circular=False)
-    Es, Ts = DB.compute_labels_batch(sfc, e_det, n_det, surf, interp_k=8, frames=frames, t_interp=False)
+    Es, Ts = DB.compute_labels_batch(sfc, e_det, n_det, surf, interp_k=8, frames=frames, t_interp=False,
+                                     transverse="line")
     assert torch.allclose(Eg, Es, rtol=1e-4, atol=1e-6), (Eg - Es).abs().max()
     assert torch.allclose(Tg, Ts, rtol=0, atol=1e-12), (Tg - Ts).abs().max()
 
@@ -124,9 +128,9 @@ def test_circular_t2_permutation_and_determinism():
     raw[1, 450:] = 0.0                                   # padding rows
     pos, dirs = torch.zeros(4, 3), torch.tensor([[-0.8, 0.6, 0.0]] * 4)
     c1, c2, c3 = raw.clone(), raw.clone(), raw.clone()
-    DB.place_clouds_shower(c1, pos, dirs, torch.arange(4), 1)
-    DB.place_clouds_shower(c2, pos, dirs, torch.arange(4), 1)
-    DB.place_clouds_shower(c3, pos, dirs, torch.arange(4) + 7, 1)
+    DB.place_clouds_shower(c1, pos, dirs, torch.arange(4), 1, transverse="pair")
+    DB.place_clouds_shower(c2, pos, dirs, torch.arange(4), 1, transverse="pair")
+    DB.place_clouds_shower(c3, pos, dirs, torch.arange(4) + 7, 1, transverse="pair")
     assert torch.equal(c1, c2)
     assert not torch.equal(c1[..., 1], c3[..., 1])
     assert torch.all(c1[1, 450:, :2] == 0)
@@ -149,6 +153,86 @@ def test_shower_frame_without_frames_raises():
     finally:
         DB.KERNEL_FRAME = old
     raise AssertionError("expected ValueError without frames")
+
+
+def _ring_read(r, rho, h, sigma=SIGMA):
+    """Ring kernel from GetCounts_planeaware(ring=True): one ring of radius r, energy 1."""
+    c = torch.zeros(1, len(r), 5, dtype=torch.float64)
+    c[0, :, 0] = torch.as_tensor(r, dtype=torch.float64)
+    c[0, :, 3] = 1.0
+    bw = torch.full((1, len(r)), float(h), dtype=torch.float64)
+    rho = torch.as_tensor(rho, dtype=torch.float64)
+    E, _ = GetCounts_planeaware(c, rho, torch.zeros_like(rho), torch.zeros_like(rho), None, None, None,
+                                sigma=sigma, bandwidth=bw, ring=True)
+    return E[0]
+
+
+def test_ring_equals_point_kernel_averaged_around_the_ring():
+    r, h = 300.0, 40.0
+    rho = torch.tensor([0.0, 100.0, 260.0, 300.0, 320.0, 500.0], dtype=torch.float64)
+    ang = torch.arange(3600, dtype=torch.float64) * (2 * math.pi / 3600)
+    px, py = r * torch.cos(ang), r * torch.sin(ang)
+    num = ((SIGMA / h) ** 2 * torch.exp(-((px[:, None] - rho[None]) ** 2 + py[:, None] ** 2) / (2 * h * h))).mean(0)
+    assert torch.allclose(_ring_read([r], rho, h), num, rtol=1e-6, atol=1e-12)
+
+
+def test_ring_radius_zero_is_point_kernel():
+    rho = torch.tensor([0.0, 5.0, 20.0, 60.0], dtype=torch.float64)
+    h = 25.0
+    pt = (SIGMA / h) ** 2 * torch.exp(-rho ** 2 / (2 * h * h))
+    assert torch.allclose(_ring_read([0.0], rho, h), pt, rtol=1e-10)
+
+
+def test_ring_reading_depends_only_on_distance_from_axis():
+    # Through compute_labels_batch: detectors at the same distance from a horizontal
+    # West-going axis, in different directions around it, read the same.
+    gen = torch.Generator().manual_seed(5)
+    raw, _, _ = _native_cloud(1, 400, gen, spread=60.0)
+    pos = torch.tensor([[0.0, 0.0, 100.0]])
+    dirs = torch.tensor([[-1.0, 0.0, 0.0]])
+    frames = DB.place_clouds_shower(raw, pos, dirs, torch.arange(1), 0, transverse="ring")
+
+    class Surf:                                 # detectors at Up = given per detector
+        def __init__(self, up):
+            self.up = up
+
+        def __call__(self, n, e):
+            return self.up
+
+    ang = torch.tensor([0.0, 0.7, 1.9, 3.0, 4.4])
+    rad = 45.0
+    n_det = rad * torch.cos(ang)
+    up = 100.0 + rad * torch.sin(ang)
+    e_det = torch.full_like(ang, -1500.0)       # depth 1500 m: on plane l = 2
+    E, T = DB.compute_labels_batch(raw, e_det, n_det, Surf(up), interp_k=8, frames=frames,
+                                   t_interp=True, transverse="ring")
+    assert torch.allclose(E[0], E[0, :1].expand(5), rtol=1e-4), E
+    assert torch.allclose(T[0], T[0, :1].expand(5), rtol=0, atol=1e-12), T
+
+
+def test_ring_conserves_deposit():
+    # Energy 1 on a ring of radius 200 m: the reading integrated over the plane
+    # (2 pi rho d rho) is 2 pi sigma^2, as for a point.
+    h = 30.0
+    rho = torch.linspace(0.0, 600.0, 60001, dtype=torch.float64)
+    w = _ring_read([200.0], rho, h)
+    total = torch.trapezoid(w * 2 * math.pi * rho, rho)
+    assert abs(float(total) / (2 * math.pi * SIGMA ** 2) - 1.0) < 1e-4, float(total)
+
+
+def test_ring_gradients_finite_on_and_off_axis():
+    gen = torch.Generator().manual_seed(6)
+    raw, _, _ = _native_cloud(2, 200, gen, spread=50.0)
+    pos = torch.tensor([[0.0, 0.0, 0.0], [0.0, 30.0, 0.0]])
+    dirs = torch.tensor([[-1.0, 0.0, 0.0]] * 2)
+    frames = DB.place_clouds_shower(raw, pos, dirs, torch.arange(2), 0, transverse="ring")
+    e = torch.tensor([-1000.0, -1200.0, -2000.0], requires_grad=True)
+    n = torch.tensor([0.0, 15.0, -40.0], requires_grad=True)         # first detector on the axis
+    E, _ = DB.compute_labels_batch(raw, e, n, FlatSurface(0.0), interp_k=8, frames=frames,
+                                   differentiable=True, transverse="ring")
+    E.sum().backward()
+    assert torch.isfinite(e.grad).all() and torch.isfinite(n.grad).all()
+    assert float(n.grad.abs().sum()) > 0
 
 
 if __name__ == "__main__":

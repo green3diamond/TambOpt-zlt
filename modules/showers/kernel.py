@@ -136,6 +136,7 @@ def GetCounts_planeaware(
     t_mode: str = "leading",
     t_interp: bool = False,
     layer_dx: float = 500.0,
+    ring: bool = False,
 ) -> tuple:
     """Plane-aware count extraction + leading-edge arrival time.
 
@@ -182,6 +183,15 @@ def GetCounts_planeaware(
                    quantized in steps of layer_dx / c). Clamped >= 1e-12 s, since 0
                    is the "no hit" sentinel.
         layer_dx : plane spacing [m] for t_interp (C8: 500 m along the axis).
+        ring     : circularly symmetric showers. Each point is a RING of radius
+                   r = samples[..., 0] around the shower axis, its energy spread
+                   evenly around it, and x_det is the detector's distance rho from
+                   the axis (y_det, samples[..., 1] unused). The spatial factor is
+                   the point kernel averaged around the ring, in closed form:
+                       (sigma/h)^2 exp(-(rho - r)^2 / 2h^2) i0e(rho r / h^2)
+                   (i0e = exp(-x) I0(x)). r = 0 gives the point kernel; the
+                   deposit over the detector plane is conserved (2 pi sigma^2 per
+                   unit energy), as for points.
 
     Returns:
         (local_intensity, arrival_time) : each (B, n_det), raw (no
@@ -200,7 +210,13 @@ def GetCounts_planeaware(
     # dx, dy : (B, P, n_det)
     dx = point_x.unsqueeze(2) - x_det
     dy = point_y.unsqueeze(2) - y_det
-    if bandwidth is None:
+    if ring:
+        # point_x = ring radius r, x_det = detector distance from the axis rho.
+        h2 = (bandwidth.unsqueeze(2) ** 2 if bandwidth is not None
+              else torch.full_like(dx[..., :1], float(sigma) ** 2))
+        rr = point_x.unsqueeze(2) * x_det
+        spatial = (sigma ** 2 / h2) * torch.exp(-dx ** 2 / (2.0 * h2)) * torch.special.i0e(rr / h2)
+    elif bandwidth is None:
         spatial = torch.exp(-(dx ** 2 + dy ** 2) / (2.0 * sigma ** 2))
     else:
         h2 = bandwidth.unsqueeze(2) ** 2                          # (B, P, 1)

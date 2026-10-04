@@ -19,7 +19,7 @@ from ..showers import GetCounts_planeaware, adaptive_bandwidths
 from ..constants import (BLOB_MEDIAN_E, EAST_ENTRY, LAYER_EAST_DX, N_DETECTORS,
                          PRIMARY_DIM, SPECIES_NAMES, SIGMA_SPATIAL,
                          KERNEL_INTERP_K, KERNEL_FRAME, KERNEL_T_INTERP,
-                         KERNEL_CIRCULAR, C8_PLANE_DX)
+                         KERNEL_CIRCULAR, KERNEL_TRANSVERSE, C8_PLANE_DX)
 from ..layouts.strategies import (_STRATEGIES, _STRATEGY_FNS)
 from ..surrogates import encode_primary, compute_normalization  # noqa: F401  (re-export)
 from ..surrogates.fnn import _load_species_sidecar
@@ -185,20 +185,28 @@ def place_clouds_shower(clouds: torch.Tensor,
                         event_ids: torch.Tensor,
                         species,
                         plane_dx: float = C8_PLANE_DX,
-                        circular: bool = KERNEL_CIRCULAR) -> torch.Tensor:
+                        transverse: Optional[str] = None,
+                        circular: Optional[bool] = None) -> torch.Tensor:
     """Place native AllShowers clouds in each shower's own frame.
 
     Native cols [x, y, layer, e, t]: x, y = horizontal (East, North) offsets from
     the shower start (the decay), in fixed global axes, which already include the
     travel along the axis; layer l = C8 plane at depth (l + 1) * plane_dx.
 
+    t1 = x e1_E + y e1_N is the horizontal transverse offset from the axis. Exact:
+    e1 has no vertical part and is perpendicular to the heading, so neither the
+    lost z nor the travel along the axis enters. The other transverse offset t2
+    (~vertical) was not recorded by C8; `transverse` (default KERNEL_TRANSVERSE)
+    sets the shape:
+        "ring": circularly symmetric: the point is a ring of radius |t1| around the
+                axis (cols 0, 1 = |t1|, 0); the kernel reads detectors by their
+                distance from the axis (compute_labels_batch passes ring=True).
+        "pair": cols 0, 1 = t1, t2 with t2 from `circular_t2` (random pairing).
+        "line": cols 0, 1 = t1, 0.
+    (`circular` is the older switch: True = "pair", False = "line".)
+
     Output cols (MODIFIED IN PLACE, energy-carrying points only):
-        0: t1 = x e1_E + y e1_N   horizontal transverse offset from the axis. Exact:
-                                  e1 has no vertical part and is perpendicular to
-                                  the heading, so neither the lost z nor the travel
-                                  along the axis enters.
-        1: t2                     transverse, ~vertical; not recorded by C8. Filled
-                                  by `circular_t2` when `circular`, else 0.
+        0, 1: transverse coordinates per `transverse` (above)
         2: l + 1                  depth along the axis in units of plane_dx.
         3, 4: energy, time        unchanged.
     Same 5-column layout as the global placement, so `GetCounts_planeaware` and
@@ -220,12 +228,18 @@ def place_clouds_shower(clouds: torch.Tensor,
     t1 = clouds[:, :, 0] * e1[:, 0:1] + clouds[:, :, 1] * e1[:, 1:2]
     t1 = torch.where(mask, t1, torch.zeros_like(t1))
     layer = clouds[:, :, 2]
-    if circular:
+    if transverse is None:
+        transverse = KERNEL_TRANSVERSE if circular is None else ("pair" if circular else "line")
+    if transverse == "ring":
+        t1, t2 = t1.abs(), torch.zeros_like(t1)
+    elif transverse == "pair":
         ev = torch.as_tensor(event_ids, device=clouds.device).long().view(-1)
         sp = torch.as_tensor(species, device=clouds.device).long().view(-1).expand(ev.shape[0])
         t2 = circular_t2(t1, layer, mask, ev, sp).to(t1.dtype)
-    else:
+    elif transverse == "line":
         t2 = torch.zeros_like(t1)
+    else:
+        raise ValueError(f"transverse must be 'ring', 'pair' or 'line', got {transverse!r}")
     clouds[..., 0] = torch.where(mask, t1, clouds[..., 0])
     clouds[..., 1] = torch.where(mask, t2, clouds[..., 1])
     clouds[..., 2] = torch.where(mask, layer + 1.0, clouds[..., 2])
@@ -233,16 +247,21 @@ def place_clouds_shower(clouds: torch.Tensor,
 
 
 def detectors_in_frames(e_det: torch.Tensor, n_det: torch.Tensor, surface,
-                        frames: torch.Tensor, plane_dx: float = C8_PLANE_DX):
+                        frames: torch.Tensor, plane_dx: float = C8_PLANE_DX,
+                        ring: bool = False):
     """Map one layout (East, North; Up from the surface) into every shower's frame.
     Returns (t1, t2, z) each (M, n_det), z = depth along the axis / plane_dx.
-    Linear in (East, North) (plus the bilinear surface), so differentiable."""
+    Linear in (East, North) (plus the bilinear surface), so differentiable.
+    `ring`: returns (rho, 0, z) instead, rho = distance from the axis (for ring
+    showers; a tiny epsilon keeps its gradient finite on the axis)."""
     up = surface(n_det, e_det)
     det = torch.stack([e_det, n_det, up], -1).to(frames.dtype)          # (n_det, 3)
     r = det.unsqueeze(0) - frames[:, None, 0:3]                         # (M, n_det, 3)
     s = (r * frames[:, None, 3:6]).sum(-1)
     t1 = (r * frames[:, None, 6:9]).sum(-1)
     t2 = (r * frames[:, None, 9:12]).sum(-1)
+    if ring:
+        return torch.sqrt(t1 ** 2 + t2 ** 2 + 1e-6), torch.zeros_like(t1), s / plane_dx
     return t1, t2, s / plane_dx
 
 
@@ -329,7 +348,8 @@ def compute_labels_batch(clouds:   torch.Tensor,
                          t_mode: str = "leading",
                          bandwidth: Optional[torch.Tensor] = None,
                          frames: Optional[torch.Tensor] = None,
-                         t_interp: Optional[bool] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+                         t_interp: Optional[bool] = None,
+                         transverse: Optional[str] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run the plane-aware kernel on a batch of showers sharing one layout.
 
     With `frames` (shower frame, KERNEL_FRAME == "shower"): clouds come from
@@ -338,7 +358,9 @@ def compute_labels_batch(clouds:   torch.Tensor,
     shower's transverse plane with depth along its axis. `t_interp` (default
     KERNEL_T_INTERP) carries point times between planes. Without frames under
     KERNEL_FRAME == "shower" this raises, so old global-frame call sites can't
-    silently label shower-frame clouds.
+    silently label shower-frame clouds. `transverse` (default KERNEL_TRANSVERSE) must
+    match the one the clouds were placed with ("ring": detectors read by their
+    distance from the axis).
 
     Detectors are (East, North), matching the ENU h5 convention; the kernel is
     unchanged and still reads North as its transverse axis and East as the depth.
@@ -380,13 +402,14 @@ def compute_labels_batch(clouds:   torch.Tensor,
         if bandwidth is None and interp_k:
             bandwidth = adaptive_bandwidths(clouds, interp_k, sigma_spatial)
         if frames is not None:
-            x_d, y_d, z_d = detectors_in_frames(e_det, n_det, surface, frames.to(clouds.device))
+            ring = (KERNEL_TRANSVERSE if transverse is None else transverse) == "ring"
+            x_d, y_d, z_d = detectors_in_frames(e_det, n_det, surface, frames.to(clouds.device), ring=ring)
             E, T = GetCounts_planeaware(
                 clouds, x_d.to(clouds.dtype), y_d.to(clouds.dtype), z_d.to(clouds.dtype),
                 SmearN_fn=None, fluxB_e=dummy_flux, TimeAverage_vectorized_fn=None,
                 sigma=sigma_spatial, bandwidth=bandwidth, t_mode=t_mode,
                 t_interp=KERNEL_T_INTERP if t_interp is None else t_interp,
-                layer_dx=C8_PLANE_DX)
+                layer_dx=C8_PLANE_DX, ring=ring)
             return E, T
         if KERNEL_FRAME == "shower":
             raise ValueError("compute_labels_batch: KERNEL_FRAME is 'shower' but no frames were "
@@ -763,7 +786,7 @@ def build_training_pairs(mountain, surface,
     if verbose:
         if KERNEL_FRAME == "shower":
             print(f"[place] shower frame at the real decay vertices (N={meta.positions.shape[0]}; "
-                  f"t1 from x/y, t2 {'circular' if KERNEL_CIRCULAR else '= 0'}, depth (l+1)x"
+                  f"t1 from x/y, transverse '{KERNEL_TRANSVERSE}', depth (l+1)x"
                   f"{C8_PLANE_DX:g} m, times {'interpolated' if KERNEL_T_INTERP else 'per plane'})")
         else:
             print(f"[place] real ENU decay positions from tau_wholesky.jl "
