@@ -520,7 +520,7 @@ def consecutive_cos_distance(grad_hist, window: int = 1) -> np.ndarray:
 
 
 # ── Model loading ─────────────────────────────────────────────────────────────
-def load_models(device, fnn_folder=None, recon_dir=None):
+def load_models(device, fnn_folder=None, recon_dir=None, with_fnn=True):
     """Frozen dual-species surrogate + DeepSets recon from 03_train_recon_deepsets.py.
 
     The dual wrapper combines fnn_electron.pt + fnn_muon.pt per event (frozen,
@@ -529,10 +529,13 @@ def load_models(device, fnn_folder=None, recon_dir=None):
     (B, n_det, 4) per-detector features: x, y, and a stochastic sample of
     E/T drawn from the surrogate's predicted distribution), applies its
     normalization, and freezes
-    it. Defaults: FNN_FOLDER and RECON_FOLDER + "_deepsets"."""
+    it. Defaults: FNN_FOLDER and RECON_FOLDER + "_deepsets".
+
+    `with_fnn=False` loads the recon only and returns (None, recon): for runs
+    without a Stage-2 surrogate, scored on the kernel (score_layouts.py)."""
     fnn_folder = fnn_folder or FNN_FOLDER
     recon_dir  = recon_dir  or (RECON_FOLDER + "_deepsets")
-    fnn = load_dual_surrogate(fnn_folder, device)
+    fnn = load_dual_surrogate(fnn_folder, device) if with_fnn else None
 
     recon_ckpt = torch.load(os.path.join(recon_dir, "recon.pt"),
                             map_location=device, weights_only=False)

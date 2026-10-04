@@ -481,31 +481,34 @@ def main():
     print(f"[load] corpus in {time.time() - t0:.1f}s  primary={tuple(primary.shape)}  "
           f"blob={100 * (~keep).float().mean():.2f}%")
 
-    dual = load_dual_surrogate(FNN_FOLDER, DEVICE)
-
-    # The surrogate draw is computed even for --recon-input kernel: it costs one
-    # pass and its summary stats beside the kernel's are the diagnostic for how
-    # far apart the two response distributions actually are — the quantity the
-    # whole surrogate-vs-true artifact gap comes from.
-    t0 = time.time()
-    E_samp, T_samp = compute_fnn_predictions(dual, primary, xy, DEVICE)
-    print(f"[dual] mean predictions "
-          f"in {time.time() - t0:.1f}s  "
-          f"E mean={E_samp.mean():.3g} std={E_samp.std():.3g}  "
-          f"T mean={T_samp.mean():.3g} std={T_samp.std():.3g}")
+    # --recon-input kernel needs no surrogate (run 18 trains none): skip it. With a
+    # surrogate (sample / mix), its draw is computed, and its summary stats beside
+    # the kernel's show how far apart the two response distributions are.
+    dual = None if RECON_INPUT == "kernel" else load_dual_surrogate(FNN_FOLDER, DEVICE)
 
     t0 = time.time()
     E_kern, T_kern = load_kernel_responses(TRAINING_DATASET_FOLDER)
     print(f"[kernel] real labels in {time.time() - t0:.1f}s  "
           f"E mean={E_kern.mean():.3g} std={E_kern.std():.3g}  "
           f"T mean={T_kern.mean():.3g} std={T_kern.std():.3g}")
+    if dual is None:
+        E_samp, T_samp = E_kern, T_kern          # unused by build_recon_inputs("kernel")
+        print("[dual] skipped (--recon-input kernel)")
+    else:
+        t0 = time.time()
+        E_samp, T_samp = compute_fnn_predictions(dual, primary, xy, DEVICE)
+        print(f"[dual] mean predictions "
+              f"in {time.time() - t0:.1f}s  "
+              f"E mean={E_samp.mean():.3g} std={E_samp.std():.3g}  "
+              f"T mean={T_samp.mean():.3g} std={T_samp.std():.3g}")
     if E_kern.shape != E_samp.shape:
         raise RuntimeError(
             f"kernel labels {tuple(E_kern.shape)} do not match the surrogate "
             f"draw {tuple(E_samp.shape)} — E.pt/T.pt are not row-aligned with "
             f"primary.pt, so Step 1 and Step 2/3 disagree on the corpus")
-    print(f"[delta] surrogate-minus-kernel  E {(E_samp - E_kern).abs().mean():.4g}"
-          f"  T {(T_samp - T_kern).abs().mean():.4g}  (mean |diff|)")
+    if dual is not None:
+        print(f"[delta] surrogate-minus-kernel  E {(E_samp - E_kern).abs().mean():.4g}"
+              f"  T {(T_samp - T_kern).abs().mean():.4g}  (mean |diff|)")
 
     print(f"[input] recon-input={RECON_INPUT}"
           + (f"  mix_frac={MIX_FRAC}" if RECON_INPUT == "mix" else ""))
@@ -887,10 +890,14 @@ def main():
         assert _spec is not None and _spec.loader is not None
         _mod = importlib.util.module_from_spec(_spec)
         _spec.loader.exec_module(_mod)
-        _mod.plot_recon_only(fnn=dual, recon=recon, primary=primary, xy=xy,
-                             val_idx=val_idx,
-                             output_path=os.path.join(OUTPUT_FOLDER,
-                                                      "recon_target_vs_pred.png"))
+        if dual is None:
+            _mod.plot_recon_on_kernel(recon=recon, primary=primary, xy=xy, val_idx=val_idx,
+                                      recon_folder=OUTPUT_FOLDER)
+        else:
+            _mod.plot_recon_only(fnn=dual, recon=recon, primary=primary, xy=xy,
+                                 val_idx=val_idx,
+                                 output_path=os.path.join(OUTPUT_FOLDER,
+                                                          "recon_target_vs_pred.png"))
     except Exception as exc:
         print(f"[plot-tvp] skipped ({exc!r})")
 

@@ -40,7 +40,7 @@ def main():
     mountain = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY,
                                 east_entry=C.EAST_ENTRY, layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
     surface = SurfaceUpMap.from_mountain(mountain, grid_h=256, grid_w=256).to(DCS.DEVICE)
-    _, recon = load_models(DCS.DEVICE, recon_dir=args.recon_dir)
+    _, recon = load_models(DCS.DEVICE, recon_dir=args.recon_dir, with_fnn=False)   # kernel scoring: no surrogate
     gate = GS.settings(float(OBJ.RECONSTRUCT_THRESHOLD))[0]
     clouds, _, _, prim_k = load_events(args.n_kernel, DCS.DEVICE, mountain)
     kern = GS.CachedKernel(clouds, surface, DCS.DEVICE, chunk=args.chunk, expected_primary=prim_k)
