@@ -35,12 +35,12 @@ max_points and correlated 0.43 with the E channel.
 
 import torch
 
-from ..constants import HIT_DEPOSIT_MIN
+from ..constants import HIT_DEPOSIT_MIN, KERNEL_INTERP_MAX
 
 
 @torch.no_grad()
 def adaptive_bandwidths(samples: torch.Tensor, k: int, sigma_min: float,
-                        max_pairs: int = 1 << 27) -> torch.Tensor:
+                        max_pairs: int = 1 << 27, sigma_max: float = None) -> torch.Tensor:
     """Per-point Gaussian width for the interpolated kernel: the distance to the
     k-th nearest other real point IN THE SAME PLANE, floored at `sigma_min`.
 
@@ -63,10 +63,13 @@ def adaptive_bandwidths(samples: torch.Tensor, k: int, sigma_min: float,
     float64 on per-shower-centred coordinates, so the fast matmul form stays exact
     at metre scale. `max_pairs` bounds the (showers, n, n) block held at once.
 
+    `sigma_max` caps the widths (default constants.KERNEL_INTERP_MAX, inf = no cap).
+
     Returns (B, P) widths in metres.
     """
     B, P, _ = samples.shape
     sigma_min = float(sigma_min)
+    sigma_max = float(KERNEL_INTERP_MAX if sigma_max is None else sigma_max)
     h = torch.full((B, P), sigma_min, dtype=samples.dtype, device=samples.device)
     real = samples[..., 3] > 0
     if B == 0 or not bool(real.any()):
@@ -98,7 +101,7 @@ def adaptive_bandwidths(samples: torch.Tensor, k: int, sigma_min: float,
             vals = d.topk(kk, dim=-1, largest=False).values           # ascending, self first
             # k-th neighbour if the plane has one, else its farthest; 0 if alone.
             r = torch.where(torch.isfinite(vals), vals, torch.zeros_like(vals)).amax(-1)
-            r = r.clamp(min=sigma_min).to(h.dtype)
+            r = r.clamp(min=sigma_min, max=max(sigma_max, sigma_min)).to(h.dtype)
             rows = sb[c0:c1]
             hsub = h[rows]
             idx = order[c0:c1]

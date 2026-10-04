@@ -72,6 +72,10 @@ HIT_DEPOSIT_MIN = 1e-3
 # requires a Stage-1 rebuild, and every kernel caller (Step 1, true-utility
 # scoring, the floor) reads it as compute_labels_batch's default.
 KERNEL_INTERP_K = 8
+# Upper cap on those widths [m]; inf = uncapped (all runs so far). Set per job with
+# TAMBOPT_KERNEL_BW_MAX to test how much far detectors' weak signals come from points
+# widened to hundreds of metres (sparse tails, layers with fewer than k+1 points).
+KERNEL_INTERP_MAX = float(os.environ.get("TAMBOPT_KERNEL_BW_MAX", "inf"))
 
 # Stage 2 head. True = lit/dark hurdle: the decoder also emits P(lit) per
 # channel and regresses the value on lit slots only; forward() returns the
