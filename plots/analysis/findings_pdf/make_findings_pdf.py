@@ -391,12 +391,79 @@ if all(os.path.exists(p) for p in (RK + "recon_conditional_kernel.png", CT + "co
         "Center starts all leave the blob, two-tier λ = 0 included (it stayed stuck through the surrogate)",
         "Same size of gain as through the surrogate (~+1 point at 5°): optimizing on the kernel finds nothing better"]))
 
+# Run 17 shower-geometry checks (diagnostics/array_size_single_shower, zenith_cap100, kernel_frame).
+AS, ZC, KF = R17 + "diagnostics/array_size_single_shower/", R17 + "diagnostics/zenith_cap100/", R17 + "diagnostics/kernel_frame/"
+if all(os.path.exists(p) for p in (AS + "array_size_shower_off_cap50.png", ZC + "zenith_cap_check.png",
+                                   KF + "kernel_frame_issue_cap50.png")):
+    pages.append(section_page('Shower geometry checks',
+                              'One shower vs array size, shower direction vs label, kernel frame, layer placement'))
+    pages.append(page([AS + "array_size_shower_center_uncapped.png", AS + "array_size_shower_center_cap50.png"], [
+        "One held-out shower, core 52 m from the plane centre (zenith 109°): 100-detector disks of 50 m – 1 km + grid",
+        "Left: kernel widths uncapped (up to 1.7 km) · right: capped at 50 m · recon trained on uncapped kernel responses",
+        "Uncapped: all 100 detectors of the 50 m disk ≥ 1 count; angle 15–31° · capped: 13–23°, log10 E 0.14–0.8 low",
+        "Deposits sit off the core ★ (where the labelled axis meets the plane): see the direction check below"]))
+    pages.append(page([AS + "array_size_shower_off_uncapped.png", AS + "array_size_shower_off_cap50.png"], [
+        "Same test, core 568 m from the plane centre (zenith 112°); disks stay at the centre",
+        "Uncapped: the 50 m disk, 570 m from the core, still has all 100 detectors ≥ 1 count (~50 counts each)",
+        "Capped: 0 detectors in the 50 m disk; best angle 4.4° with the 500 m disk · single showers are noisy",
+        "Both showers have zenith > 100°, outside the AllShowers training range (60–100°)"]))
+    pages.append(page([ZC + "zenith_cap_check.png"], [
+        "Zenith ≤ 100°: the axis tilt does not change; it depends only on the angle from due West (panel 1)",
+        "Grid, good at 5°: 4.9% (≤ 100°) vs 1.1% (> 100°) uncapped, 3.6% vs 2.2% capped · median angle 13.7° vs 15.2°",
+        "Run 18 geometry with the cut at 100°: 53% of throws kept (82% at 120°), same azimuth spread",
+        "A shower with 0 detectors ≥ 1 count was still reconstructed to 4.6–6°: the recon's direction prior is narrow"]))
+    pages.append(table_page("The shower tilt follows the simulation's magnetic field B", [
+        "angle between shower axis and B   sideways shift per km of depth   C8 test showers",
+        "             0–10°                       0.38  (21°)                    220",
+        "            10–20°                       0.31  (17°)                    552",
+        "            20–30°                       0.22  (12°)                    804",
+        "          30° and more                   0.00                         ~4,300",
+    ], [
+        "Hamza's C8 simulation sets B = (22.7 μT, −2.5 nT, −4.3 nT) in its root frame: along +x, our East–West axis",
+        "Within ~30° of B, each layer's particles form a narrow band (20–200 m) shifted 0.85–2.8 km toward −y (South)",
+        "Beyond 30°: normal lateral spread (± a few hundred m) centred on the axis",
+        "Present in the C8 training showers; the generator reproduces it (run 17: e +9.5°, μ +9.9°, γ +18.5° in azimuth)",
+        "A field parallel to the shower should bend it least: suspected C8 tracking issue for particles moving along B",
+        "Not confirmed: raw C8 output was deleted; test = one +x and one +y shower, with B as set and with B = 0",
+        "Run 17/18: ~80% of showers within 30° of West → affected · Malata (taus heading North) → not affected"]))
+    pages.append(page([KF + "kernel_frame_issue.png"], [
+        "Rows: run 17 shower ~due West, ~40° off West, Malata shower heading ~North · uncapped widths",
+        "Columns: top view (grey: kernel's East slabs, blue: shower's layers) · footprint as used / layer fix / "
+        "shower frame",
+        "The kernel matches in global North–Up with East slabs; C8 records each shower on planes perpendicular to its axis",
+        "The two differ for every shower; Malata: the kernel smears the shower into a ±500 m East–West line"]))
+    pages.append(page([KF + "kernel_frame_issue_cap50.png"], [
+        "Same, widths capped at 50 m: footprints shrink to 35–80 faces with ≥ 1 count",
+        "Due West: all three versions now agree; the signal lands ~1 km South of the ★ (the tilt above)",
+        "40° off West: the kernel as used draws a ~2 km strip along North; the shower frame a compact patch at the ★",
+        "Malata: unchanged by the cap; the shower frame puts ~4× more signal near the ★ on fewer faces"]))
+    pages.append(table_page("Layer placement is one layer short", [
+        "C8 plane k sits at k × 500 m along the axis, k = 1–24  →  stored layer l at depth (l + 1) × 500 m",
+        "measured on the C8 test showers (e, μ, γ): depth / 500 m = l + 1.00 for every layer 0–15",
+        "place_clouds_enu: Up = decay Up + l × 500 m × d_Up   (East, North come from x/y and are right)",
+    ], [
+        "Up error = 500 m × d_Up: 12–45 m for near-horizontal showers, ~170 m at ±20° elevation, ~250 m at ±30°",
+        "Explains the +150–190 m Up offsets seen for two run 17 showers at zenith 109–112°",
+        "Every Stage 1 label built since the July placement fix carries it · fix: depth (l + 1) × 500 m, then rebuild Stage 1"],
+        header=False))
+    pages.append(table_page("Shower directions: training vs our runs", [
+        "                     zenith of travel                  azimuth of travel",
+        "AllShowers training  60–100°, flat                     all directions, flat (0–30° bin 20% low)",
+        "run 17 / run 18      60–120° (35% above 100°)          80% within 30° of due West",
+        "Malata (run 15)      56–120° (16–84%: 72–96°)          mostly North to North-West (30–150°)",
+    ], [
+        "130,000 primaries shared by the e, μ, γ training sets · energy 10^5–10^7.7 GeV · 50/50 EM / hadronic",
+        "Run 17/18: the East-facing plane forces West-going showers, inside the tilted range around B",
+        "A shower-frame kernel would drop the East-facing requirement and allow any shower direction"]))
+
 pages.append(text_page("Status and open questions", [
     "Kernel-in-the-loop on Stage 4's 75k events: grid 30.48 → 30.57, center 7.13 → 30.50 (surrogate: 30.85 / 30.79)",
     "Gate scan (runs 12, 15, 16): no trigger or softness setting beats the current gate",
     "Run 16: labels ~99% identical to run 15; a true-mean rerun is needed to test the idea",
     "Near-miss tau corpus (axis within ~3 km of the mesh): requested",
     "Two-tier utility (run 16): no gain, no structure; next: near-miss taus, bootstrap error bars",
+    "Before run 18: fix the layer depth in place_clouds_enu; decide on a shower-frame kernel",
+    "C8: confirm the shift for showers within 30° of B (test run or ask Hamza); check the B units (nT vs μT)",
 ]))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
