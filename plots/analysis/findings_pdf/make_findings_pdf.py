@@ -1,0 +1,404 @@
+"""PDF: findings after run 13 (runs 14-16, SWGOLO comparison). White pages, figures on top, short bullets.
+
+    python figures/make_findings_pdf.py   (any Python with Pillow + matplotlib)
+"""
+import os
+from PIL import Image, ImageDraw, ImageFont
+import matplotlib
+
+B = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/"
+OUT = B + "figures/findings_after_run13.pdf"
+W, H, M = 3200, 1800, 90
+IMG_H = 1400
+TTF = os.path.join(matplotlib.get_data_path(), "fonts/ttf/")
+FONT = ImageFont.truetype(TTF + "DejaVuSans.ttf", 46)
+HEAD = ImageFont.truetype(TTF + "DejaVuSans-Bold.ttf", 72)
+TITLE = ImageFont.truetype(TTF + "DejaVuSans-Bold.ttf", 110)
+INK = "#1F2328"
+R12, R14 = B + "12_10pct_mean_analytic/", B + "14_sigma10_10pct/"
+R15, R16 = B + "15_sigma10_interp_hurdle_10pct/", B + "16_sigma10_interp_emean_10pct/"
+
+
+def page(paths, bullets):
+    p = Image.new("RGB", (W, H), "white")
+    imgs = [Image.open(x).convert("RGB") for x in paths]
+    gap = 80
+    img_h = IMG_H - max(0, len(bullets) - 3) * 66
+    avail_w = W - 2 * M - gap * (len(imgs) - 1)
+    h = min(img_h, int(avail_w / sum(i.width / i.height for i in imgs)))
+    rs = [i.resize((int(i.width * h / i.height), h), Image.LANCZOS) for i in imgs]
+    x = (W - (sum(r.width for r in rs) + gap * (len(rs) - 1))) // 2
+    for r in rs:
+        p.paste(r, (x, M))
+        x += r.width + gap
+    d = ImageDraw.Draw(p)
+    y = M + h + 50
+    for b in bullets:
+        d.text((M + 60, y), "•  " + b, fill=INK, font=FONT)
+        y += 66
+    return p
+
+
+def text_page(heading, bullets):
+    p = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(p)
+    d.text((200, 220), heading, fill=INK, font=HEAD)
+    for k, b in enumerate(bullets):
+        d.text((210, 420 + 92 * k), "•  " + b, fill=INK, font=FONT)
+    return p
+
+
+MONO = ImageFont.truetype(TTF + "DejaVuSansMono.ttf", 40)
+
+
+def table_page(heading, rows, notes, header=True):
+    """Heading, a monospace table (first row = header) and short bullets under it."""
+    p = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(p)
+    d.text((200, 150), heading, fill=INK, font=HEAD)
+    y = 320
+    for k, row in enumerate(rows):
+        d.text((210, y), row, fill=INK if (k or not header) else "#52514e", font=MONO)
+        y += 58
+    y += 40
+    for b in notes:
+        d.text((210, y), "•  " + b, fill=INK, font=FONT)
+        y += 66
+    return p
+
+
+def section_page(title, subtitle):
+    """Title slide that opens a new set of tests."""
+    p = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(p)
+    d.text((200, 700), title, fill=INK, font=TITLE)
+    d.text((210, 880), subtitle, fill="#52514e", font=FONT)
+    return p
+
+
+cover = Image.new("RGB", (W, H), "white")
+d = ImageDraw.Draw(cover)
+d.text((200, 520), "TambOpt · findings after run 13", fill=INK, font=TITLE)
+for k, b in enumerate([
+        "Runs 14 (σ = 10 m), 15 (interpolated kernel + lit/dark Stage 2), 16 (mean energy)",
+        "SWGOLO comparison: why SWGO finds structure and TambOpt does not",
+        "Details: docs/swgolo-comparison.md, docs/sigma10-stage2-collapse.md, docs/run15-findings.md"]):
+    d.text((210, 750 + 70 * k), "•  " + b, fill=INK, font=FONT)
+
+pages = [cover, text_page("Summary", [
+    "Uniform fill comes from the setup: every tau axis hits the mesh, and detectors live on that same mesh",
+    "SWGO throws cores over more area than its array covers → density vs area trade-off → core + halo",
+    "Implementation choices (surrogate vs simulator, recon, optimizer, start) do not move the optimum",
+    "No layout beats a uniform grid by more than ~1–3% on held-out true utility (runs 12, 14, 15)",
+    "Acceptance term: no gain where acceptance is saturated (σ = 50, run 15); small, untested gain at σ = 10",
+    "More lit detectors per shower → much better recon (same events: 3 lit 29°, 15 lit 11°); changing the gate does not help",
+    "Next: near-miss tau corpus (requested); a two-tier utility in recon accuracy (count well-reconstructed showers first)",
+])]
+
+pages.append(section_page('SWGO comparison', 'Where showers land, and what an acceptance term does (run 12)'))
+pages.append(page([B + "figures/eda_outputs/axis_impact_density/axis_impact_density.png"], [
+    "Where tau axes hit the mesh: 100% of 602k taus (1e5–1e7 GeV) hit it by selection",
+    "Interior illumination 0.92–1.15 of uniform; footprints stretched ~3.3× along the slope",
+    "docs/swgolo-comparison.md §2"]))
+
+pages.append(page([R12 + "test_v6_run_04_optimize_lbfgs_ensemble_upr0_grid/layout_density.png",
+                   R12 + "test_v6_run_04_optimize_lbfgs_ensemble_upr640_grid/layout_density.png"], [
+    "Run 12 (σ = 50 m) · Stage 4 without (left) and with (right) an acceptance term, λ = 640",
+    "λ pushes detectors to the rim, but kernel utility 42.99 vs 43.03: no gain (acceptance 89% saturated)",
+    "docs/swgolo-comparison.md §8"]))
+
+pages.append(section_page('Run 14: σ = 10 m', 'Narrow kernel: detector labels, surrogate and layouts'))
+pages.append(page([R14 + "test_v6_run_02_recentered/fnn_electron_conditional.png"], [
+    "Run 14 · σ = 10 m · Stage 2 electron surrogate",
+    "78% of E and 95% of T detector slots are exactly zero; lit-slot E error is scatter, not bias (bias² 0.4%)",
+    "docs/sigma10-stage2-collapse.md"]))
+
+pages.append(page([R14 + "test_v6_run_04_optimize_lbfgs_ensemble_upr0_grid/layout_density.png",
+                   R14 + "test_v6_run_04_optimize_lbfgs_ensemble_upr200_grid/layout_density.png"], [
+    "Run 14 · Stage 4 without (left) and with (right) an acceptance term, λ = 200 (\"spine\")",
+    "Kernel utility at σ = 10: spine 23.95, λ = 0 23.75, grid 23.22 (no error bars); acceptance mean r 0.57",
+    "docs/swgolo-comparison.md §4–5, §9"]))
+
+pages.append(section_page('Run 15: interpolated kernel', 'Adaptive Gaussian widths + lit/dark Stage 2 surrogate'))
+pages.append(page([R15 + "test_v6_run_01_northeast/kernel_bw_k8_hist.png"], [
+    "Run 15 · interpolated kernel: width h = max(10 m, distance to 8th in-plane neighbour)",
+    "Energy spread beyond 10 m: electron 54%, photon 61%, muon 91% (muon energy-weighted median ≈ 190 m)",
+    "docs/run15-findings.md"]))
+
+pages.append(page([R15 + "test_v6_run_02_recentered/fnn_electron_conditional.png"], [
+    "Run 15 · Stage 2 electron surrogate, lit/dark head (median line)",
+    "Lit detector slots: E ≈ 92% (run 14: 22%)"]))
+
+s3 = R15 + "test_v6_run_03_recentered_deepsets/"
+pages.append(page([s3 + "recon_conditional.png", s3 + "recon_conditional_kernel.png"], [
+    "Run 15 · Stage 3 recon conditional: detector response model (left), kernel (right)",
+    "Recon val loss 0.066 (run 14: 0.142)"]))
+
+s4 = R15 + "test_v6_run_04_optimize_lbfgs_ensemble_full_corpus_"
+pages.append(page([s4 + "grid/layout_density.png", s4 + "center/layout_density.png"], [
+    "Run 15 · Stage 4: grid start (left) true U 30.48 → 30.85 (+1.2%); center start (right) 7.13 → 30.79",
+    "Acceptance saturated (kernel mean r 0.88); reconstruct threshold 5 → 30 keeps layouts within 1.4–3.6%",
+    "docs/run15-findings.md §2–4"]))
+
+pages.append(section_page('Kernel-in-the-loop optimization',
+                          'Optimizing directly on the kernel instead of the surrogate (run 15)'))
+k4 = R15 + "test_v6_run_04_optimize_lbfgs_kernel_recon_utility_lr10_"
+pages.append(page([k4 + "grid/layout_density.png", k4 + "center/layout_density.png"], [
+    "Stage 4's 75k events, 512 fresh per step, Adam lr = 10, 20k steps; best layout picked on 1,024 separate events",
+    "Held-out true U: grid start (left) 30.48 → 30.57 (+0.3%); center start (right) 7.13 → 30.50",
+    "Surrogate optimizer for comparison: 30.85 (grid), 30.79 (center): the kernel finds nothing better",
+    "Best scoring-set U already at step ~2,750 (31.75 / 31.79), then drifts back to ~31.0–31.3",
+    "Earlier 64-fixed-event runs overfit (grid → 29.24); run 12's stall was setup (blob start, lr = 1, 200 steps)"]))
+
+pages.append(section_page('Run 16: mean energy', 'Detector E as the kernel-weighted mean point energy'))
+pages.append(page([R16 + "test_v6_run_02_recentered/fnn_electron_conditional.png"], [
+    "Run 16 · detector E = Σ e·w / max(Σ w, 1): the weighted mean point energy (otherwise run 15)",
+    "Stage 1 labels vs run 15: same lit set; only ~1% of lit E values changed (mean Δlog1pE 0.01–0.02)",
+    "Normalising factor max(Σ w, 1): mean 1.04–1.08; > 1 on only 1.1–1.5% of lit detectors (there ~3×, up to 100–300×)",
+    "So Stage 2 matches run 15 (val 0.341/0.393/0.359 vs 0.342/0.392/0.360): not yet a real test of the mean",
+    "Real test: mean wherever the detector is lit (lit/dark still set by the sum), then rerun Stages 1–2"]))
+
+pages.append(section_page('Reconstruction vs lit detectors', 'How many detectors a shower needs, and what the trigger threshold does'))
+D15, D12 = R15 + "diagnostics/", R12 + "diagnostics/"
+pages.append(page([D15 + "recon_sensitivity.png"], [
+    "Run 15 · recon (fed the kernel) vs number of lit detectors and signal accuracy, held-out events",
+    "Same events, keep n lit: 1 → 24°, 3 → 19°, 12 → 14°, 30 → 12°, all → 8.6° median angle error; no plateau",
+    "Signal accuracy barely matters: E × up to ~1.6 at random or 300 ns T jitter change the error < 3%",
+    "Recon is ~4× more accurate on surrogate input (2.0°) than on the kernel (8.6°): the surrogate is optimistic"]))
+
+pages.append(page([D12 + "activation_threshold.png"], [
+    "Run 12 (σ = 50) · detectors below the trigger set dark, as a real trigger would",
+    "Same events, activated detectors kept: 3 → 29°, 5 → 20°, 10 → 14°, 15 → 11° (trigger count ≥ 1)",
+    "Higher trigger: fewer activated (median 41 → 26 at ≥ 100) and worse recon overall (7.3° → 13.3°)",
+    "At a fixed number of activated detectors the trigger barely matters (15 kept: 10.6–12.8°)"]))
+
+pages.append(page([D15 + "activation_threshold.png"], [
+    "Run 15 (σ = 10, interpolated kernel) · same test",
+    "Same events, activated kept (count ≥ 1): 3 → 48°, 15 → 23°",
+    "The recon leans on sub-threshold signals: removing counts < 1 raises the error 8.7° → 14.5°",
+    "Partly out of distribution: the recon was trained on unthresholded detector responses"]))
+
+pages.append(section_page('Gate scan', 'Trigger threshold and gate softness, optimized and judged on the kernel (runs 12, 15, 16)'))
+pages.append(table_page("Would a different gate help the optimizer?", [
+    "setting (1,500 Adam steps from grid)      run 12     run 15     run 16",
+    "grid start (not optimized)                  5.37°      8.64°      8.72°",
+    "current gate, two seeds               5.11/5.35°  8.15/8.15° 8.64/8.63°",
+    "higher trigger (count > 3, 10, 30)     5.11–5.22°  8.21–8.44° 8.53–8.66°",
+    "softer trigger (τ = 1, 0.3)            5.03–5.09°  8.24–8.39° 8.37–8.52°",
+    "event gate > 10 / 20                   5.28° (20)  8.25–8.26° 8.48–8.84°",
+    "softer event gate (τ = 0.1, 0.05)      5.14–5.19°  8.31–8.51° 8.48–8.78°",
+    "strict: event > 30, trigger>3+event>20 5.17–5.27°  8.84–8.96° 8.90–9.10°",
+], [
+    "Median angle error of the optimized layout, recon fed the kernel, held-out events",
+    "Softer or higher-trigger gates: within seed noise (~0.25°); strict event gates are worse (true U 28.6 vs ~31)",
+    "High trigger makes gradients noisier (batch consistency 0.91 → 0.59 at count > 30, run 15)",
+    "Every setting ranks test layouts like real recon quality (rank correlation 0.8–0.94): none removes the flatness"]))
+
+pages.append(section_page('A new utility', 'Count well-reconstructed showers first, then accuracy for the rest'))
+def utility_page():
+    """The utility proposal, typeset with LaTeX (matplotlib usetex) on a white 16:9 page."""
+    import io
+    import matplotlib.pyplot as plt
+    rc = {"text.usetex": True, "font.family": "sans-serif",
+          "text.latex.preamble": r"\usepackage{amsmath}\usepackage{helvet}\renewcommand{\familydefault}{\sfdefault}"}
+    with plt.rc_context(rc):
+        fig = plt.figure(figsize=(W / 200, H / 200), dpi=200)
+        fig.patch.set_facecolor("white")
+        t = lambda y, s, **kw: fig.text(0.0625, y, s, color=INK, va="top", **kw)
+        t(0.88, r"\textbf{A two-tier utility in reconstruction accuracy}", fontsize=30)
+        t(0.77, r"For shower $i$: angle error $a_i$ [deg] and energy error $e_i = |\Delta \log_{10} E|$ (recon output vs truth)",
+          fontsize=17)
+        t(0.69, r"$\displaystyle g_i \;=\; \sigma\!\left(\frac{\theta_{\rm good}-a_i}{s_\theta}\right)"
+                r"\,\sigma\!\left(\frac{e_{\rm good}-e_i}{s_e}\right)$", fontsize=24)
+        fig.text(0.62, 0.655, r"shower $i$ reconstructed well (soft yes/no)", fontsize=16, color="#52514e", va="top")
+        t(0.56, r"$\displaystyle q_i \;=\; \frac{1}{1+\left(a_i/\theta_{\rm ref}\right)^2+\left(e_i/e_{\rm ref}\right)^2}$",
+          fontsize=24)
+        fig.text(0.62, 0.525, r"partial accuracy: in $(0,1]$, diminishing returns", fontsize=16, color="#52514e", va="top")
+        t(0.445, r"$\displaystyle U \;=\; \frac{1}{N}\sum_{i=1}^{N}\Big[\, g_i \;+\; \lambda\,(1-g_i)\,q_i \,\Big],"
+                r"\qquad \lambda \approx 0.1\text{--}0.3$", fontsize=24)
+        t(0.285, r"e.g.\ $\theta_{\rm good}=5^\circ$, $e_{\rm good}=0.2$, $s_\theta=1^\circ$, $s_e=0.05$, "
+                r"$\theta_{\rm ref}=20^\circ$, $e_{\rm ref}=0.5$, $\sigma(x)=1/(1+e^{-x})$", fontsize=16)
+        bullets = [
+            r"Goal: as many showers as possible reconstructed well, then as much accuracy as possible for the rest",
+            r"Today's $1/\mathrm{err}^2$ reward keeps paying for polishing good showers; $g_i$ stops paying once a shower is good",
+            r"$\lambda<1$: the number of good showers dominates; the rest only decides between layouts with equal counts",
+            r"Caveat: via the surrogate the recon looks $\sim\!4\times$ too accurate ($2.0^\circ$ vs $8.6^\circ$ on the kernel): calibrate thresholds",
+            r"Test: optimize for a few $(\theta_{\rm good}, \lambda)$; judge by the fraction of held-out showers reconstructed well (kernel)",
+        ]
+        for k, b in enumerate(bullets):
+            t(0.235 - 0.042 * k, r"$\bullet$\ \ " + b, fontsize=15)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=200, facecolor="white")
+        plt.close(fig)
+    buf.seek(0)
+    return Image.open(buf).convert("RGB").resize((W, H), Image.LANCZOS)
+
+
+pages.append(utility_page())
+
+pages.append(table_page("Two-tier utility: test on run 16", [
+    "utility (start)                      good 5°/0.2   good 3°/0.15   median angle   NN CV",
+    "grid start, not optimized               13.2%          5.0%          8.72°       0.18",
+    "current (grid), two seeds            13.9 / 13.2%   5.3 / 4.8%    8.62 / 8.71°   0.54–0.57",
+    "two-tier λ=0.3 (grid), two seeds     13.9 / 14.7%   5.3 / 5.5%    8.56 / 8.47°   0.52",
+    "two-tier λ=0.1 / λ=0 (grid)          13.2 / 14.6%   4.4 / 5.3%    8.61 / 8.41°   0.56",
+    "two-tier, strict 3° (grid)              13.8%          5.5%          8.43°       0.59",
+    "current (center start)                  13.4%          5.5%          8.63°       0.55",
+    "two-tier λ=0.3 (center start)           13.6%          5.7%          8.40°       0.56",
+], [
+    "3,000 Adam steps through the FNN surrogate (run 16, lit/dark head) + run 15 recon; judged on held-out kernel events",
+    "Thresholds calibrated by quantile matching: 5° on the kernel ≈ 1.6° through the surrogate (~3× optimistic)",
+    "No measurable gain: 13.2–14.7% good vs 13.2–13.9% (seed noise up to 0.8 points, statistical ±0.9)",
+    "No structure: every layout is a uniform fill; NN CV rises from the grid's 0.18 with either utility"]))
+def two_tier_layouts_page():
+    """The nine optimized layouts in one wide row, from the saved layout files."""
+    import io, json
+    import matplotlib.pyplot as plt
+    import torch
+    D = R16 + "diagnostics/"
+    res = json.load(open(D + "two_tier_test.json"))["variants"]
+    names = list(res)
+    fig, ax = plt.subplots(2, 5, figsize=(W / 200 * 0.62, H / 200 * 0.8), dpi=200, sharex=True, sharey=True)
+    ax = ax.ravel()
+    ax[-1].axis("off")
+    for a, name in zip(ax, names):
+        L = torch.load(D + f"two_tier_layout_{name}.pt", map_location="cpu")
+        a.scatter(L["x"].numpy(), L["y"].numpy(), s=9, color="#2a78d6", lw=0)
+        r = res[name]
+        a.set_title(f"{name.replace('two_tier', 'two-tier').replace('_', ' ')}\n"
+                    f"good {r['frac_good_5']:.1%} · {r['ang_med']:.2f}°", fontsize=8, color=INK)
+        a.set_aspect("equal"); a.set_xticks([]); a.set_yticks([])
+        for sp in a.spines.values():
+            sp.set_color("#d9d7d0")
+    fig.tight_layout()
+    buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=200, facecolor="white"); plt.close(fig); buf.seek(0)
+    img = Image.open(buf).convert("RGB")
+    p = Image.new("RGB", (W, H), "white")
+    h = H - 2 * M - 180
+    img = img.resize((int(img.width * h / img.height), h), Image.LANCZOS)
+    p.paste(img, ((W - img.width) // 2, M))
+    d = ImageDraw.Draw(p)
+    for k, b in enumerate(["Optimized layouts, current vs two-tier utility (run 16): all uniform fills, no core or halo",
+                           "Title: variant, share of held-out showers good at 5°/0.2 (kernel), median angle error"]):
+        d.text((M + 60, M + img.height + 50 + 66 * k), "•  " + b, fill=INK, font=FONT)
+    return p
+
+
+pages.append(two_tier_layouts_page())
+
+pages.append(section_page('Detector-count scan', 'Is detector density what keeps the layout uniform? (run 15, 20 and 50 detectors)'))
+def figure_page(path):
+    """One figure alone, as large as the page allows."""
+    img = Image.open(path).convert("RGB")
+    k = min((W - 2 * M) / img.width, (H - 2 * M) / img.height)
+    img = img.resize((int(img.width * k), int(img.height * k)), Image.LANCZOS)
+    p = Image.new("RGB", (W, H), "white")
+    p.paste(img, ((W - img.width) // 2, (H - img.height) // 2))
+    return p
+
+
+pages.append(figure_page(R15 + "diagnostics/det20_summary.png"))
+pages.append(figure_page(R15 + "diagnostics/det20_summary_2p5deg.png"))
+pages.append(figure_page(R15 + "diagnostics/det100_summary_5deg.png"))
+pages.append(figure_page(R15 + "diagnostics/det100_summary_2p5deg.png"))
+pages.append(figure_page(R15 + "diagnostics/core_test/core_test.png"))
+
+R17 = B + "17_plane45_interp_hurdle_100k/"
+pages.append(section_page('Run 17: synthetic plane', 'Random tau decays next to a 45° plane: a clean geometry test'))
+pages.append(text_page("Run 17 setup", [
+    "Plane: 3 × 3 km, inclined 45°, facing East; the 100 detectors live on it",
+    "Decays: Latin hypercube in a 3 × 3 × 3 km cube east of the plane, each aimed at a uniform point on the plane",
+    "Cuts: decay–target distance ≥ 1 km, zenith 60–120°; log10 E uniform in 5–7; 105,300 events (100k train)",
+    "Showers: flow-matching AllShowers (e, γ, μ), placed at the decay point",
+    "Detector labels: kernel with adaptive widths, h = max(10 m, distance to 8th neighbour)",
+    "Surrogate (lit/dark) and recon (30% kernel / 70% surrogate inputs) trained on those labels",
+    "Optimization on top: Adam 10k steps, grid and center starts; current utility, two-tier λ = 0 and 0.3",
+    "Layouts judged on kernel + recon (true utility) · Stage 4 results to follow",
+]))
+pages.append(page([R17 + "test_v6_run_01_northeast/decays_3d.png"], [
+    "Run 17 · 300 of 105,300 decays (coloured by energy); line = direction to the target on the plane",
+    "Decay–target distance p5 / p50 / p95: 1.9 / 3.6 / 5.1 km; zenith p5 / p50 / p95: 71° / 95° / 117°"]))
+s2 = R17 + "test_v6_run_02_recentered/"
+def grid_page(paths, bullets, ncol=2, cell_h=640, gap=50):
+    """Figures in a grid (rows centred), short bullets under it."""
+    p = Image.new("RGB", (W, H), "white")
+    imgs = [Image.open(x).convert("RGB") for x in paths]
+    rows = [imgs[i:i + ncol] for i in range(0, len(imgs), ncol)]
+    y = M
+    for row in rows:
+        rs = [i.resize((int(i.width * cell_h / i.height), cell_h), Image.LANCZOS) for i in row]
+        x = (W - (sum(r.width for r in rs) + gap * (len(rs) - 1))) // 2
+        for r in rs:
+            p.paste(r, (x, y))
+            x += r.width + gap
+        y += cell_h + gap
+    d = ImageDraw.Draw(p)
+    y += 10
+    for b in bullets:
+        d.text((M + 60, y), "•  " + b, fill=INK, font=FONT)
+        y += 66
+    return p
+
+
+pages.append(grid_page([s2 + "fnn_electron_conditional.png", s2 + "fnn_muon_conditional.png",
+                        s2 + "fnn_photon_conditional.png"], [
+    "Run 17 · Stage 2 detector response model, conditional: electron, muon (top), photon (bottom)",
+    "Mean lit log1p E 0.22 / 0.08 / 0.34 (run 15: 0.83 / 0.23 / 1.12); val loss 0.398 / 0.450 / 0.402",
+    "Detectors 3× sparser (spacing 119 m vs 45 m): median 1–2 with ≥ 1 count per shower (run 15: 10–14)"]))
+s3 = R17 + "test_v6_run_03_recentered_deepsets/"
+pages.append(page([s3 + "recon_conditional_kernel.png", s3 + "recon_conditional.png"], [
+    "Run 17 · Stage 3 recon conditional: kernel input (left), detector response model input (right)",
+    "Val loss 0.0517 (run 15: 0.0665), but the East component is nearly free: every tau travels west",
+    "Grid layout on the kernel: median angle 14.3°, 3.3% within 5° and 0.2 in log E (run 15: 8.6°, 13.2%)",
+    "On surrogate input (right) recon is almost exact: median angle 2.4°, ~6× better than on the kernel (run 15: ~4×)"]))
+pages.append(page([R17 + "archive/stage4_surrogate_2026-10-01/stage4_surrogate_summary.png"], [
+    "Run 17 · Stage 4 through the surrogate (FNN + recon): Adam 10k steps, 3 chains; judged on 1,536 held-out kernel showers",
+    "Current utility: good at 5° 3.3% → 4.3% (±0.5% stat.), kernel utility 15.5 → 17.2 (+11%); same from the center start",
+    "Current utility puts a dense row of detectors along the southern edge (North ≈ −1,450 m) from both starts",
+    "Two-tier no better; λ = 0 from the center start gets no gradient (almost no good showers) and stays in the blob"]))
+for tag in ("cores", "hybrids", "optimized"):
+    pages.append(figure_page(R17 + f"archive/stage4_surrogate_2026-10-01/diagnostics/core_test/core_test_{tag}.png"))
+
+# Run 17, kernel in the loop: recon trained on 100% kernel responses, layouts optimized on the kernel.
+# Added only once its results exist (recon_kernel_run17.sh, kernel_opt_run17.sh, score_core_test.sh).
+RK = R17 + "test_v6_run_03_recentered_deepsets_kernel100/"
+CT = R17 + "diagnostics/core_test/"
+if all(os.path.exists(p) for p in (RK + "recon_conditional_kernel.png", CT + "core_test_scores.json",
+                                   CT + "core_test_kernel_optimized.png")):
+    import json
+    import torch
+    ck = torch.load(RK + "recon.pt", map_location="cpu", weights_only=False)
+    tl = json.load(open(RK + "recon_train_log.json"))
+    sc = json.load(open(CT + "core_test_scores.json"))
+    g = sc["grid"]
+    pages.append(section_page('Run 17: kernel in the loop',
+                              'Recon trained on kernel responses only; layouts optimized directly on the kernel'))
+    pages.append(page([RK + "recon_conditional_kernel.png"], [
+        "Run 17 · Stage 3 recon trained on 100% kernel responses (was 30% kernel / 70% surrogate), kernel input",
+        f"Val loss {tl.get('adam_best_val', tl['best_val_total']):.4f} at epoch "
+        f"{tl.get('adam_best_epoch', tl['best_epoch'])} (Adam stopped at {sum('phase' not in e for e in tl['log'])}), "
+        f"{float(ck.get('val_total', float('nan'))):.4f} after L-BFGS · 30/70 recon: 0.0517",
+        f"Grid layout: median angle {g['ang_med']:.1f}°, {g['frac_good_5']:.1%} within 5° and 0.2 in log E "
+        "(30/70 recon: 14.3°, 3.3%)"]))
+    for tag in ("cores", "hybrids"):
+        pages.append(figure_page(CT + f"core_test_{tag}.png"))
+    ko = [v for k, v in sc.items() if k.startswith("kern_")]
+    rng = lambda key, s=1: f"{min(v[key] for v in ko) * s:.1f}–{max(v[key] for v in ko) * s:.1f}"
+    pages.append(page([CT + "core_test_kernel_optimized.png"], [
+        "Kernel in the loop: Adam lr = 10, 20k steps, 512 fresh events per step; best layout on a separate 1,024",
+        f"Good at 5°: {rng('frac_good_5', 100)}% vs grid {g['frac_good_5']:.1%} (±0.5% stat.); "
+        f"median angle {rng('ang_med')}° vs {g['ang_med']:.1f}°; kernel utility {rng('U_kernel')} vs {g['U_kernel']:.1f}",
+        "Center starts all leave the blob, two-tier λ = 0 included (it stayed stuck through the surrogate)",
+        "Same size of gain as through the surrogate (~+1 point at 5°): optimizing on the kernel finds nothing better"]))
+
+pages.append(text_page("Status and open questions", [
+    "Kernel-in-the-loop on Stage 4's 75k events: grid 30.48 → 30.57, center 7.13 → 30.50 (surrogate: 30.85 / 30.79)",
+    "Gate scan (runs 12, 15, 16): no trigger or softness setting beats the current gate",
+    "Run 16: labels ~99% identical to run 15; a true-mean rerun is needed to test the idea",
+    "Near-miss tau corpus (axis within ~3 km of the mesh): requested",
+    "Two-tier utility (run 16): no gain, no structure; next: near-miss taus, bootstrap error bars",
+]))
+
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
+pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
+print(f"[write] {OUT}  ({len(pages)} pages)")
