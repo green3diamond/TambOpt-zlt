@@ -456,13 +456,65 @@ if all(os.path.exists(p) for p in (AS + "array_size_shower_off_cap50.png", ZC + 
         "Run 17/18: the East-facing plane forces West-going showers, inside the tilted range around B",
         "A shower-frame kernel would drop the East-facing requirement and allow any shower direction"]))
 
+# Run 17 diagnostics with the fixed kernel (diagnostics/array_size_fixed_kernel, kernel_frame/kernel_schematic).
+FK = R17 + "diagnostics/array_size_fixed_kernel/"
+if all(os.path.exists(p) for p in (KF + "kernel_schematic.png",
+                                   FK + "array_size_ablation_off_zen100_fixed_tinterp_oncore_b30.json")):
+    import json as _json
+    pages.append(section_page('Run 17 diagnostics: fixed kernel',
+                              'Shower-frame kernel, layer depth fixed, arrival times interpolated · decisions for run 18'))
+    pages.append(figure_page(KF + "kernel_schematic.png"))
+    for w, ev_txt in (("center", "shower 4287 (core 72 m from centre, zenith 92°, 36° from B)"),
+                      ("off", "shower 2283 (core 531 m off, zenith 86°, 35° from B)")):
+        pages.append(page([FK + f"array_size_shower_{w}_zen100_oncore_b30_cap50.png",
+                           FK + f"array_size_shower_{w}_zen100_fixed_tinterp_oncore_b30_cap50.png"], [
+            f"Run 17 · {ev_txt} · disks centred on the core + grid · 50 m cap",
+            "Left: kernel as used (global frame) · right: shower frame, layer depth fixed, times interpolated between planes",
+            "Recon trained on the old kernel for both: errors on the right are only indicative",
+            "Right: footprint on the ★, smooth arrival-time gradient across the array (left: flat with stray late detectors)"]))
+    def _abl(w, tag):
+        return _json.load(open(FK + f"array_size_ablation_{w}_zen100_{tag}oncore_b30.json"))["cap50"]
+    cols = ("r = 300 m", "r = 500 m", "r = 750 m", "r = 1000 m", "grid")
+    rows = ["shower  kernel                       " + "".join(f"{c.replace('r = ', ''):>9s}" for c in cols)]
+    for w, name in (("center", "4287"), ("off", "2283")):
+        for tag, lab in (("", "as used (global)"), ("fixed_", "shower frame, plane times"),
+                         ("fixed_tinterp_", "shower frame, interpolated")):
+            a = _abl(w, tag)
+            rows.append(f"{name:6s}  {lab:28s} " + "".join(f"{a[c]['full']:8.1f}°" for c in cols))
+    pages.append(table_page("Angle error by array size, widths capped at 50 m", rows, [
+        "Small disks (50–300 m) fail for both showers with every detector lit: no lever arm for the direction",
+        "Interpolated times: error falls steadily with array size; shower 2283 within 6° from 500 m up",
+        "Two showers only, recon trained on the old kernel: retrain before drawing conclusions"]))
+    rows = ["shower 4287, shower frame, 50 m cap   lit   span   time spread    full  no time  no energy  no signal"]
+    for tag, lab in (("fixed_", "plane times"), ("fixed_tinterp_", "interpolated")):
+        a = _abl("center", tag)
+        for c in ("r = 750 m", "r = 1000 m"):
+            r = a[c]
+            rows.append(f"{lab:13s} {c:>10s}            {r['lit']:4d} {r['span_m']:5.0f} m {r['t_spread_ns']:7.0f} ns  "
+                        f"{r['full']:6.1f}° {r['no time']:7.1f}° {r['no energy']:8.1f}° {r['no signal']:9.1f}°")
+    pages.append(table_page("What the recon uses, and why times were quantized", rows, [
+        "No signal: 31–47° off for these showers, so their good results are not the recon's prior",
+        "No time costs 10–30°: arrival times carry most of the direction",
+        "Plane times jump in steps of one C8 layer (500 m / c ≈ 1.6 μs): a detector gets its earliest plane's time",
+        "At 750 m the lit detectors straddle a step (1,523 ns spread), at 1 km they don't (266 ns): 22° vs 4°",
+        "Interpolated, t = t_point + (detector depth − plane depth) / c: spreads grow smoothly with distance"]))
+    pages.append(text_page("Decisions for run 18", [
+        "Layer depth (l + 1) × 500 m · kernel in each shower's own frame (transverse t1, t2 and depth along the axis)",
+        "Arrival times interpolated between planes · circular showers: t2 from the measured t1 spread of the same layer",
+        "Kernel widths capped at 50 m",
+        "Plane from run 17, 6 × 6 km, 45°, facing South like Malata: taus travel North into it",
+        "Showers ≥ 30° from the C8 field axis, zenith 60–100° (AllShowers training range), 210,600 events, 100 detectors",
+        "Retrain everything except the Stage 2 surrogate: Stage 0, Stage 1 labels, Stage 3 recon on the kernel",
+        "Then 6 kernel-in-the-loop optimizations (current, two-tier λ 0 / 0.3 × grid / center), scoring and core test",
+    ]))
+
 pages.append(text_page("Status and open questions", [
     "Kernel-in-the-loop on Stage 4's 75k events: grid 30.48 → 30.57, center 7.13 → 30.50 (surrogate: 30.85 / 30.79)",
     "Gate scan (runs 12, 15, 16): no trigger or softness setting beats the current gate",
     "Run 16: labels ~99% identical to run 15; a true-mean rerun is needed to test the idea",
     "Near-miss tau corpus (axis within ~3 km of the mesh): requested",
     "Two-tier utility (run 16): no gain, no structure; next: near-miss taus, bootstrap error bars",
-    "Before run 18: fix the layer depth in place_clouds_enu; decide on a shower-frame kernel",
+    "Run 18: layer depth fixed, shower-frame kernel, interpolated times, circular showers, 50 m cap",
     "C8: confirm the shift for showers within 30° of B (test run or ask Hamza); check the B units (nT vs μT)",
 ]))
 
