@@ -1,4 +1,4 @@
-# Analysis figure scripts (runs 15 and 17)
+# Analysis figure scripts (runs 15, 17 and 18)
 
 Copies of the one-off figure and job scripts behind `figures/findings_after_run13.pdf`, kept here
 as examples. The live copies sit next to their data in
@@ -23,6 +23,7 @@ The reusable pieces they call are in the repo proper: `scripts/diagnostics/score
 | `run17/array_size_fixed_kernel/` | `17_plane45_interp_hurdle_100k/diagnostics/array_size_fixed_kernel/` | the array-size test redone (zenith <= 100, >= 30 deg from the C8 field, disks on the core) with the shower-frame kernel, the layer depth fixed and optionally interpolated arrival times; `array_size_ablation.py`: recon with times / energies / all signals removed |
 | `run17/stage4_surrogate/` | `17_plane45_interp_hurdle_100k/archive/stage4_surrogate_2026-10-01/` | Stage 4 through the surrogate summary (layouts + metrics); `plot_decays_3d.py`: 3-D decays and directions over the plane |
 | `run17/recon_snapshot/` | `17_plane45_interp_hurdle_100k/archive/stage4_surrogate_2026-10-01/diagnostics/recon_snapshot/` | recon conditional plots from a mid-training checkpoint |
+| `run18/core_test/` | `18_plane45S_6km_showerframe_200k/diagnostics/core_test/` | run 18 core test (as run 17's; scored with the run's shower-frame recon); run by `slurm/run18_pipeline.sh score` |
 | `findings_pdf/` | `figures/` | `make_findings_pdf.py` builds the findings PDF from existing PNGs; `build_findings_pdf.sh` runs it as a job |
 
 Run 17 scripts need the main checkout on a run 17 branch (`run17-plane` or `run17-bwcap50`), since

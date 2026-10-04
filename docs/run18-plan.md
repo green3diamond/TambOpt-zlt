@@ -1,85 +1,97 @@
-# Run 18 plan — 6 km plane, 2× showers, kernel widths capped at 50 m, kernel in the loop
+# Run 18 — South-facing 6 km plane, shower-frame kernel, all stages retrained
 
-Status: planned, not started (2026-10-04). Predates the shower-geometry checks of the same day
-(`plots/analysis/run17/{array_size_*,zenith_cap100,kernel_frame}`): the layer depth in `place_clouds_enu`
-is one layer short, the kernel matches in the global frame rather than the shower's, arrival times are
-quantized by layer, and C8 showers within ~30° of its magnetic field (+x, our East/West) are shifted
-sideways. Update this plan for those before running it.
+Status (2026-10-04): code done on branch `run18-showerframe` (tests: `tests/test_shower_frame.py`,
+`tests/smoke_run18_kernel.py`); inputs written; pipeline submitted as a dependency chain
+(`slurm/run18_pipeline.sh` gen → {build → recon, `kernel_bw_run18.sh`} → 6 × `kernel_opt_run18.sh` → score + core test).
+Smoke finding: with circular showers most widths sit at the 50 m cap (points spread in 2-D, not on a line).
 
 ## Context
-Run 17's width-cap test (`17_plane45_interp_hurdle_100k/diagnostics/core_test_bwcap50/`) showed
-that ~25% of every layout's utility, and all of the optimized layouts' lead over the grid, came
-from weak signals spread by kernel widths of hundreds of metres. That test used a recon trained
-on uncapped signals. Run 18 does it cleanly: labels (Stage 1) and a kernel-only recon (Stage 3)
-built with widths capped at 50 m — no Stage 2 surrogate — then the 6 kernel-in-the-loop
-optimizations (current, two-tier λ 0, λ 0.3 × grid / center starts), scored with the grid and the
-8 hand-made layouts. Also twice the showers and a larger plane: 6 × 6 km (45°, facing East),
-100 detectors, decay box scaled with the plane.
+Run 17's diagnostics (2026-10-04) found five problems with the detector-response kernel and its inputs:
+- **Layer depth:** placement puts each C8 layer one layer short (layer l is really at (l+1) × 500 m).
+- **Global frame:** the kernel matches detectors to shower points in global North–Up with East slabs. That is only correct for horizontal showers heading West.
+- **Quantized times:** arrival times jump in steps of one C8 layer (about 1.6 μs).
+- **Vertical spread:** C8 never recorded the vertical sideways offset of each particle.
+- **B-field shift:** C8 showers within ~30° of the simulation's magnetic field (+x, our East/West) are shifted sideways.
 
-Kernel geometry, for reference: after `place_clouds_enu` the kernel's transverse coordinates are
-(North, Up) and its "planes" are 500 m East slabs (`z_cont`). Each point's width is the distance
-to its 8th nearest point in the same shower, species and East slab (North–Up distance), floored at
-10 m — independent of detector positions, so the width cache stays valid while detectors move.
+Run 18 (never started; this replaces the draft in `docs/run18-plan.md`) applies the user's decisions:
+- **Layer depth:** fixed.
+- **Kernel:** shower frame, with times interpolated between planes.
+- **Vertical spread:** circular showers.
+- **Widths:** capped at 50 m.
+- **Geometry:** the run 17 plane generator, but the plane faces South like Malata, so showers head North, away from the field.
+- **Showers:** zenith 60–100°, none within 30° of the field.
+- **Sizes:** the run 18 sizes (6 × 6 km plane, 100 detectors, 210,600 events, decay box scaled with the plane).
+- **Stages:** all retrained except Stage 2, which is skipped.
+- **PDF first:** before starting, a new PDF chapter with the remaining run 17 diagnostics.
 
-## Branch
-`run18-plane6km` from `run17-bwcap50` (has the width cap and `plots/analysis`), checked out in
-the main folder. Commit after each step.
+Branch: `run18-showerframe`, from `run17-shower-geometry`, in the main checkout. Commit after each step.
 
 ## Steps
-1. **Inputs** — `scripts/17_make_plane_inputs.py`: replace the fixed `SIDE` / `CUBE` with
-   `--side` (default 3000, so run 17 is reproducible) and derive the box from it
-   (East [500, 500 + side], North ±side/2, Up [0, side]); `--n-grid` default scales to keep
-   ~136 m mesh spacing (45 for 6 km). Run with `--side 6000 --n-events 210600 --out-dir
-   <run18>/inputs` (200k train after the 5% holdout). Same cuts: distance ≥ 1 km, zenith 60–120°.
-   The plane's East extent (4.24 km) sits inside the 24 × 500 m layers from EAST_ENTRY = 1500.
-2. **Constants** (`modules/constants.py`): RUN_LOCATION →
-   `detector_optimization_v6/18_plane45_6km_bwcap50_200k`, GEOMETRY_PATH / TAU_WHOLESKY_PATH →
-   its `inputs/`, `NUM_SHOWERS = 210_600`, `KERNEL_INTERP_MAX` default 50 (env override kept), so
-   every kernel caller (Stage 1 `compute_labels_batch`, width precompute, `CachedKernel`
-   scoring, `true_utility`) uses the cap without per-job environment variables.
-3. **No surrogate anywhere** (three small code changes, no-ops when a surrogate exists). Training
-   is unchanged: run 17's kernel recon already trained on kernel labels only
-   (`build_recon_inputs` returns E/T.pt for `kernel`); the surrogate was loaded just for a
-   diagnostic print and the surrogate-input plot. Without Stage 2 those loads would crash.
-   - `scripts/03_train_recon_deepsets.py`: with `--recon-input kernel`, skip
-     `load_dual_surrogate` / `compute_fnn_predictions` and train on `load_kernel_responses`
-     directly; the end-of-run plot calls `plot_recon_on_kernel` instead of
-     `plot_recon_only(fnn=dual, ...)`.
-   - `scripts/diagnostics/score_layouts.py`: load the recon only (`build_recon_from_ckpt`, as
-     `04_optimize_lbfgs_kernel.load_recon` does) instead of `load_models`, which loads the FNNs.
-   - Plots: `plots/training/02_nn_target_vs_pred.py --kernel-only`.
-   `04_optimize_lbfgs_kernel.py` already never loads the surrogate.
-4. **Pipeline** `slurm/run18_pipeline.sh` (from `run17_pipeline.sh`; constants guard on run 18
-   and cap = 50; per-mode status file; `--mail-type=FAIL`):
-   - `gen`: Stage 0 (`00_generate_data_dual_species.py`)
-   - `build`: Stage 1 (`01_build_dataset_northeast.py`)
-   - `recon`: Stage 3 `03_train_recon_deepsets.py --recon-input kernel --adam-patience 50` as the
-     run's production recon (default `_deepsets` folder), kernel conditional plots, and the
-     kernel two-tier JSON (5°, 0.2; widths 1° / 0.05, refs 20° / 0.5 — fixed, no calibration)
-   - `score`: `scripts/diagnostics/score_layouts.py` on the 6 kernel layouts + starts
-5. **Kernel jobs** — `slurm/kernel_bw_run18.sh` (width cache, array 0-2; needs only the Stage 0
-   cache, so it runs after `gen` in parallel with `build` → `recon`) and
-   `slurm/kernel_opt_run18.sh` (from `kernel_opt_run17.sh`: lr 10, 20k steps, 512 events per
-   step, 1,024-event scoring set; default recon folder), 6 jobs after `recon` + widths.
-6. **Core test** — copy `plots/analysis/run17/core_test/*` to `<run18>/diagnostics/core_test/`
-   (drop `--recon-dir`: the kernel-only recon is the default), score after the 6 runs; split
-   figures (cores / hybrids / kernel-optimized, grid first). Copies also in `plots/analysis/run18/`.
-7. **Chain** (gpu_requeue; mail on FAIL, END on the last job):
-   `gen` → {`build` → `recon`, widths} → 6 × kernel opt → {`score`, core test}.
+0. **PDF chapter** (`figures/make_findings_pdf.py`, plus the repo copy in `plots/analysis/findings_pdf/`). New chapter "Run 17 diagnostics: fixed kernel", guarded on file existence:
+   - `kernel_frame/kernel_schematic.png`
+   - The array-size test redone: used vs fixed vs interpolated times (`array_size_fixed_kernel/*_cap50.png`)
+   - Recon ablation table (`array_size_ablation_*.json`) and the time-quantization finding
+   - A "Decisions for run 18" text page
+   - Rebuild with `figures/build_findings_pdf.sh`; check text widths as before.
+1. **Kernel** (`modules/showers/kernel.py`):
+   - `GetCounts_planeaware` accepts detector coordinates as `(n_det,)` (unchanged) or `(B, n_det)`, the latter broadcast as `(B, 1, n_det)`.
+   - New `t_interp=False` argument: `t_eff = t_p − Δl × LAYER_DX / c`, clamped ≥ 1e-12. Port it from `counts_interp` in `plots/analysis/run17/array_size_single_shower/array_size_shower.py`.
+   - `adaptive_bandwidths` is unchanged (it groups by round(col2), which becomes the C8 layer + 1).
+2. **Placement** (`modules/data/dataset_builder.py`):
+   - New `place_clouds_shower(clouds, positions, dirs, seed_ids)` → points `[t1, t2, l + 1, e, t]` plus frames `(B, 12) = (p, d, e1, e2)`, with:
+     - `e1 = (−d_N, d_E, 0)` normalised, `e2 = d × e1`
+     - `t1 = x·e1_E + y·e1_N`
+     - `t2` = the t1 of another point from the same (event, species, layer), paired at random. The randomness comes from a counter-based hash of (event id, species, point index), so it's vectorised and any slice of events reproduces exactly the same t2 in Stage 1, the Stage 4 pool and scoring. No cache file is needed.
+     - Same 5-column layout as today, so `GetCounts_planeaware` and `adaptive_bandwidths` keep working on it. Padding rows (e = 0) stay zero.
+   - Normalise `dirs`; `_CorpusMeta.dirs` isn't normalised today.
+   - `compute_labels_batch(..., frames=None)`: with frames, detectors become `r = (E, N, surface(N, E)) − p`, then `s = r·d`, `t1 = r·e1`, `t2 = r·e2` per event, so `(B, n_det)`. These stay differentiable in (E, N).
+   - Constant `KERNEL_FRAME = "shower"`, plus `KERNEL_T_INTERP = True` in `modules/constants.py`. `compute_labels_batch` raises if `KERNEL_FRAME == "shower"` and no frames are given, so old global-frame paths can't mix in silently.
+   - Fix `place_clouds_enu` to (l + 1) as well, for the plots and older scripts.
+3. **Thread the frames through:**
+   - Stage 1: `_load_clouds` / `_label_chunk` (use `meta.positions` and `meta.dirs` for each chunk).
+   - `true_utility.load_events`: also return the frames, with the same non-finite filter.
+   - `KernelDualLabels` and both `CachedKernel` classes (`04_optimize_lbfgs_kernel.py`, `diagnostics/gate_scan.py`).
+   - `MainPool.clouds` / `load` and `precompute_bandwidths` (the width caches `kernel_bw_k8_<species>.npy` are rebuilt in the new frame).
+   - Event chunking stays as it is; frames are sliced alongside the clouds.
+4. **No-surrogate paths:**
+   - `03_train_recon_deepsets.py --recon-input kernel` skips `load_dual_surrogate` / `compute_fnn_predictions` and plots with `plot_recon_on_kernel`.
+   - `diagnostics/score_layouts.py` loads the recon only (`build_recon_from_ckpt`).
+5. **Inputs** (`scripts/17_make_plane_inputs.py`):
+   - New options: `--side` (default 3000), `--facing {east,south,north}` (default east, so run 17 stays reproducible), `--group`, `--n-grid` (default about side / 136 + 1).
+   - `--zenith 60 100`.
+   - `--min-angle-b 30`: reject if arccos|d_x| < 30°.
+   - Top-up loop so exactly `--n-events` are written.
+   - Generalised geometry with facing f and strike g; decay box on the f side along [500, 500 + side]; asserts written as `t·f + U = 0` and `dec·f + U > 0`.
+   - Run: `--side 6000 --facing south --n-events 210600 --group plane45s --out-dir <run18>/inputs`.
+6. **Constants for run 18:**
+   - `RUN_LOCATION = detector_optimization_v6/18_plane45S_6km_showerframe_200k`
+   - `GEOMETRY_PATH` and `TAU_WHOLESKY_PATH` point to its `inputs/`; `GEOMETRY_GROUP = plane45s`
+   - `NUM_SHOWERS = 210_600`, `KERNEL_INTERP_MAX` default 50
+7. **Pipeline** `slurm/run18_pipeline.sh` (from `run17_pipeline.sh`):
+   - Guard on run 18, the shower frame and cap 50; `--mail-type=FAIL`.
+   - Modes:
+     - `gen`: Stage 0
+     - `build`: Stage 1
+     - `recon`: Stage 3, kernel, `--adam-patience 50`, plus plots
+     - `score`
+   - `kernel_bw_run18.sh` (array 0–2, after `gen`).
+   - `kernel_opt_run18.sh`: 6 runs (current, two-tier λ 0 and λ 0.3, each from grid and center starts); lr 10, 20k steps, 512 events per step, 1,024 scoring events. Uses a kernel two-tier JSON: 5° / 0.2, widths 1° / 0.05, refs 20° / 0.5.
+   - Core test copied to `<run18>/diagnostics/core_test/`, with the hard-coded run 17 paths and the Up = −East core formula updated.
+   - Chain: gen → {build → recon, widths} → 6 × opt → {score, core test}. END mail on the last job.
 
-## Runtime (from run 17, doubled where it scales)
-Stage 0 ~9 h, then Stage 1 ~3 h + Stage 3 ~3 h ∥ widths ~6 h, kernel opt ~12.5 h, scoring
-~15 min → ~28 h of compute on the critical path, plus queue waits. Disk: shower cache ~105 GB
-(the group had ~39 TB free on 2026-10-04).
+## Runtime (run 17 timings × 2 events)
+Stage 0 ~10 h → Stage 1 ~3 h → Stage 3 ~3 h (in parallel with widths ~6 h) → kernel-in-the-loop ~13–25 h. The (B, n_det) frames and the 2-D width search may slow things somewhat. Total ~30–40 h plus queue waits. Disk ~105 GB for the shower cache plus ~30 GB of width caches.
 
 ## Verification
-- Inputs: the script's asserts (targets on the plane, distance ≥ 1 km, decays in front);
-  `plane_primaries.png`; 210,600 events; `load_tr_mountain` bbox ≈ 6 km (North) × 4.24 km (East).
-- Cap: `scripts/diagnostics/bandwidth_histogram.py` on a few hundred events → max width 50 m;
-  `tests/test_interp_kernel.py` still passes.
-- Surrogate-free paths: before submitting, run `03_train_recon_deepsets.py --recon-input kernel
-  --epochs 1 --lbfgs-iters 2 --out-suffix smoke` and `score_layouts.py` on 2 layouts against
-  run 17 with FNN_FOLDER pointed at an empty folder — both must finish without the FNNs; delete
-  the smoke folder after.
-- Stage 1 log: detectors with ≥ 1 count vs run 17; Stage 3 val loss and kernel conditional plot;
-  kernel-opt logs reach step 20,000; scores JSON has all 6 + starts.
+- `python tests/test_interp_kernel.py`, with new tests:
+  - **(B, n_det) broadcasting:** identical to the `(n_det,)` path when every row is the same.
+  - **Equivalence:** for an exactly horizontal, West-going shower with t2 = 0 and no time interpolation, shower frame = global frame + layer fix.
+  - **Time interpolation:** a detector halfway between planes gets t_p + 250 m / c.
+  - **Circular t2:** deterministic per event id, and the same per-layer distribution as t1.
+- Inputs: asserts; `plane_primaries.png` (plane faces South, showers head North); azimuth and zenith histograms; exactly 210,600 events; no shower with arccos|d_x| < 30°.
+- Smoke before submitting:
+  - Stage 1 on ~2 chunks; widths on 512 events (max 50 m).
+  - `03 --epochs 1 --lbfgs-iters 2` with FNN_FOLDER empty; `score_layouts` on 2 layouts.
+  - `04 --epochs 5` from the pool.
+  - Compare one event's footprint with `kernel_frame_issue.py` (shower frame).
+- After the run: Stage 3 val loss and conditional plot; kernel-in-the-loop logs reach 20k steps; scores JSON; core-test figures; PDF chapter for run 18.
