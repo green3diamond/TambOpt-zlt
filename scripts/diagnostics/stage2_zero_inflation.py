@@ -246,7 +246,7 @@ def sweep_hit_threshold(n_showers: int, batch: int, thresholds, seed: int) -> di
         _, chunk_list = _build_chunk_list(meta.k_sp, meta.per_sp,
                                           load_chunk=batch, batch_size=batch)
         for chunk in chunk_list:
-            clouds, _, _ = _load_clouds(DUAL_SHOWER_CACHE_PATH, meta, chunk,
+            clouds, _, _, _ = _load_clouds(DUAL_SHOWER_CACHE_PATH, meta, chunk,
                                         EAST_ENTRY, LAYER_EAST_DX)
             clouds = clouds.to(device)
             with torch.no_grad():

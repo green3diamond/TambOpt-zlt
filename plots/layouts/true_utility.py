@@ -45,7 +45,7 @@ import torch
 
 import modules  # noqa: F401 — package import; keeps modules on the path
 import showerdata
-from modules.data import compute_labels_batch, place_clouds_enu
+from modules.data import compute_labels_batch, place_clouds
 from modules.surrogates import encode_primary
 from modules.surrogates import combine_species_outputs
 from modules.geometry import SurfaceUpMap
@@ -56,8 +56,20 @@ from modules.constants import (
     N_DETECTORS, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, T_LOG_SCALE,
     HELDOUT_SHOWER_CACHE_PATH, HELDOUT_POSITIONS_PATH,
-    OPT_FOLDER, SPECIES_NAMES,
+    OPT_FOLDER, SPECIES_NAMES, HELDOUT_EVENT_ID_OFFSET,
 )
+
+
+class PlacedClouds(list):
+    """Per-species placed clouds (a plain list) that also carry the events'
+    shower frames (`.frames`, (B, 12), or None in the global frame), so
+    `KernelDualLabels` can map a layout into each shower's frame. A caller that
+    rebuilds the list (slicing, filtering) drops `.frames`; under the shower
+    frame `compute_labels_batch` then raises instead of mislabelling."""
+
+    def __init__(self, clouds, frames=None):
+        super().__init__(clouds)
+        self.frames = frames
 
 # LAYOUT_PATH = os.path.join(OPT_FOLDER + "_lbfgs_ensemble_full_corpus_grid", "layout_best.pt")
 LAYOUT_PATH = os.path.join(OPT_FOLDER + "_lbfgs_ensemble_full_corpus_center", "layout_best.pt")
@@ -116,6 +128,8 @@ class KernelDualLabels:
         this byte-for-byte — see the class docstring for why that check
         exists. `None` (default) disables it."""
         self.clouds = [c.to(device) for c in species_clouds]
+        fr = getattr(species_clouds, "frames", None)
+        self.frames = fr.to(device) if fr is not None else None
         self.surface = surface
         # 0 / None -> whole batch at once (previous behaviour).
         self.chunk = int(chunk) or int(self.clouds[0].shape[0])
@@ -123,9 +137,9 @@ class KernelDualLabels:
         self.expected_primary = (expected_primary.detach().to(device)
                                  if expected_primary is not None else None)
 
-    def _labels(self, clouds, e_det, n_det):
+    def _labels(self, clouds, e_det, n_det, frames=None):
         E, T = compute_labels_batch(clouds, e_det, n_det, self.surface,
-                                    differentiable=self.differentiable)
+                                    differentiable=self.differentiable, frames=frames)
         return torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1)
 
     def __call__(self, primary_batch, xy_batch):
@@ -155,8 +169,9 @@ class KernelDualLabels:
         out = []
         for lo in range(0, B, self.chunk):
             hi = min(lo + self.chunk, B)
+            fr = None if self.frames is None else self.frames[lo:hi]
             out.append(combine_species_outputs(
-                *(self._labels(c[lo:hi], e_det, n_det) for c in self.clouds)))
+                *(self._labels(c[lo:hi], e_det, n_det, fr) for c in self.clouds)))
         return out[0] if len(out) == 1 else torch.cat(out, dim=0)
 
 
@@ -197,13 +212,18 @@ def load_events(n_events, device, mountain):
     pdg      = torch.as_tensor(first.pdg,      dtype=torch.long)
     pos = positions_all[:B].float()
 
-    species_clouds = []
+    species_clouds, frames = [], None
+    bad = torch.zeros(B, dtype=torch.bool)
+    event_ids = HELDOUT_EVENT_ID_OFFSET + torch.arange(B)
     for s_i in range(n_species):
         lo = s_i * n_pairs
         sub = first if s_i == 0 else showerdata.load(
             HELDOUT_SHOWER_CACHE_PATH, start=lo, stop=lo + B)
         c = torch.as_tensor(sub.points, dtype=torch.float32)
-        place_clouds_enu(c, pos, dirs, east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
+        bad |= ~torch.isfinite(c).all(dim=(1, 2))       # before placement (see below)
+        fr = place_clouds(c, pos, dirs, event_ids=event_ids, species=s_i,
+                          east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
+        frames = fr if frames is None else frames
         species_clouds.append(c)
 
     array_center = torch.as_tensor(mountain.centroids_ENU, dtype=torch.float32).mean(dim=0)
@@ -218,7 +238,6 @@ def load_events(n_events, device, mountain):
     # blocks are paired by row (one primary per row across all blocks), so
     # dropping only one species' row would misalign the rest against the
     # wrong primary.
-    bad = torch.zeros(B, dtype=torch.bool)
     for c in species_clouds:
         bad |= ~torch.isfinite(c).all(dim=(1, 2))
     if bad.any():
@@ -227,10 +246,11 @@ def load_events(n_events, device, mountain):
               f"{torch.nonzero(bad).squeeze(-1).tolist()})")
         keep = ~bad
         species_clouds = [c[keep] for c in species_clouds]
+        frames = frames[keep] if frames is not None else None
         primary_batch = primary_batch[keep]
         B = int(keep.sum())
 
-    return species_clouds, B, n_pairs, primary_batch
+    return PlacedClouds(species_clouds, frames), B, n_pairs, primary_batch
 
 
 def _snap(mountain, e, n):

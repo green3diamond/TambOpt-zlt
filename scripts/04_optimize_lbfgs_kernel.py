@@ -86,7 +86,7 @@ from modules.constants import (
     TRAINING_DATASET_FOLDER,
 )
 from modules.data.dataset_builder import (
-    compute_labels_batch, place_clouds_enu, _load_corpus_metadata,
+    compute_labels_batch, place_clouds, _load_corpus_metadata,
 )
 from modules.showers.kernel import adaptive_bandwidths
 from modules.surrogates import combine_species_outputs
@@ -134,7 +134,7 @@ class CachedKernel(KernelDualLabels):
         super().__init__(*a, **kw)
         self._bw = {}
 
-    def _labels(self, clouds, e_det, n_det):
+    def _labels(self, clouds, e_det, n_det, frames=None):
         key = (clouds.data_ptr(), tuple(clouds.shape))
         if key not in self._bw:
             with torch.no_grad():
@@ -142,7 +142,7 @@ class CachedKernel(KernelDualLabels):
                                  if KERNEL_INTERP_K else None)
         E, T = compute_labels_batch(clouds, e_det, n_det, self.surface,
                                     differentiable=self.differentiable,
-                                    bandwidth=self._bw[key])
+                                    bandwidth=self._bw[key], frames=frames)
         return torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1)
 
 
@@ -177,19 +177,23 @@ class MainPool:
                 raise FileNotFoundError(f"bandwidth cache missing, run --precompute-bw: {missing}")
             self.bw = [np.load(p, mmap_mode="r") for p in paths]
 
-    def clouds(self, s, a, b):
+    def clouds(self, s, a, b, with_frames=False):
+        """Species s, events [a, b), placed per KERNEL_FRAME. Event ids (the
+        circular-t2 seed) are the row within the species block, as in Stage 1."""
         m = self.meta
         pts = showerdata.load(DUAL_SHOWER_CACHE_PATH, start=s * m.per_sp + a,
                               stop=s * m.per_sp + b).points
         c = torch.as_tensor(pts, dtype=torch.float32)
-        place_clouds_enu(c, m.positions[a:b], m.dirs[a:b],
-                         east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
-        return c
+        fr = place_clouds(c, m.positions[a:b], m.dirs[a:b], event_ids=torch.arange(a, b),
+                          species=s, east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
+        return (c, fr) if with_frames else c
 
     def load(self, a, b):
         """Events [a, b): per-species clouds and widths (CPU), and primaries.
         Events with a non-finite cloud in any species are dropped (as load_events)."""
-        clouds = [self.clouds(s, a, b) for s in range(len(SPECIES_NAMES))]
+        placed = [self.clouds(s, a, b, with_frames=True) for s in range(len(SPECIES_NAMES))]
+        clouds = [c for c, _ in placed]
+        frames = placed[0][1]                     # per event, identical for every species
         # Widths are stored at the file's padded width; trailing slots are padding.
         bws = ([torch.from_numpy(np.asarray(w[a:b, :c.shape[1]], dtype=np.float32))
                 for w, c in zip(self.bw, clouds)]
@@ -202,15 +206,16 @@ class MainPool:
             clouds = [c[keep] for c in clouds]
             bws = [w[keep] if w is not None else None for w in bws]
             prim = prim[keep]
-        return clouds, bws, prim
+            frames = frames[keep] if frames is not None else None
+        return clouds, bws, prim, frames
 
 
 class BatchKernel:
     """Kernel forward for one sub-batch of pool events, same call signature as
     KernelDualLabels: (primary_batch, xy_batch) -> (B, n_det, 2) log-encoded."""
 
-    def __init__(self, clouds, bws, surface, differentiable):
-        self.clouds, self.bws = clouds, bws
+    def __init__(self, clouds, bws, surface, differentiable, frames=None):
+        self.clouds, self.bws, self.frames = clouds, bws, frames
         self.surface, self.differentiable = surface, differentiable
 
     def __call__(self, primary_batch, xy_batch):
@@ -218,7 +223,8 @@ class BatchKernel:
         outs = []
         for c, w in zip(self.clouds, self.bws):
             E, T = compute_labels_batch(c, e_det, n_det, self.surface,
-                                        differentiable=self.differentiable, bandwidth=w)
+                                        differentiable=self.differentiable, bandwidth=w,
+                                        frames=self.frames)
             outs.append(torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1))
         return combine_species_outputs(*outs)
 
@@ -227,7 +233,7 @@ def pool_utility(xy_module, batch, surface, recon, chunk, backward):
     """U over a pool batch, sub-batch by sub-batch. U is a mean of per-event terms,
     so weighting each sub-batch by its share and calling backward per sub-batch
     gives the full-batch gradient with memory set by `chunk`, not the batch."""
-    clouds, bws, prim = batch
+    clouds, bws, prim, frames = batch
     N = prim.shape[0]
     tot = dict(U=0.0, r_mean=0.0, u_theta=0.0, u_phi=0.0, u_e=0.0)
     ctx = torch.enable_grad() if backward else torch.no_grad()
@@ -236,7 +242,8 @@ def pool_utility(xy_module, batch, surface, recon, chunk, backward):
             hi = min(lo + chunk, N)
             kern = BatchKernel([c[lo:hi].to(DEVICE, non_blocking=True) for c in clouds],
                                [w[lo:hi].to(DEVICE) if w is not None else None for w in bws],
-                               surface, differentiable=backward)
+                               surface, differentiable=backward,
+                               frames=None if frames is None else frames[lo:hi].to(DEVICE))
             x, y = xy_module()
             U, r, parts = utility_of_xy(x, y, prim[lo:hi].to(DEVICE), kern, recon)
             share = (hi - lo) / N

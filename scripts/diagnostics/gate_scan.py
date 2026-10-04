@@ -80,9 +80,9 @@ class CachedKernel(KernelDualLabels):
         self._bw = {}
         self._k = getattr(C, "KERNEL_INTERP_K", None)
 
-    def _labels(self, clouds, e_det, n_det):
+    def _labels(self, clouds, e_det, n_det, frames=None):
         if not self._k:
-            return super()._labels(clouds, e_det, n_det)
+            return super()._labels(clouds, e_det, n_det, frames)
         from modules.data.dataset_builder import compute_labels_batch
         from modules.showers.kernel import adaptive_bandwidths
         key = (clouds.data_ptr(), tuple(clouds.shape))
@@ -90,7 +90,8 @@ class CachedKernel(KernelDualLabels):
             with torch.no_grad():
                 self._bw[key] = adaptive_bandwidths(clouds, self._k, C.SIGMA_SPATIAL)
         E, T = compute_labels_batch(clouds, e_det, n_det, self.surface,
-                                    differentiable=self.differentiable, bandwidth=self._bw[key])
+                                    differentiable=self.differentiable, bandwidth=self._bw[key],
+                                    frames=frames)
         return torch.stack([torch.log1p(E), torch.log1p(T * C.T_LOG_SCALE)], dim=-1)
 
 

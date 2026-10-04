@@ -37,6 +37,17 @@ import torch
 
 from ..constants import HIT_DEPOSIT_MIN, KERNEL_INTERP_MAX
 
+C_LIGHT = 299_792_458.0      # m/s, for carrying point times between planes (t_interp)
+
+
+def _det_view(v):
+    """(n_det,) -> (1, 1, n_det) shared by every shower; (B, n_det) -> (B, 1, n_det)."""
+    if v.dim() == 1:
+        return v.view(1, 1, -1)
+    if v.dim() == 2:
+        return v.unsqueeze(1)
+    raise ValueError(f"detector coordinates must be (n_det,) or (B, n_det), got {tuple(v.shape)}")
+
 
 @torch.no_grad()
 def adaptive_bandwidths(samples: torch.Tensor, k: int, sigma_min: float,
@@ -123,6 +134,8 @@ def GetCounts_planeaware(
     hit_deposit_min: float = HIT_DEPOSIT_MIN,
     bandwidth: torch.Tensor = None,
     t_mode: str = "leading",
+    t_interp: bool = False,
+    layer_dx: float = 500.0,
 ) -> tuple:
     """Plane-aware count extraction + leading-edge arrival time.
 
@@ -133,10 +146,15 @@ def GetCounts_planeaware(
     Args:
         samples  : (B, max_points, 5) point-cloud tensor with columns
                    [x, y, layer_index, energy, time].  Padding rows have energy=0.
-        x_det    : (n_det,) North coordinates [m], requires_grad may be True.
-        y_det    : (n_det,) Up   coordinates [m], requires_grad may be True.
-        z_cont   : (n_det,) continuous plane index ∈ [0, n_planes-1],
-                   derived as (East - east_min) / plane_dx.  requires_grad may be True.
+        x_det    : (n_det,) or (B, n_det) first transverse coordinate [m]: North in
+                   the global frame, t1 in the shower frame. (B, n_det) gives every
+                   shower its own detector coordinates (the shower frame, where the
+                   same layout sits differently relative to each shower's axis).
+                   requires_grad may be True.
+        y_det    : same shape, second transverse coordinate [m] (Up / t2).
+        z_cont   : same shape, continuous plane coordinate in units of the plane
+                   spacing (global: (East_entry - East) / dx; shower frame:
+                   depth along the axis / 500 m).  requires_grad may be True.
         SmearN_fn, fluxB_e, TimeAverage_vectorized_fn :
                    accepted for interface compatibility; never called.
         sigma    : Gaussian spatial kernel width [m].
@@ -156,6 +174,14 @@ def GetCounts_planeaware(
                    Normalised by the detector's own deposit, unlike the retired
                    count-weighted mean (see module docstring), so it does not
                    scale with the corpus's point budget.
+        t_interp : leading edge only. False (default): a detected point arrives at
+                   its own plane's time. True: the point's time is carried along
+                   the axis at c to the detector's depth,
+                   t = t_p + (z_det - z_p) * layer_dx / c, so a detector between two
+                   planes no longer reads one plane's time (the times are no longer
+                   quantized in steps of layer_dx / c). Clamped >= 1e-12 s, since 0
+                   is the "no hit" sentinel.
+        layer_dx : plane spacing [m] for t_interp (C8: 500 m along the axis).
 
     Returns:
         (local_intensity, arrival_time) : each (B, n_det), raw (no
@@ -168,9 +194,12 @@ def GetCounts_planeaware(
     point_e = samples[..., 3]    # (B, P)  energy
     point_t = samples[..., 4]    # (B, P)  time
 
+    # Detector coordinates: (n_det,) shared by every shower, or (B, n_det) per shower.
+    x_det, y_det, z_cont = (_det_view(v) for v in (x_det, y_det, z_cont))
+
     # dx, dy : (B, P, n_det)
-    dx = point_x.unsqueeze(2) - x_det.unsqueeze(0).unsqueeze(0)
-    dy = point_y.unsqueeze(2) - y_det.unsqueeze(0).unsqueeze(0)
+    dx = point_x.unsqueeze(2) - x_det
+    dy = point_y.unsqueeze(2) - y_det
     if bandwidth is None:
         spatial = torch.exp(-(dx ** 2 + dy ** 2) / (2.0 * sigma ** 2))
     else:
@@ -178,7 +207,7 @@ def GetCounts_planeaware(
         spatial = (sigma ** 2 / h2) * torch.exp(-(dx ** 2 + dy ** 2) / (2.0 * h2))
 
     # delta_l : (B, P, n_det)
-    delta_l = point_l.unsqueeze(2) - z_cont.unsqueeze(0).unsqueeze(0)
+    delta_l = point_l.unsqueeze(2) - z_cont
     plane_w = torch.relu(1.0 - delta_l.abs())
 
     kernel        = spatial * plane_w                              # (B, P, n_det)
@@ -201,7 +230,13 @@ def GetCounts_planeaware(
     # it and drop out on their own — no separate mask, and no dependence on the
     # corpus's padded width.
     detected     = energy_kernel > hit_deposit_min                 # (B, P, n_det)
-    t_masked     = torch.where(detected, point_t.unsqueeze(2),
+    if t_interp:
+        # Carry each point's time along the axis to the detector's depth at c.
+        # Selection only (no gradient is wanted through T), so detach delta_l.
+        t_pt = (point_t.unsqueeze(2) - delta_l.detach() * (layer_dx / C_LIGHT)).clamp(min=1e-12)
+    else:
+        t_pt = point_t.unsqueeze(2)
+    t_masked     = torch.where(detected, t_pt,
                                torch.full_like(energy_kernel, float("inf")))
     arrival_time = t_masked.amin(dim=1)                            # (B, n_det)
     # No detected point -> 0, the same "no signal" sentinel the E channel uses.

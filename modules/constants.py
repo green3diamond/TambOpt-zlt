@@ -77,6 +77,27 @@ KERNEL_INTERP_K = 8
 # widened to hundreds of metres (sparse tails, layers with fewer than k+1 points).
 KERNEL_INTERP_MAX = float(os.environ.get("TAMBOPT_KERNEL_BW_MAX", "inf"))
 
+# Kernel frame (run 18 on). "shower": each shower is placed in its own frame,
+# with detectors mapped into it per shower (dataset_builder.place_clouds_shower /
+# compute_labels_batch(frames=...)). The frame's coordinates:
+#   - t1: horizontal, perpendicular to the heading; exact from the native x/y.
+#   - t2: perpendicular to the axis, roughly vertical. C8 never recorded it;
+#     it is filled when KERNEL_CIRCULAR.
+#   - depth along the axis: C8 plane l sits at (l + 1) * C8_PLANE_DX.
+# "global": runs <= 17, with North-Up transverse and 500 m East slabs as depth.
+# Changing any of these requires a Stage-1 rebuild and new width caches.
+KERNEL_FRAME = os.environ.get("TAMBOPT_KERNEL_FRAME", "shower")
+# Carry each point's time along the axis at c to the detector's depth, so arrival
+# times are not quantized in steps of one plane (500 m / c ~ 1.67 us).
+KERNEL_T_INTERP = True
+# Circular showers: t2 = the t1 of a randomly paired point in the same (event,
+# species, layer), so the vertical spread follows the measured horizontal one.
+KERNEL_CIRCULAR = True
+C8_PLANE_DX = 500.0               # spacing of the C8 ObservationPlanes along the axis [m]
+# Event ids of held-out showers in the circular-t2 hash (main-corpus ids are the
+# row index within a species block), so the two corpora never share a pairing.
+HELDOUT_EVENT_ID_OFFSET = 10_000_000
+
 # Stage 2 head. True = lit/dark hurdle: the decoder also emits P(lit) per
 # channel and regresses the value on lit slots only; forward() returns the
 # expected reading P(lit) * value, so Stages 3-4 are unchanged. False = the

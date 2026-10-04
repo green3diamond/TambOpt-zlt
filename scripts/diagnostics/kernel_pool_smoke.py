@@ -29,7 +29,7 @@ print("pool events", pool.n)
 batch = pool.load(100, 104)
 # Widths as the precompute would store them (float16 round trip).
 batch = (batch[0], [K.adaptive_bandwidths(c, K.KERNEL_INTERP_K, K.SIGMA_SPATIAL)
-                    .half().float() for c in batch[0]], batch[2])
+                    .half().float() for c in batch[0]], batch[2], batch[3])
 recon = K.load_recon(K.RECON_FOLDER + "_deepsets", K.DEVICE)
 e, n = K.init_layout(mountain, "grid", K.DEVICE)
 
