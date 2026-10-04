@@ -8,8 +8,9 @@ import os
 # used by the tau corpus. `malata` = 266-face detector region, ENU bbox
 # North [-956, 716], East [-499, 777], Up [2748, 3712] m.
 # Run 17: synthetic 3x3 km plane at 45 deg facing East (scripts/17_make_plane_inputs.py).
-GEOMETRY_PATH = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/17_plane45_interp_hurdle_100k/inputs/plane45.h5"
-GEOMETRY_GROUP = "plane45"
+# Run 18: 6x6 km plane at 45 deg facing South, like Malata (--side 6000 --facing south).
+GEOMETRY_PATH = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/18_plane45S_6km_showerframe_200k/inputs/plane45s.h5"
+GEOMETRY_GROUP = "plane45s"
 DET_KEY        = "detector1"
 
 # Prefer a copy of the mesh next to the repo, else the absolute path. Centralized
@@ -75,7 +76,9 @@ KERNEL_INTERP_K = 8
 # Upper cap on those widths [m]; inf = uncapped (all runs so far). Set per job with
 # TAMBOPT_KERNEL_BW_MAX to test how much far detectors' weak signals come from points
 # widened to hundreds of metres (sparse tails, layers with fewer than k+1 points).
-KERNEL_INTERP_MAX = float(os.environ.get("TAMBOPT_KERNEL_BW_MAX", "inf"))
+# Run 18: 50 m by default (run 17's width-cap test: wider widths spread weak signal
+# hundreds of metres from where the particles are).
+KERNEL_INTERP_MAX = float(os.environ.get("TAMBOPT_KERNEL_BW_MAX", "50"))
 
 # Kernel frame (run 18 on). "shower": each shower is placed in its own frame,
 # with detectors mapped into it per shower (dataset_builder.place_clouds_shower /
@@ -153,7 +156,7 @@ AZIMUTH_MAX  = 360.0 # degrees
 # Every path below derives from this one, so retargeting the whole pipeline at
 # a sibling run folder (e.g. a verbatim copy of Stage 0/1 output used to try a
 # different Stage 2/3/4 config) is a one-line change here.
-RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/17_plane45_interp_hurdle_100k"
+RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/18_plane45S_6km_showerframe_200k"
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are
@@ -190,7 +193,7 @@ DATASET_FRACTION = 1.00
 # (~751,931 surviving events) minus the HOLDOUT_FRAC reserve below; Step 1's
 # MAX_SHOWERS no longer derives from this (see 01_build_dataset_northeast.py),
 # so an approximate value here can't silently truncate the corpus.
-NUM_SHOWERS = 105_300   # run 17: plane_taus.h5 (100k train + 5% held out)
+NUM_SHOWERS = 210_600   # run 18: plane_taus.h5 (200k train + 5% held out); run 17: 105_300
 BATCH_SIZE  = 60
 BATCH_SIZE_TRAIN  = 20
 
@@ -226,7 +229,7 @@ SPECIES_NAMES = ("electron", "muon", "photon")
 # origin. Energies are filtered to [10**LOG_E_MIN, 10**LOG_E_MAX] in the loader.
 USE_TAU_PRIMARIES = True
 # TAU_WHOLESKY_PATH = "/n/home05/zdimitrov/tambo/TambOpt/decay_locations/tau_wholesky_balanced_1e5_1e8_max.h5"
-TAU_WHOLESKY_PATH = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/17_plane45_interp_hurdle_100k/inputs/plane_taus.h5"   # run 17: LHS decays aimed at the plane
+TAU_WHOLESKY_PATH = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/18_plane45S_6km_showerframe_200k/inputs/plane_taus.h5"   # run 18: LHS decays aimed at the South-facing plane
 
 # TAU_WHOLESKY_PATH = ".../decay_locations/tau_wholesky_n2M_83k.h5"  # built the current corpus
 TAU_CORPUS_PATH   = os.path.join(SHOWER_CACHE, "cashed_showers_tau_dual.pt")
