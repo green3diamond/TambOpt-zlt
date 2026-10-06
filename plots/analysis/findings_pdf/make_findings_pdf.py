@@ -565,6 +565,12 @@ if all(os.path.exists(p) for p in (R18 + "inputs/plane_primaries.png", D18 + "co
         "Particles' energy-weighted radius (5.8 km) dominated by far-out points beyond the plane: to check"]))
     pages.append(figure_page(D18 + "core_test_ndet/core_test_ndet_pad.png"))
     pages.append(figure_page(D18 + "core_test_ndet/core_test_ndet_1deg.png"))
+    if os.path.exists(D18 + "clusters/clusters.png"):
+        pages.append(page([D18 + "clusters/clusters.png"], [
+            "Clustered grids: K clusters × M detectors on an even grid, cluster radius 50–500 m, vs plain grid",
+            "20 det.: grid 2.5% within 1° / 36% within 5°; best cluster 10 × 2 at 500 m 2.9% / 43% (≈ even spread)",
+            "50 / 100 det.: grid 7.3% / 12.2% within 1°; best cluster 5.4% / 8.9%; small clusters (≤ 200 m) worst",
+            "Recon trained on spread-out 100-detector layouts: clusters partly out of its training range"]))
     pages.append(text_page("Run 18: why nothing beats the grid", [
         "Showers land uniformly on the plane: N detectors over area A give every layout the same mean count per shower",
         "Clustering shares them out unevenly: many detectors for the few showers landing there, none for the rest",
@@ -572,6 +578,7 @@ if all(os.path.exists(p) for p in (R18 + "inputs/plane_primaries.png", D18 + "co
         "Disks peak at 3 km radius (≈ covering the plane): 79% / 70% / 46% within 5° for 100 / 50 / 20 detectors",
         "Within 1°: grid 12.2% vs best optimized 13.2% (100 det.) · 3 km disk beats the grid at 20 and 50 detectors",
         "N < 100: empty recon slots set to 0 (repeating the detectors instead changes scores by 1–4 points)",
+        "Clusters of 2–5 at grid nodes lose at 1°, 2.5° and 5°; the best ones are spread out",
         "Structure should need uneven illumination (real mountain) or a different goal; recon trained on 100 detectors",
     ]))
 
@@ -582,7 +589,7 @@ pages.append(text_page("Status and open questions", [
     "Near-miss tau corpus (axis within ~3 km of the mesh): requested",
     "Two-tier utility (run 16): no gain, no structure; next: near-miss taus, bootstrap error bars",
     "Run 18 (shower-frame kernel, ring showers): grid 77% within 5°, nothing concentrated beats even coverage",
-    "Next: clustered grids, a recon trained on variable detector counts, and uneven (Malata-like) illumination",
+    "Next: a layout-agnostic recon (random N, clusters, scale), then re-test; uneven (Malata-like) illumination",
     "C8: confirm the shift for showers within 30° of B (test run or ask Hamza); check the B units (nT vs μT)",
 ]))
 
