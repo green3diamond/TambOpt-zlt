@@ -14,6 +14,7 @@ Run from the v6 folder:
 
 Outputs land in `<RUN_LOCATION>/test_v6_run_01_northeast/`.
 """
+import argparse
 import os
 import sys
 import time
@@ -59,6 +60,11 @@ DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--strategies", type=int, nargs="+", default=None,
+                    help="label only these strategy ids (default: all of ACTIVE_STRATEGIES); "
+                         "merge with scripts/01b_merge_strategy_blocks.py")
+    args = ap.parse_args()
     os.makedirs(TRAINING_DATASET_FOLDER, exist_ok=True)
 
     print("=" * 72)
@@ -70,6 +76,7 @@ def main():
     print(f"batch size   : {BATCH_SIZE}")
     print(f"max showers  : {MAX_SHOWERS}")
     print(f"device       : {DEVICE}")
+    print(f"strategies   : {args.strategies or 'all'}")
 
     # Mountain + surface map (Up = g(N, East))
     t0 = time.time()
@@ -102,6 +109,7 @@ def main():
         # gpu_requeue can preempt mid-build; resume picks up from the last
         # checkpointed chunk instead of restarting the whole corpus.
         resume_path=os.path.join(TRAINING_DATASET_FOLDER, "build_resume.pt"),
+        strategies=args.strategies,
     )
     print(f"[build] training pairs in {time.time() - t0:.1f}s")
     print(f"  primary : {tuple(primary.shape)}  dtype={primary.dtype}")

@@ -600,13 +600,18 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
                  mountain, surface, seed, frames_chunk=None, *,
                  ds_start: int, c_lo: int, csz: int,
                  batch_size: int, n_det: int, device,
-                 was_corrupted: torch.Tensor) -> None:
+                 was_corrupted: torch.Tensor, strategies=None) -> None:
     """Label one loaded chunk under every strategy, writing into `state`.
 
     One layout is drawn per (strategy, sub-batch) and shared by the whole
     sub-batch. The draw is keyed on (seed, strategy, batch index) rather than
     taken from a running generator, so every species row of one event receives
     the same layout and a resumed run reproduces an uninterrupted one.
+
+    `strategies` (global ids into `_STRATEGIES`, default all) labels only those:
+    the global id keys the layout draw and is written to `state.strat`, so a
+    subset build reproduces those blocks of a full build exactly; the position
+    in the list sets the output block.
     """
     n_showers = meta.n_showers
     # Degeneracy is a property of the cloud, so it is evaluated once here and
@@ -623,7 +628,10 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
             adaptive_bandwidths(clouds_chunk[lo:lo + batch_size].to(device),
                                 KERNEL_INTERP_K, SIGMA_SPATIAL).cpu()
             for lo in range(0, csz, batch_size)])
-    for s_idx, (s_name, fn_name, kwargs) in enumerate(_STRATEGIES):
+    if strategies is None:
+        strategies = range(len(_STRATEGIES))
+    for s_out, s_idx in enumerate(strategies):
+        s_name, fn_name, kwargs = _STRATEGIES[s_idx]
         fn = _STRATEGY_FNS[fn_name]
         for sb_lo in range(0, csz, batch_size):
             sb_hi = min(sb_lo + batch_size, csz)
@@ -650,7 +658,7 @@ def _label_chunk(clouds_chunk, meta: _CorpusMeta, state: _ResumeState,
 
             ds_lo = ds_start + c_lo + sb_lo
             ds_hi = ds_start + c_lo + sb_hi
-            dst = slice(s_idx * n_showers + ds_lo, s_idx * n_showers + ds_hi)
+            dst = slice(s_out * n_showers + ds_lo, s_out * n_showers + ds_hi)
             state.primary[dst]  = meta.primaries[ds_lo:ds_hi]
             state.xy[dst, :, 0] = e_det.cpu().unsqueeze(0).expand(B, -1)     # East  (col 0)
             state.xy[dst, :, 1] = n_det_xy.cpu().unsqueeze(0).expand(B, -1)  # North (col 1)
@@ -722,7 +730,8 @@ def build_training_pairs(mountain, surface,
                          layer_east_dx:     float = LAYER_EAST_DX,
                          load_chunk:        int = 4096,
                          resume_path:       Optional[str] = None,
-                         resume_every_s:    float = 1800.0):
+                         resume_every_s:    float = 1800.0,
+                         strategies:        Optional[list] = None):
     """Build (primary, xy, E, T) training tensors from the cached shower corpus.
 
     Runs as four stages — `_load_corpus_metadata`, `_build_chunk_list`, then per
@@ -739,13 +748,15 @@ def build_training_pairs(mountain, surface,
         xy        : (N_pairs, 100, 2) float32   columns = (East, North)
         E         : (N_pairs, 100) float32
         T         : (N_pairs, 100) float32
-        strategy_ids : (N_pairs,)  int64 — index into `_STRATEGIES`
+        strategy_ids : (N_pairs,)  int64 — index into `_STRATEGIES` (with
+                       `strategies`, only those ids, in that order)
         species_ids  : (N_pairs,)  int64 — index into `constants.SPECIES_NAMES`
         blob_ids     : (N_pairs,)  bool  — degenerate shower, excluded by Step 2
                        (see `flag_blob_showers` / `constants.BLOB_MEDIAN_E`)
     """
     meta    = _load_corpus_metadata(mountain, shower_cache_path, max_showers)
-    n_strat = len(_STRATEGIES)
+    strategies = list(range(len(_STRATEGIES))) if strategies is None else [int(s) for s in strategies]
+    n_strat = len(strategies)
     n_det   = N_DETECTORS
 
     load_chunk, chunk_list = _build_chunk_list(meta.k_sp, meta.per_sp,
@@ -773,7 +784,7 @@ def build_training_pairs(mountain, surface,
         _label_chunk(clouds_chunk, meta, state, mountain, surface, seed, frames_chunk,
                      ds_start=ds_start, c_lo=c_lo, csz=c_hi - c_lo,
                      batch_size=batch_size, n_det=n_det, device=device,
-                     was_corrupted=was_corrupted)
+                     was_corrupted=was_corrupted, strategies=strategies)
 
         del clouds_chunk
         if verbose:

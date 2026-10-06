@@ -22,6 +22,8 @@
 #   sbatch slurm/run18_pipeline.sh build    Stage 1: kernel labels
 #   sbatch slurm/run18_pipeline.sh recon    Stage 3: recon on kernel responses (+ plots, two-tier kernel JSON)
 #   sbatch slurm/run18_pipeline.sh score    grid/center starts + the 6 kernel-optimized layouts, and the core test
+#   sbatch slurm/run18_pipeline.sh build_zoo  Stage 1 for the layout-zoo strategies 5-8, merged into ..._northeast_zoo
+#   sbatch slurm/run18_pipeline.sh recon_zoo  Stage 3 on the 9-strategy dataset -> ..._deepsets_zoo
 #
 # Width caches: kernel_bw_run18.sh (after gen); optimizations: kernel_opt_run18.sh (after recon + widths).
 # Status keys in pipeline_status_run18_<mode>.json make requeues resume from the last finished step.
@@ -54,6 +56,20 @@ gen)
     ;;
 build)
     run_once 01_build python -u scripts/01_build_dataset_northeast.py
+    ;;
+build_zoo)
+    # Layout zoo: label only the new strategies 5-8 (clusters, disk, grid patch) into
+    # ..._northeast_zoo_new, then append them to the existing 5-strategy build as ..._northeast_zoo.
+    run_once 01_build_zoo_new env TAMBOPT_DATASET_TAG=zoo_new \
+        python -u scripts/01_build_dataset_northeast.py --strategies 5 6 7 8
+    D1="$R/test_v6_run_01_northeast"
+    run_once 01b_merge_zoo python -u scripts/01b_merge_strategy_blocks.py \
+        --base "$D1" --add "${D1}_zoo_new" --out "${D1}_zoo"
+    ;;
+recon_zoo)
+    # Same recon as `recon`, trained on the 9-strategy dataset; written to ..._deepsets_zoo.
+    run_once 03_recon_zoo env TAMBOPT_DATASET_TAG=zoo \
+        python -u scripts/03_train_recon_deepsets.py --recon-input kernel --adam-patience 50 --out-suffix zoo
     ;;
 recon)
     run_once 03_recon python -u scripts/03_train_recon_deepsets.py --recon-input kernel --adam-patience 50

@@ -172,6 +172,10 @@ PAPER_FIGURES_DIR = os.path.join(FIGURES_DIR, "paper_figures")
 EDA_OUTPUTS_DIR   = os.path.join(FIGURES_DIR, "eda_outputs")
 
 TRAINING_DATASET_FOLDER = os.path.join(RUN_LOCATION, "test_v6_run_01_northeast")
+# TAMBOPT_DATASET_TAG=<tag> points Stage 1 / Stage 3 at test_v6_run_01_northeast_<tag>
+# (e.g. "zoo": the 9-strategy dataset; "zoo_new": its strategies 5-8 alone).
+if os.environ.get("TAMBOPT_DATASET_TAG"):
+    TRAINING_DATASET_FOLDER += "_" + os.environ["TAMBOPT_DATASET_TAG"]
 FNN_FOLDER              = os.path.join(RUN_LOCATION, "test_v6_run_02_recentered")
 RECON_FOLDER            = os.path.join(RUN_LOCATION, "test_v6_run_03_recentered")
 # 04_optimize.py appends "_{scheme}" (one folder per init scheme).

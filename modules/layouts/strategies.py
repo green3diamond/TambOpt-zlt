@@ -109,6 +109,73 @@ def layout_latin_hypercube(mountain, n_det: int = N_DETECTORS, rng=None):
                                   torch.as_tensor(N, dtype=torch.float32))
 
 
+def _clip_project(mountain, E: np.ndarray, N: np.ndarray):
+    """Clip (East, North) draws to the mountain bbox, then project to the surface."""
+    E = np.clip(E, mountain.east_lo, mountain.east_hi).astype(np.float32)
+    N = np.clip(N, mountain.n_min, mountain.n_max).astype(np.float32)
+    return project_to_mountain_ne(mountain, torch.as_tensor(E), torch.as_tensor(N))
+
+
+def _log_uniform(rng, lo: float, hi: float) -> float:
+    return float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
+
+
+def layout_clusters(mountain, n_det: int = N_DETECTORS, r_min: float = 30.0,
+                    r_max: float = 600.0, rng=None):
+    """K clusters of M = n_det / K detectors: K a random divisor of n_det (2..n_det/2),
+    centres uniform over the bbox, one radius per draw (log-uniform in [r_min, r_max]),
+    members uniform in the disk."""
+    if rng is None:
+        rng = np.random.default_rng()
+    ks = [k for k in range(2, n_det // 2 + 1) if n_det % k == 0]
+    K = int(rng.choice(ks))
+    M = n_det // K
+    R = _log_uniform(rng, r_min, r_max)
+    cE = rng.uniform(mountain.east_lo, mountain.east_hi, K)
+    cN = rng.uniform(mountain.n_min, mountain.n_max, K)
+    r = R * np.sqrt(rng.random(n_det))
+    a = rng.uniform(0.0, 2.0 * np.pi, n_det)
+    E = np.repeat(cE, M) + r * np.cos(a)
+    N = np.repeat(cN, M) + r * np.sin(a)
+    return _clip_project(mountain, E, N)
+
+
+def layout_disk(mountain, n_det: int = N_DETECTORS, r_min: float = 200.0,
+                r_max: float = 4000.0, rng=None):
+    """Detectors uniform in one disk: centre uniform over the bbox, radius log-uniform
+    in [r_min, r_max] (the part outside the bbox is clipped to its edge)."""
+    if rng is None:
+        rng = np.random.default_rng()
+    R = _log_uniform(rng, r_min, r_max)
+    cE = rng.uniform(mountain.east_lo, mountain.east_hi)
+    cN = rng.uniform(mountain.n_min, mountain.n_max)
+    r = R * np.sqrt(rng.random(n_det))
+    a = rng.uniform(0.0, 2.0 * np.pi, n_det)
+    return _clip_project(mountain, cE + r * np.cos(a), cN + r * np.sin(a))
+
+
+def layout_grid_patch(mountain, n_det: int = N_DETECTORS, side_min: float = 500.0,
+                      side_max: float = 6000.0, jitter_frac: float = 0.05, rng=None):
+    """Square grid over a random square patch: side log-uniform in [side_min, side_max]
+    (capped at the bbox), placed uniformly inside the bbox, jitter jitter_frac x spacing.
+    n_det need not be a square: the ceil(sqrt) x ceil(sqrt) lattice is subsampled."""
+    if rng is None:
+        rng = np.random.default_rng()
+    w_e = mountain.east_hi - mountain.east_lo
+    w_n = mountain.n_max - mountain.n_min
+    side = min(_log_uniform(rng, side_min, side_max), w_e, w_n)
+    e0 = mountain.east_lo + rng.uniform(0.0, w_e - side)
+    n0 = mountain.n_min + rng.uniform(0.0, w_n - side)
+    k = int(np.ceil(np.sqrt(n_det)))
+    u = (np.arange(k) + 0.5) / k
+    UE, UN = np.meshgrid(u, u)
+    sel = rng.permutation(k * k)[:n_det]
+    E = e0 + side * UE.ravel()[sel]
+    N = n0 + side * UN.ravel()[sel]
+    sig = jitter_frac * side / k
+    return _clip_project(mountain, E + rng.normal(0.0, sig, n_det), N + rng.normal(0.0, sig, n_det))
+
+
 # ── Dataset builder ──────────────────────────────────────────────────────────
 
 # Every layout strategy the builder knows how to run, keyed by the label that
@@ -126,6 +193,10 @@ _ALL_STRATEGIES = {
     "uniform_random_b":  ("layout_uniform_random",  dict()),
     "latin_hypercube_a": ("layout_latin_hypercube", dict()),
     "latin_hypercube_b": ("layout_latin_hypercube", dict()),
+    "clusters_a":        ("layout_clusters",        dict()),
+    "clusters_b":        ("layout_clusters",        dict()),
+    "disk_a":            ("layout_disk",            dict()),
+    "grid_patch_a":      ("layout_grid_patch",      dict()),
 }
 
 # The strategies a dataset build runs, IN ORDER. Position here IS the
@@ -144,6 +215,12 @@ ACTIVE_STRATEGIES = (
     "uniform_random_b",
     "latin_hypercube_a",
     "latin_hypercube_b",
+    # Layout zoo (run 18, 2026-10-06): clusters, disks and partial grids, so the
+    # recon also sees uneven coverage. Appended, so ids 0-4 keep their meaning.
+    "clusters_a",
+    "clusters_b",
+    "disk_a",
+    "grid_patch_a",
 )
 
 _STRATEGIES = [(name, *_ALL_STRATEGIES[name]) for name in ACTIVE_STRATEGIES]
@@ -154,4 +231,7 @@ _STRATEGY_FNS = {
     "layout_rings":           layout_rings,
     "layout_uniform_random":  layout_uniform_random,
     "layout_latin_hypercube": layout_latin_hypercube,
+    "layout_clusters":        layout_clusters,
+    "layout_disk":            layout_disk,
+    "layout_grid_patch":      layout_grid_patch,
 }
