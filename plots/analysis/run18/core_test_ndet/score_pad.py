@@ -32,7 +32,9 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--layouts", action="append", required=True)
 ap.add_argument("--n-events", type=int, default=1536)
 ap.add_argument("--thetas", type=float, nargs="+", default=[5.0, 2.5])
+ap.add_argument("--out-dir", default=None, help="where scores_pad_<theta>deg.json go (default: this folder)")
 args = ap.parse_args()
+OUT = args.out_dir or D
 dev = DCS.DEVICE
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
                      layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
@@ -65,5 +67,5 @@ for name, path in layouts.items():
     print(f"[{name:28s}] n={nd:3d}  " + "  ".join(f"within {th:g}° {outs[th][name]['frac_good_t']:.3f}" for th in outs)
           + f"  good5(+E) {good5:.3f}  angle {float(a.median()):.2f}", flush=True)
 for th, out in outs.items():
-    json.dump(out, open(os.path.join(D, f"scores_pad_{th:g}deg.json"), "w"), indent=1)
+    json.dump(out, open(os.path.join(OUT, f"scores_pad_{th:g}deg.json"), "w"), indent=1)
 print("[write]", ", ".join(f"scores_pad_{th:g}deg.json" for th in outs))
