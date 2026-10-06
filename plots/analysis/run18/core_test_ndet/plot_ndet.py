@@ -16,10 +16,15 @@ from modules.geometry import load_tr_mountain  # noqa: E402
 D = os.path.dirname(os.path.abspath(__file__))
 A = os.path.join(os.path.dirname(D), "angleonly")
 PAD = "--pad" in sys.argv          # N < 100: empty recon slots zero-padded (score_pad.py) instead of repeated
+T1, T2 = (1, 5) if "--deg1" in sys.argv else (5, 2.5)   # solid / faded thresholds [deg]
 INK, GREY, SAND, ORANGE, GOLD, BLUE = "#1f2328", "#52514e", "#b9b7af", "#eb6834", "#eda100", "#2a78d6"
-_f = "scores_pad_{}deg.json" if PAD else "scores_{}deg.json"
-s5 = {**json.load(open(os.path.join(A, "scores_angleonly_5deg.json"))), **json.load(open(os.path.join(D, _f.format(5))))}
-s25 = {**json.load(open(os.path.join(A, "scores_angleonly_2.5deg.json"))), **json.load(open(os.path.join(D, _f.format(2.5))))}
+if "--deg1" in sys.argv:            # everything (N = 20, 50, 100) scored by score_pad.py
+    s5 = json.load(open(os.path.join(D, "scores_pad_1deg.json")))
+    s25 = json.load(open(os.path.join(D, "scores_pad_5deg.json")))
+else:
+    _f = "scores_pad_{}deg.json" if PAD else "scores_{}deg.json"
+    s5 = {**json.load(open(os.path.join(A, "scores_angleonly_5deg.json"))), **json.load(open(os.path.join(D, _f.format(5))))}
+    s25 = {**json.load(open(os.path.join(A, "scores_angleonly_2.5deg.json"))), **json.load(open(os.path.join(D, _f.format(2.5))))}
 paths = dict(l.strip().split("=", 1) for l in open(os.path.join(D, "layouts.txt")) if l.strip())
 paths.update(dict(l.strip().split("=", 1) for l in open(os.path.join(A, "layouts.txt")) if l.strip()))
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
@@ -59,7 +64,7 @@ for c, N in enumerate(NS):
     a.set_xticks(x); a.set_xticklabels([LAB[b] for b in BASE], rotation=40, ha="right", fontsize=8)
     a.set_ylim(-12, 100); a.set_title(f"{N} detectors: grid, cores, hybrids", loc="left", fontsize=11.5, color=INK)
     if c == 0:
-        a.set_ylabel("showers within the angle [%]\n(solid 5°, faded 2.5°; median angle below)")
+        a.set_ylabel(f"showers within the angle [%]\n(solid {T1:g}°, faded {T2:g}°; median angle below)")
     rs = (100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 4500, 6000, 9000, 12000)
     sub = gsp[2, c].subgridspec(1, 7, wspace=0.04)
     for i, r in enumerate((300, 1000, 2000, 3000, 4500, 6000, 12000)):
@@ -70,18 +75,19 @@ for c, N in enumerate(NS):
         for sp in a2.spines.values():
             sp.set_visible(False)
     a = fig.add_subplot(gsp[3, c])
-    a.plot(rs, [g5(dkey(r, N)) for r in rs], "o-", color=BLUE, lw=2, label="disk, within 5°")
-    a.plot(rs, [g25(dkey(r, N)) for r in rs], "o-", color=ORANGE, lw=2, label="disk, within 2.5°")
-    a.axhline(v5[0], color=BLUE, ls="--", lw=1, label="grid, 5°"); a.axhline(v25[0], color=ORANGE, ls="--", lw=1, label="grid, 2.5°")
+    a.plot(rs, [g5(dkey(r, N)) for r in rs], "o-", color=BLUE, lw=2, label=f"disk, within {T1:g}°")
+    a.plot(rs, [g25(dkey(r, N)) for r in rs], "o-", color=ORANGE, lw=2, label=f"disk, within {T2:g}°")
+    a.axhline(v5[0], color=BLUE, ls="--", lw=1, label=f"grid, {T1:g}°"); a.axhline(v25[0], color=ORANGE, ls="--", lw=1, label=f"grid, {T2:g}°")
     best = max(rs, key=lambda r: g5(dkey(r, N)))
     a.set(xscale="log", ylim=(0, 100), xlabel="disk radius [m]", title=f"{N} detectors: disks of growing radius "
           f"(best {best / 1000:g} km: {g5(dkey(best, N)):.0f}%)")
     a.grid(alpha=0.25, lw=0.5)
     if c == 0:
         a.set_ylabel("showers within the angle [%]"); a.legend(fontsize=8, frameon=False)
-fig.suptitle("Run 18 core test with 20, 50 and 100 detectors · 'good' = angle only · 1,536 held-out showers, shower-frame "
+fig.suptitle(f"Run 18 core test with 20, 50 and 100 detectors · 'good' = angle only (within {T1:g}°; faded {T2:g}°) · 1,536 held-out showers, shower-frame "
              "kernel + run 18 recon\nHybrids keep the 100-detector proportions; disks larger than the plane snap to its edges",
              fontsize=13, color=INK)
-out = os.path.join(D, "core_test_ndet_pad.png" if PAD else "core_test_ndet.png")
+out = os.path.join(D, "core_test_ndet_1deg.png" if "--deg1" in sys.argv else
+                   "core_test_ndet_pad.png" if PAD else "core_test_ndet.png")
 fig.savefig(out, dpi=110, bbox_inches="tight", facecolor="white")
 print(f"[write] {out}")

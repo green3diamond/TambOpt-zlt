@@ -31,6 +31,7 @@ D = os.path.dirname(os.path.abspath(__file__))
 ap = argparse.ArgumentParser()
 ap.add_argument("--layouts", action="append", required=True)
 ap.add_argument("--n-events", type=int, default=1536)
+ap.add_argument("--thetas", type=float, nargs="+", default=[5.0, 2.5])
 args = ap.parse_args()
 dev = DCS.DEVICE
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
@@ -44,7 +45,7 @@ E_true, th_t, ph_t = primary_to_physical_labels(prim)
 layouts = {}
 for f in args.layouts:
     layouts.update(dict(l.strip().split("=", 1) for l in open(f) if l.strip()))
-out5, out25 = {}, {}
+outs = {th: {} for th in args.thetas}
 for name, path in layouts.items():
     L = torch.load(path, map_location="cpu")
     e, n = torch.as_tensor(L["x"]).float().to(dev), torch.as_tensor(L["y"]).float().to(dev)
@@ -58,11 +59,11 @@ for name, path in layouts.items():
         E_p, th_p, ph_p = primary_to_physical_labels(recon(feats))
         a, de = DCS.ang_err((E_p.clamp(min=1.0), th_p, ph_p, E_true, th_t, ph_t))
     good5 = float(((a < 5) & (de < 0.2)).float().mean())
-    for th, out in ((5.0, out5), (2.5, out25)):
+    for th, out in outs.items():
         out[name] = dict(frac_good_t=float((a < th).float().mean()), frac_good_5=good5,
                          ang_med=float(a.median()), dE_med=float(de.median()), n_det=nd, padding="zeros")
-    print(f"[{name:28s}] n={nd:3d}  within 5° {out5[name]['frac_good_t']:.3f}  within 2.5° {out25[name]['frac_good_t']:.3f}  "
-          f"good5(+E) {good5:.3f}  angle {out5[name]['ang_med']:.2f}", flush=True)
-json.dump(out5, open(os.path.join(D, "scores_pad_5deg.json"), "w"), indent=1)
-json.dump(out25, open(os.path.join(D, "scores_pad_2.5deg.json"), "w"), indent=1)
-print("[write] scores_pad_5deg.json, scores_pad_2.5deg.json")
+    print(f"[{name:28s}] n={nd:3d}  " + "  ".join(f"within {th:g}° {outs[th][name]['frac_good_t']:.3f}" for th in outs)
+          + f"  good5(+E) {good5:.3f}  angle {float(a.median()):.2f}", flush=True)
+for th, out in outs.items():
+    json.dump(out, open(os.path.join(D, f"scores_pad_{th:g}deg.json"), "w"), indent=1)
+print("[write]", ", ".join(f"scores_pad_{th:g}deg.json" for th in outs))
