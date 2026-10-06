@@ -34,14 +34,16 @@ from modules.constants import (
     EAST_ENTRY, LAYER_EAST_DX, N_PLANES, NUM_SHOWERS,
     BATCH_SIZE, RUN_LOCATION,
     DUAL_SHOWER_CACHE_PATH, DATASET_FRACTION, SPECIES_NAMES,
+    TRAINING_DATASET_FOLDER,
 )
 from modules.geometry    import load_tr_mountain
 from modules.geometry import SurfaceUpMap
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
-# Dedicated output dir (notable name) — never overwrite the (North, Up) corpus.
-TRAINING_DATASET_FOLDER = os.path.join(RUN_LOCATION, "test_v6_run_01_northeast")
+# Output dir: modules.constants.TRAINING_DATASET_FOLDER (test_v6_run_01_northeast, plus
+# _<tag> with TAMBOPT_DATASET_TAG). It used to be redefined here, which silently ignored the
+# tag: the first layout-zoo build (2026-10-06) overwrote the 5-strategy run 18 dataset.
 # Paired dual-species corpus holds 2*n_pairs rows (electron block then muon
 # block, same primaries); 02 splits them per species via the species_ids.pt
 # sidecar (the primary pdg feature now carries the EM/hadronic class).

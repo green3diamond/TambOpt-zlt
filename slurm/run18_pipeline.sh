@@ -63,6 +63,9 @@ build_zoo)
     run_once 01_build_zoo_new env TAMBOPT_DATASET_TAG=zoo_new \
         python -u scripts/01_build_dataset_northeast.py --strategies 5 6 7 8
     D1="$R/test_v6_run_01_northeast"
+    # The first zoo build ignored the tag and overwrote ..._northeast with strategies 5-8 (since
+    # moved to ..._zoo_new); rebuild the original strategies 0-4 there (same draws as before).
+    run_once 01_build_base python -u scripts/01_build_dataset_northeast.py --strategies 0 1 2 3 4
     run_once 01b_merge_zoo python -u scripts/01b_merge_strategy_blocks.py \
         --base "$D1" --add "${D1}_zoo_new" --out "${D1}_zoo"
     ;;
