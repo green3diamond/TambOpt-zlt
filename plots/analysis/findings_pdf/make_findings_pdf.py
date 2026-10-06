@@ -508,13 +508,81 @@ if all(os.path.exists(p) for p in (KF + "kernel_schematic.png",
         "Then 6 kernel-in-the-loop optimizations (current, two-tier λ 0 / 0.3 × grid / center), scoring and core test",
     ]))
 
+# Run 18: South-facing 6 km plane, shower-frame kernel, no Stage 2 (results 2026-10-06).
+R18 = B + "18_plane45S_6km_showerframe_200k/"
+D18 = R18 + "diagnostics/"
+if all(os.path.exists(p) for p in (R18 + "inputs/plane_primaries.png", D18 + "core_test/core_test_scores.json",
+                                   D18 + "angleonly/angleonly_scores.png", D18 + "core_test_ndet/core_test_ndet_1deg.png")):
+    import json as _json
+    pages.append(section_page('Run 18: shower-frame kernel',
+                              '6 km plane facing South, 210,600 showers, ring showers, no surrogate'))
+    pages.append(text_page("Run 18 setup", [
+        "Plane: 6 × 6 km, 45°, facing South like Malata; taus travel North into it; 100 detectors",
+        "Decays: LHS box south of the plane, aimed at uniform points on it; distance ≥ 1 km, zenith 60–100°",
+        "Directions ≥ 30° from the C8 field axis (x), outside the range C8 shifts sideways · 210,600 events (200k train)",
+        "Kernel in each shower's own frame: layer depth (l + 1) × 500 m, arrival times interpolated between planes",
+        "Ring showers: each particle a ring of radius |t1| around the axis (C8 lost the vertical offset)",
+        "Adaptive widths k = 8, floor 10 m, cap 50 m · recon trained on kernel responses only (no Stage 2)",
+        "Then 6 kernel-in-the-loop optimizations (current, two-tier λ 0 / 0.3 × grid / center), scoring, core test",
+    ]))
+    pages.append(page([R18 + "inputs/plane_primaries.png"], [
+        "Run 18 · primaries: decays south of the plane, median distance 6.5 km, zenith p5/p50/p95 68 / 88 / 99°",
+        "Azimuth of travel 50–130° (heading North), every shower ≥ 30° from the x axis"]))
+    pages.append(page([R18 + "test_v6_run_03_recentered_deepsets/recon_conditional_kernel.png"], [
+        "Run 18 · recon on kernel input: direction tight on the diagonal; val loss 0.063 (run 17 kernel recon: 0.148)",
+        "Energy is the weak part: a flat band near the mean for showers with almost no signal"]))
+    sc18 = _json.load(open(D18 + "core_test/core_test_scores.json"))
+    g18 = sc18["grid"]
+    for tag in ("cores", "hybrids", "kernel_optimized"):
+        pages.append(figure_page(D18 + f"core_test/core_test_{tag}.png"))
+    pages.append(table_page("Run 18 core test: angle and energy vs angle only", [
+        "layout                              good 5° (+E)   within 5°   within 2.5°   within 1°   median",
+    ] + [f"{lab:34s} {100 * sc18[k]['frac_good_5']:8.1f}%   {100 * a5[k]['frac_good_t']:8.1f}%   "
+         f"{100 * a25[k]['frac_good_t']:8.1f}%   {100 * a1[k]['frac_good_t']:8.1f}%   {sc18[k]['ang_med']:5.1f}°"
+         for a5, a25, a1 in [(_json.load(open(D18 + "core_test_ndet/scores_pad_5deg.json")),
+                             _json.load(open(D18 + "core_test_ndet/scores_pad_2.5deg.json")),
+                             _json.load(open(D18 + "core_test_ndet/scores_pad_1deg.json")))]
+         for k, lab in (("grid", "grid"), ("core_r300", "core 300 m"), ("core_r500", "core 500 m"),
+                        ("core300_40_spread60", "40 in 300 m core + 60 spread"),
+                        ("core300_60_rim40", "60 in 300 m core + 40 on rim"),
+                        ("kern_current_grid", "optimized, current (grid)"),
+                        ("kern_twotier_l0_grid", "optimized, two-tier λ 0 (grid)"),
+                        ("kern_twotier_l0p3_center", "optimized, two-tier λ 0.3 (center)"))], [
+        "Run 18 vs run 17 grid: good at 5° (+E) 3.5% → 38.3%, median angle 14° → 2.8° (not a controlled comparison)",
+        "Without the energy condition the grid has 77% within 5°: energy, not direction, is the main limit",
+        "Grid-start optimizations end within ~1.5 points of the grid; center starts spread but don't catch up",
+        "Showers with no detector ≥ 1 count still get 3.3°: the recon uses sub-1-count ring signals"]))
+    pages.append(figure_page(D18 + "angleonly/angleonly_scores.png"))
+    pages.append(page([D18 + "detector_count/detector_count_grid.png"], [
+        "Grid over the plane with 4–100 detectors: within 5° (angle) 8% → 77%, median angle 16° → 2.8°",
+        "Still rising at 100 detectors, more slowly (50 → 100: +9 points)"]))
+    pages.append(page([D18 + "detector_count/recon_sensitivity.png"], [
+        "Keeping 1–3 of a shower's lit detectors: ~12°; all of them: 4.5° · energy noise ×1.6 or 100 ns jitter barely matter",
+        "Natural: 2.2° for showers lighting 8–11 detectors, 3.4° with none ≥ 1 count"]))
+    pages.append(page([D18 + "footprint/footprint_radius.png"], [
+        "Footprint on the grid: half the collected signal within ~300 m of the axis, 90% within ~440 m (medians)",
+        "Grid spacing ~500 m, nearest detector ~210 m from the axis → median 4 lit detectors per shower",
+        "Particles' energy-weighted radius (5.8 km) dominated by far-out points beyond the plane: to check"]))
+    pages.append(figure_page(D18 + "core_test_ndet/core_test_ndet_pad.png"))
+    pages.append(figure_page(D18 + "core_test_ndet/core_test_ndet_1deg.png"))
+    pages.append(text_page("Run 18: why nothing beats the grid", [
+        "Showers land uniformly on the plane: N detectors over area A give every layout the same mean count per shower",
+        "Clustering shares them out unevenly: many detectors for the few showers landing there, none for the rest",
+        "Compact cores: 5–21% within 5° and < 1.2% within 1° at any detector count; hybrids improve with spread",
+        "Disks peak at 3 km radius (≈ covering the plane): 79% / 70% / 46% within 5° for 100 / 50 / 20 detectors",
+        "Within 1°: grid 12.2% vs best optimized 13.2% (100 det.) · 3 km disk beats the grid at 20 and 50 detectors",
+        "N < 100: empty recon slots set to 0 (repeating the detectors instead changes scores by 1–4 points)",
+        "Structure should need uneven illumination (real mountain) or a different goal; recon trained on 100 detectors",
+    ]))
+
 pages.append(text_page("Status and open questions", [
     "Kernel-in-the-loop on Stage 4's 75k events: grid 30.48 → 30.57, center 7.13 → 30.50 (surrogate: 30.85 / 30.79)",
     "Gate scan (runs 12, 15, 16): no trigger or softness setting beats the current gate",
     "Run 16: labels ~99% identical to run 15; a true-mean rerun is needed to test the idea",
     "Near-miss tau corpus (axis within ~3 km of the mesh): requested",
     "Two-tier utility (run 16): no gain, no structure; next: near-miss taus, bootstrap error bars",
-    "Run 18: layer depth fixed, shower-frame kernel, interpolated times, circular showers, 50 m cap",
+    "Run 18 (shower-frame kernel, ring showers): grid 77% within 5°, nothing concentrated beats even coverage",
+    "Next: clustered grids, a recon trained on variable detector counts, and uneven (Malata-like) illumination",
     "C8: confirm the shift for showers within 30° of B (test run or ask Hamza); check the B units (nT vs μT)",
 ]))
 
