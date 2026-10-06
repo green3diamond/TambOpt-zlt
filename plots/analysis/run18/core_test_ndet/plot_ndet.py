@@ -15,9 +15,11 @@ from modules.geometry import load_tr_mountain  # noqa: E402
 
 D = os.path.dirname(os.path.abspath(__file__))
 A = os.path.join(os.path.dirname(D), "angleonly")
+PAD = "--pad" in sys.argv          # N < 100: empty recon slots zero-padded (score_pad.py) instead of repeated
 INK, GREY, SAND, ORANGE, GOLD, BLUE = "#1f2328", "#52514e", "#b9b7af", "#eb6834", "#eda100", "#2a78d6"
-s5 = {**json.load(open(os.path.join(A, "scores_angleonly_5deg.json"))), **json.load(open(os.path.join(D, "scores_5deg.json")))}
-s25 = {**json.load(open(os.path.join(A, "scores_angleonly_2.5deg.json"))), **json.load(open(os.path.join(D, "scores_2.5deg.json")))}
+_f = "scores_pad_{}deg.json" if PAD else "scores_{}deg.json"
+s5 = {**json.load(open(os.path.join(A, "scores_angleonly_5deg.json"))), **json.load(open(os.path.join(D, _f.format(5))))}
+s25 = {**json.load(open(os.path.join(A, "scores_angleonly_2.5deg.json"))), **json.load(open(os.path.join(D, _f.format(2.5))))}
 paths = dict(l.strip().split("=", 1) for l in open(os.path.join(D, "layouts.txt")) if l.strip())
 paths.update(dict(l.strip().split("=", 1) for l in open(os.path.join(A, "layouts.txt")) if l.strip()))
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
@@ -80,6 +82,6 @@ for c, N in enumerate(NS):
 fig.suptitle("Run 18 core test with 20, 50 and 100 detectors · 'good' = angle only · 1,536 held-out showers, shower-frame "
              "kernel + run 18 recon\nHybrids keep the 100-detector proportions; disks larger than the plane snap to its edges",
              fontsize=13, color=INK)
-out = os.path.join(D, "core_test_ndet.png")
+out = os.path.join(D, "core_test_ndet_pad.png" if PAD else "core_test_ndet.png")
 fig.savefig(out, dpi=110, bbox_inches="tight", facecolor="white")
 print(f"[write] {out}")
