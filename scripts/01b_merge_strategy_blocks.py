@@ -12,9 +12,11 @@ norm_stats.pt is recomputed on the clean rows, as Stage 1 does.
 """
 import argparse
 import os
+import sys
 import time
 
-from _pathfix import V6_ROOT  # noqa: F401
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _pathfix import V6_ROOT  # noqa: F401,E402
 import torch
 
 from modules.surrogates import compute_normalization
