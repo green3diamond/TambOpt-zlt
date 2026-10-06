@@ -99,7 +99,11 @@ def main():
     mountain = load_tr_mountain(GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
                                 east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX, n_planes=N_PLANES)
     surface = SurfaceUpMap.from_mountain(mountain, grid_h=256, grid_w=256).to(DEVICE)
-    fnn, recon = load_models(DEVICE)
+    # Runs without a Stage-2 surrogate (run 18 on) skip the surrogate reference.
+    from modules.constants import FNN_FOLDER
+    has_fnn = os.path.isdir(FNN_FOLDER) and any(f.startswith("fnn_") and f.endswith(".pt")
+                                                and "resume" not in f for f in os.listdir(FNN_FOLDER))
+    fnn, recon = load_models(DEVICE, with_fnn=has_fnn)
     recon.eval()
     clouds, B, _, prim = load_events(args.n_events, DEVICE, mountain)
     kern = KernelDualLabels(clouds, surface, DEVICE, chunk=args.chunk, expected_primary=prim)
@@ -114,21 +118,23 @@ def main():
         xy = torch.stack([e, n], -1)[None].expand(B, -1, -1)
         with torch.no_grad():
             kpred = kern(prim, xy)                                          # (B, n_det, 2) log1p
-            spred = fnn(prim, xy)
+            spred = fnn(prim, xy) if fnn is not None else None
         counts = torch.expm1(kpred[..., 0])
         lit = counts > LAYOUT_THRESHOLD
         n_lit = lit.sum(1).cpu().numpy()
 
         ang, de = score(errors(recon, xy, kpred), prim)
-        ang_s, de_s = score(errors(recon, xy, spred), prim)
         hit = kpred[..., 0] > 0
-        resid = (spred[..., 0] - kpred[..., 0])[hit]
-        res["reference"][name] = dict(kernel=summary(ang, de), surrogate=summary(ang_s, de_s),
-                                      surrogate_logE_resid_std=float(resid.std()),
-                                      surrogate_logE_resid_mean=float(resid.mean()))
+        res["reference"][name] = dict(kernel=summary(ang, de))
         print(f"\n[{name}] kernel input: {summary(ang, de)}")
-        print(f"[{name}] surrogate input: {summary(ang_s, de_s)}")
-        print(f"[{name}] surrogate log1p(E) residual on hit slots: mean {resid.mean():+.3f}  std {resid.std():.3f}")
+        if spred is not None:
+            ang_s, de_s = score(errors(recon, xy, spred), prim)
+            resid = (spred[..., 0] - kpred[..., 0])[hit]
+            res["reference"][name].update(surrogate=summary(ang_s, de_s),
+                                          surrogate_logE_resid_std=float(resid.std()),
+                                          surrogate_logE_resid_mean=float(resid.mean()))
+            print(f"[{name}] surrogate input: {summary(ang_s, de_s)}")
+            print(f"[{name}] surrogate log1p(E) residual on hit slots: mean {resid.mean():+.3f}  std {resid.std():.3f}")
 
         # A. natural
         res["natural"][name] = {}
@@ -207,17 +213,25 @@ def plot(res, path):
         tj = res["T_jitter"][name]
         ax[1, 2].plot(list(tj), [v["ang_med"] for v in tj.values()], "o-", color=c, lw=2, label=f"{name} layout")
         ref = res["reference"][name]
-        for a, key in ((ax[1, 0], "ang_med"), (ax[1, 1], "de_med")):
-            a.axhline(ref["surrogate"][key], color=c, ls="--", lw=1.2)
-            a.axvline(ref["surrogate_logE_resid_std"], color=c, ls=":", lw=1.2)
-    g = res["gate"]
-    ax[0, 2].plot(list(g), list(g.values()), color=GREY, lw=2)
+        if "surrogate" in ref:
+            for a, key in ((ax[1, 0], "ang_med"), (ax[1, 1], "de_med")):
+                a.axhline(ref["surrogate"][key], color=c, ls="--", lw=1.2)
+                a.axvline(ref["surrogate_logE_resid_std"], color=c, ls=":", lw=1.2)
+    for name, c in cols.items():                     # natural: error vs the event's lit-detector count
+        nat = res["natural"].get(name, {})
+        if not nat:
+            continue
+        mids = [0.5 * (int(k.split("-")[0]) + int(k.split("-")[1])) for k in nat]
+        ax[0, 2].plot(mids, [v["ang_med"] for v in nat.values()], "o-", color=c, lw=2,
+                      label=f"{name}: median angle")
+        ax[0, 2].plot(mids, [v["ang_p68"] for v in nat.values()], "o:", color=c, lw=1.2,
+                      label=f"{name}: 68% angle")
     titles = [["Angle error vs lit detectors kept", "Energy error vs lit detectors kept",
-               f"Reconstructability gate r(n)"],
+               "Angle error vs lit detectors per shower (natural)"],
               ["Angle error vs E noise", "Energy error vs E noise", "Angle error vs T jitter"]]
-    xl = [["lit detectors kept (dropout)", "lit detectors kept (dropout)", "lit detectors n"],
+    xl = [["lit detectors kept (dropout)", "lit detectors kept (dropout)", "lit detectors (≥ 1 count) per shower"],
           ["E noise s (log-normal sigma)", "E noise s (log-normal sigma)", "T jitter [ns]"]]
-    yl = [["median angle error [deg]", "median |Δlog10 E|", "r"],
+    yl = [["median angle error [deg]", "median |Δlog10 E|", "angle error [deg]"],
           ["median angle error [deg]", "median |Δlog10 E|", "median angle error [deg]"]]
     for i in range(2):
         for j in range(3):
@@ -230,10 +244,13 @@ def plot(res, path):
                 a.spines[sp].set_visible(False)
     for a in (ax[0, 0], ax[0, 1]):
         a.set_xscale("log")
+    ax[0, 2].set_xscale("symlog", linthresh=1)
+    ax[0, 2].set_yscale("log")
+    ax[0, 2].legend(fontsize=8, frameon=False)
     ax[0, 0].legend(fontsize=9, frameon=False)
     ax[1, 0].legend(fontsize=9, frameon=False)
-    fig.text(0.5, 0.005, "dotted horizontal: all lit detectors kept · dashed horizontal: recon fed the "
-             "surrogate · dotted vertical: surrogate's actual log1p(E) residual std",
+    fig.text(0.5, 0.005, "dotted horizontal: all lit detectors kept · (with a surrogate) dashed horizontal: recon "
+             "fed the surrogate, dotted vertical: its log1p(E) residual std",
              ha="center", fontsize=10, color=GREY)
     fig.suptitle("Recon sensitivity to detector multiplicity and signal accuracy (kernel input, held-out events)",
                  fontsize=13, color=INK)
