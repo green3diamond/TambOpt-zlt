@@ -207,6 +207,12 @@ pages.append(page([ZC + "lit_resolution_reltime_lbfgs25_vs_zoo.png"], [
     "A real but modest gain (~0.2° on the median): the encoding was part of the limit, not all of it",
     "Final scores after L-BFGS finishes; next candidates: angle loss, attention over detector pairs, timing-plane fit"]))
 
+pages.append(page([ZC + "lit_geometry.png"], [
+    "Same 112 layouts × 1,536 showers; per shower, the lit detectors' (≥ 1 count) mean distance, nearest-neighbour spacing and baseline",
+    "Best (6–15 lit): nearest-neighbour spacing 300–600 m → median 2.4°, 15–16% within 1°; < 100 m → 3.7–4.0°, 6–7%",
+    "Mean distance 600–1200 m and baseline ≥ 800 m are best; within 1° vs > 5° showers: baseline 1.1 km vs 0.7 km, NN 278 vs 226 m",
+    "Above ~800 m spacing too few lit detectors sit in one footprint (~900 m across): the optimum spacing is ~300–600 m"]))
+
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
 print(f"[write] {OUT}  ({len(pages)} pages)")
