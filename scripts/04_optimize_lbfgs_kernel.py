@@ -307,7 +307,7 @@ def run_main_pool(args, mountain, surface, recon, out_dir):
     score_set = pool.load(n_sweep, pool.n)
     print(f"[pool] scoring set loaded ({score_set[2].shape[0]} events) in {time.time() - t0:.0f}s")
 
-    e_init, n_init = init_layout(mountain, args.init, DEVICE)
+    e_init, n_init = init_layout(mountain, args.init, DEVICE, args.n_det)
     xy_module = LearnableXY(e_init, n_init, device=str(DEVICE)).to(DEVICE)
     optimizer = torch.optim.Adam(xy_module.parameters(), lr=args.lr)
 
@@ -434,8 +434,8 @@ def load_recon(recon_dir, device):
     return recon
 
 
-def init_layout(mountain, scheme, device):
-    e, n = sample_initial_layout_ne(mountain, n_units=N_DETECTORS, scheme=scheme)
+def init_layout(mountain, scheme, device, n_det=N_DETECTORS):
+    e, n = sample_initial_layout_ne(mountain, n_units=n_det, scheme=scheme)
     e = torch.as_tensor(e, dtype=torch.float32)
     n = torch.as_tensor(n, dtype=torch.float32)
     e, n = project_to_mountain_ne(mountain, e, n)
@@ -672,6 +672,8 @@ def main():
                          "a fresh --batch-events slice per step, best layout chosen "
                          "on a separate --n-score scoring set")
     ap.add_argument("--batch-events", type=int, default=512)
+    ap.add_argument("--n-det", type=int, default=N_DETECTORS,
+                    help="detectors in the layout (default N_DETECTORS); the DeepSets recon takes any count")
     ap.add_argument("--n-score", type=int, default=1024)
     ap.add_argument("--score-every", type=int, default=250)
     ap.add_argument("--score-chunk", type=int, default=32)
@@ -684,6 +686,7 @@ def main():
                          "optimization, only what gets printed/saved")
     args = ap.parse_args()
     torch.manual_seed(args.seed)
+    print(f"[layout] {args.n_det} detectors")
 
     out_dir = OPT_FOLDER + "_lbfgs_kernel" + (f"_{args.out_suffix}" if args.out_suffix else "")
 
@@ -723,7 +726,7 @@ def main():
                              chunk=args.chunk, differentiable=True,
                              expected_primary=primary_batch)
 
-    e_init, n_init = init_layout(mountain, args.init, DEVICE)
+    e_init, n_init = init_layout(mountain, args.init, DEVICE, args.n_det)
     xy_module = LearnableXY(e_init, n_init, device=str(DEVICE)).to(DEVICE)
 
     if args.time_one_step:

@@ -18,7 +18,8 @@
 #   calib (two-tier only): two_tier_calibration_<calib>.json in the run folder, default kernel_5deg;
 #   e.g. kernel_5deg_angleonly ("good" = angle within 5 deg, no energy condition) -> suffix _angleonly;
 #   kernel_1deg_angleonly -> suffix _1deg_angleonly.
-# Env: RECON_DIR=<folder with recon.pt> (default <RECON_FOLDER>_deepsets), RECON_TAG appended to the suffix.
+# Env: RECON_DIR=<folder with recon.pt> (default <RECON_FOLDER>_deepsets), RECON_TAG appended to the suffix,
+#      N_DET=<detectors> (default 100; other counts get _n<N> in the suffix).
 source slurm/env.sh
 source slurm/gpu_gate.sh
 gpu_health_gate
@@ -35,9 +36,11 @@ else
     if [[ "$CALIB" == kernel_5deg* ]]; then TAG="twotier_l${LAM/./p}${CALIB#kernel_5deg}"
     else TAG="twotier_l${LAM/./p}_${CALIB#kernel_}"; fi
 fi
+N_DET=${N_DET:-100}
 SUFFIX="${TAG}_lr${LR}_${INIT}${RECON_TAG:+_$RECON_TAG}"
+[ "$N_DET" != 100 ] && SUFFIX="${SUFFIX}_n${N_DET}"
 
 python -u scripts/04_optimize_lbfgs_kernel.py --utility recon --init "$INIT" \
     --lr "$LR" --epochs "$EPOCHS" --log-every 100 \
     --pool main --batch-events 512 --chunk 32 --n-score 1024 --score-every 250 \
-    --recon-folder "$RK" --out-suffix "$SUFFIX" --skip-analytic-eval || exit 1
+    --recon-folder "$RK" --out-suffix "$SUFFIX" --n-det "$N_DET" --skip-analytic-eval || exit 1
