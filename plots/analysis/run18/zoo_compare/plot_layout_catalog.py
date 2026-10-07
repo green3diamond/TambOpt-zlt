@@ -3,7 +3,8 @@
 Each panel: the detector positions on the 6 km plane, and (relative-time recon, the same 1,536 held-out showers,
 from lit_geometry_pairs.npz) the share within 1 and 5 deg, the median angle error, and per shower the median
 number of lit detectors (>= 1 count), their median nearest-neighbour spacing and their baseline (largest distance).
-Ordered by family, then detector count. Writes layout_catalog_p<k>.png (24 panels per page).
+Ranked best to worst by the share within 1 deg (frame colour = family). Writes layout_catalog_p<k>.png
+(45 panels per page, shaped like a PDF slide).
 """
 import os
 import re
@@ -64,17 +65,21 @@ def param(x):
     return int(m.group(1)) if m else 0
 
 
-order = sorted(names, key=lambda x: (FAMS.index(family(x)), ndet(x), x.split("_")[0], param(x), x))
+lit, ang, lay, nn, base = P["lit"], P["ang"], P["lay"], P["nn"], P["base"]
+f1 = {x: float(np.mean(ang[lay == i] < 1)) for i, x in enumerate(names)}
+f5 = {x: float(np.mean(ang[lay == i] < 5)) for i, x in enumerate(names)}
+# Ranked best to worst by the share of showers within 1 deg (ties: by share within 5 deg).
+order = sorted(names, key=lambda x: (-f1[x], -f5[x], x))
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
                      layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
 mesh = np.asarray(m.centroids_ENU) / 1e3
-lit, ang, lay, nn, base = P["lit"], P["ang"], P["lay"], P["nn"], P["base"]
-PER = 24
+ROWS, COLS = 5, 9
+PER = ROWS * COLS
 for page in range(0, len(order), PER):
-    fig, axs = plt.subplots(4, 6, figsize=(24, 17.5))
+    fig, axs = plt.subplots(ROWS, COLS, figsize=(33.5, 18))      # the slide's shape (3020 x 1620 px)
     for ax in axs.flat:
         ax.axis("off")
-    for ax, nm in zip(axs.flat, order[page:page + PER]):
+    for rank, (ax, nm) in enumerate(zip(axs.flat, order[page:page + PER]), start=page + 1):
         k = lay == names.index(nm)
         a, l = ang[k], lit[k]
         e, n = paths[nm]
@@ -83,15 +88,17 @@ for page in range(0, len(order), PER):
         ax.scatter(e / 1e3, n / 1e3, s=9 if ndet(nm) <= 50 else 6, color=COL[family(nm)], lw=0)
         ax.set_xlim(mesh[:, 0].min() - 0.2, mesh[:, 0].max() + 0.2); ax.set_ylim(mesh[:, 1].min() - 0.2, mesh[:, 1].max() + 0.2)
         ax.set_aspect("equal")
-        ax.set_title(f"{nm}  ·  {ndet(nm)} det.\n"
+        ax.set_title(f"#{rank}  {nm}  ·  {ndet(nm)} det.\n"
                      f"1°: {100 * np.mean(a < 1):.1f}%   5°: {100 * np.mean(a < 5):.1f}%   median {np.median(a):.2f}°\n"
                      f"lit {np.median(l):.0f}   NN {np.nanmedian(nn[k]):.0f} m   baseline {np.nanmedian(base[k]):.0f} m",
-                     fontsize=9.5, color="#1f2328")
+                     fontsize=10, color="#1f2328")
         for sp in ax.spines.values():
             sp.set_color(COL[family(nm)]); sp.set_linewidth(1.2)
-    fig.suptitle(f"Test layouts {page + 1}–{min(page + PER, len(order))} of {len(order)} · relative-time recon, 1,536 held-out showers · "
-                 "lit: median detectors with ≥ 1 count per shower · NN spacing / baseline: medians over showers with ≥ 2 lit", fontsize=14)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.suptitle(f"Test layouts ranked by share of showers within 1°: #{page + 1}–{min(page + PER, len(order))} of {len(order)} · "
+                 "relative-time recon, 1,536 held-out showers · frame: grid blue, disk green, cluster orange, core red, "
+                 "hybrid purple, optimized grey\nlit = median detectors with ≥ 1 count per shower · NN spacing / baseline = "
+                 "medians over showers with ≥ 2 lit", fontsize=17)
+    fig.tight_layout(rect=(0, 0, 1, 0.95), h_pad=0.6, w_pad=0.3)
     out = f"{Z}/layout_catalog_p{page // PER + 1}.png"
     fig.savefig(out, dpi=80, facecolor="white"); plt.close(fig)
     print("[write]", out)

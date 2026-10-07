@@ -214,11 +214,22 @@ pages.append(page([ZC + "lit_geometry.png"], [
     "Above ~800 m spacing too few lit detectors sit in one footprint (~900 m across): the optimum spacing is ~300–600 m"]))
 
 pages.append(section_page("Test layouts",
-                          "The 112 distinct layouts behind the lit-detector slides, with their scores (relative-time recon)"))
-for _k in range(1, 6):
-    pages.append(page([ZC + f"layout_catalog_p{_k}.png"], [
-        "Per panel: share within 1° and 5°, median angle error; per shower: lit detectors (≥ 1 count), their nearest-neighbour "
-        "spacing and baseline (medians; spacing/baseline over showers with ≥ 2 lit)"]))
+                          "The 112 distinct layouts ranked best to worst by the share of showers within 1° (relative-time recon)"))
+
+
+def full_page(path):
+    """One figure filling the slide (margins M)."""
+    img = Image.open(path).convert("RGB")
+    k = min((W - 2 * M) / img.width, (H - 2 * M) / img.height)
+    img = img.resize((int(img.width * k), int(img.height * k)), Image.LANCZOS)
+    p = Image.new("RGB", (W, H), "white")
+    p.paste(img, ((W - img.width) // 2, (H - img.height) // 2))
+    return p
+
+
+import glob as _glob  # noqa: E402
+for _f in sorted(_glob.glob(ZC + "layout_catalog_p*.png")):
+    pages.append(full_page(_f))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
