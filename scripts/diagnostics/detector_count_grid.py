@@ -70,7 +70,8 @@ def main():
         lit = (counts[:, :nd] > 1.0).sum(1).cpu().numpy()
         r = dict(n=nd, events=int(a.size),
                  good5=float(np.mean((a < 5) & (de < 0.2))), good25=float(np.mean((a < 2.5) & (de < 0.2))),
-                 good5_angle=float(np.mean(a < 5)), ang_med=float(np.median(a)),
+                 good5_angle=float(np.mean(a < 5)), good25_angle=float(np.mean(a < 2.5)),
+                 good1_angle=float(np.mean(a < 1)), ang_med=float(np.median(a)),
                  ang_p68=float(np.percentile(a, 68)), de_med=float(np.median(de)),
                  lit_med=float(np.median(lit)), frac_lt3=float(np.mean(lit < 3)),
                  spacing_m=float(np.sqrt(np.ptp(mesh[:, 0]) * np.ptp(mesh[:, 1]) / nd)))

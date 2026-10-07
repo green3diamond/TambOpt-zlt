@@ -33,13 +33,14 @@ ap.add_argument("--layouts", action="append", required=True)
 ap.add_argument("--n-events", type=int, default=1536)
 ap.add_argument("--thetas", type=float, nargs="+", default=[5.0, 2.5])
 ap.add_argument("--out-dir", default=None, help="where scores_pad_<theta>deg.json go (default: this folder)")
+ap.add_argument("--recon-dir", default=None, help="recon folder (default: RECON_FOLDER + '_deepsets')")
 args = ap.parse_args()
 OUT = args.out_dir or D
 dev = DCS.DEVICE
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
                      layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
 surface = SurfaceUpMap.from_mountain(m, grid_h=256, grid_w=256).to(dev)
-_, recon = load_models(dev, with_fnn=False)
+_, recon = load_models(dev, recon_dir=args.recon_dir, with_fnn=False)
 clouds, B, _, prim = load_events(args.n_events, dev, m)
 kern = GS.CachedKernel(clouds, surface, dev, chunk=64, expected_primary=prim)
 E_true, th_t, ph_t = primary_to_physical_labels(prim)
