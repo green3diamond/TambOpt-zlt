@@ -128,9 +128,9 @@ pages.append(page([ZC + "best_layouts_1deg.png"], [
 pages.append(page([ZC + "best_layouts_5deg.png"], ["Same, within 5°"]))
 
 pages.append(page([ZC + "disks_vs_radius.png"], [
-    "Disks of 20 / 50 / 100 detectors centred on the plane, radius 0.1–12 km; solid = zoo recon, dashed = old recon",
-    "Every curve peaks at r ≈ 3 km (the disk just spans the 6 km plane); only 100 det. within 1° peaks at 4.5 km (13.1%)",
-    "Peaks (zoo): within 1° 4.4 / 9.2 / 13.1%, within 2.5° 21 / 38 / 47%, within 5° 51 / 71 / 79% for 20 / 50 / 100 det.",
+    "Disks of 10 / 20 / 50 / 100 detectors centred on the plane, radius 0.1–12 km; solid = zoo recon, dashed = old recon",
+    "Peaks at r ≈ 3 km (disk just spans the 6 km plane); 10 det. peak smaller (1.5–2 km), 100 det. within 1° at 4.5 km",
+    "Peaks (zoo), 10 / 20 / 50 / 100 det.: within 1° 2.2 / 4.4 / 9.2 / 13.1%, 2.5° 10 / 21 / 38 / 47%, 5° 28 / 51 / 71 / 79%",
     "Zoo gains most for compact disks (≤ 0.5 km: +3–7 pts within 5°) and for disks wider than the plane"]))
 
 pages.append(page([ZC + "compare_detcount.png"], [

@@ -1,6 +1,6 @@
-"""Disks of N detectors centred on the plane: share of showers within 1 / 2.5 / 5 deg vs disk radius, per N,
+"""Disks of N = 10 / 20 / 50 / 100 detectors centred on the plane: share of showers within 1 / 2.5 / 5 deg vs disk radius, per N,
 old recon (dashed) vs zoo recon (solid). Reads <tag>/{core_test_ndet,angleonly}/scores_pad_<theta>deg.json
-(disk_r<R>_n<N> for N = 20, 50; disk_r<R> for N = 100). Writes disks_vs_radius.png.
+and disks_n10/ (disk_r<R>_n<N> for N = 10, 20, 50; disk_r<R> for N = 100). Writes disks_vs_radius.png.
 """
 import json
 import os
@@ -12,12 +12,12 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 Z = os.path.dirname(os.path.abspath(__file__))
 INK, GREY = "#1f2328", "#52514e"
-N_COL = {20: "#eb6834", 50: "#1baf7a", 100: "#2a78d6"}
+N_COL = {10: "#c23b6b", 20: "#eb6834", 50: "#1baf7a", 100: "#2a78d6"}
 
 
 def disks(tag, th):
     out = {}
-    for s in ("core_test_ndet", "angleonly"):
+    for s in ("disks_n10", "core_test_ndet", "angleonly"):
         for name, r in json.load(open(f"{Z}/{tag}/{s}/scores_pad_{th:g}deg.json")).items():
             m = re.fullmatch(r"disk_r(\d+)(?:_n(\d+))?", name)
             if m:
