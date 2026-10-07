@@ -137,13 +137,31 @@ pages.append(page([ZC + "compare_detcount.png"], [
     "Grid with N detectors: zoo recon better at every N, most at small N (within 5°: N = 20 39 → 43%, N = 10 26 → 29%)",
     "At 100 detectors almost the same (within 5° 76.8 → 77.8%, within 1° 12.2 → 12.3%)"]))
 
+pages.append(text_page("Test: how many lit detectors does 1° need?", [
+    "Question: how many detectors must a shower light for the recon to reach 1° resolution?",
+    "Layouts: every test layout above (grids, disks, clusters, cores, hybrids, optimized; 10–100 detectors),",
+    "     each counted once (identical detector positions listed in several test sets are dropped): 112 layouts",
+    "Showers: the same 1,536 held-out showers on every layout → 172,032 shower–layout pairs",
+    "Per pair: lit detectors = kernel response ≥ 1 count; angle error of the zoo recon (true vs reconstructed direction)",
+    "Binned by lit count: median and 68% angle error, share within 1°, number of distinct showers in the bin",
+    "Error bands: 200 resamples of the 1,536 showers (all pairs of a shower move together, so a few big showers",
+    "     cannot carry a bin); bands = 16–84% of the resamples",
+    "Groups: all layouts, and spread layouts (grids, optimized, disks ≥ 2 km, 500 m clusters)",
+]))
+pages.append(page([ZC + "lit_resolution.png"], [
+    "Spread layouts: median error 9.1° (0 lit) → 5.3° (1) → 3.8° (2) → 3.0° (4) → 2.6° at 6–7 lit, then flat to 15 lit (± 0.1°)",
+    "68% error flattens at ~3.9°; share within 1° tops out at 12–15%: no lit count reaches 1° resolution",
+    "Worse again above ~16 lit, clearly at 30+ (4.7°, 104 showers): large showers on compact layouts, short baselines",
+    "So the 1° limit is not the number of hits: it is set by the recon, the timing information or the kernel's arrival times"]))
+
 pages.append(text_page("Conclusions", [
     "Training on more layout types helps every layout a little, the unusual ones most (clusters, cores: +5 pts at 5°)",
     "So part of the old gap was the recon's training range, but only a few points of it",
     "The ranking does not change: compact cores and small clusters still lose to even coverage at 1°, 2.5° and 5°",
     "Within 1° the changes are small (−1.2 to +2.8 pts per layout); the best layouts stay at 12–13% for 100 detectors",
     "Supports 'why nothing beats the grid': with uniform illumination, even coverage wins, independent of the recon",
-    "Next: optimize with the zoo recon; train on fewer detectors (random subsets); uneven, Malata-like illumination",
+    "Resolution stops improving at ~6 lit detectors (median 2.6°); 1° is out of reach at any lit count with this recon",
+    "Next: a direct timing-plane fit on lit detectors (is 2.6° the recon or the signal?); uneven, Malata-like illumination",
 ]))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
