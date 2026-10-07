@@ -24,6 +24,7 @@
 #   sbatch slurm/run18_pipeline.sh score    grid/center starts + the 6 kernel-optimized layouts, and the core test
 #   sbatch slurm/run18_pipeline.sh build_zoo  Stage 1 for the layout-zoo strategies 5-8, merged into ..._northeast_zoo
 #   sbatch slurm/run18_pipeline.sh recon_zoo  Stage 3 on the 9-strategy dataset -> ..._deepsets_zoo
+#   sbatch slurm/run18_pipeline.sh recon_reltime  Stage 3 on the zoo dataset with relative linear times + lit flag -> ..._deepsets_zoo_reltime
 #
 # Width caches: kernel_bw_run18.sh (after gen); optimizations: kernel_opt_run18.sh (after recon + widths).
 # Status keys in pipeline_status_run18_<mode>.json make requeues resume from the last finished step.
@@ -73,6 +74,12 @@ recon_zoo)
     # Same recon as `recon`, trained on the 9-strategy dataset; written to ..._deepsets_zoo.
     run_once 03_recon_zoo env TAMBOPT_DATASET_TAG=zoo \
         python -u scripts/03_train_recon_deepsets.py --recon-input kernel --adam-patience 50 --out-suffix zoo
+    ;;
+recon_reltime)
+    # Zoo dataset, recon input as relative linear times + lit flag (recon.reltime_features); -> ..._deepsets_zoo_reltime.
+    run_once 03_recon_reltime env TAMBOPT_DATASET_TAG=zoo \
+        python -u scripts/03_train_recon_deepsets.py --recon-input kernel --adam-patience 50 \
+        --input-mode reltime --out-suffix zoo_reltime
     ;;
 recon)
     run_once 03_recon python -u scripts/03_train_recon_deepsets.py --recon-input kernel --adam-patience 50

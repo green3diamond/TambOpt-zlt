@@ -60,6 +60,7 @@ from torch.utils.data import TensorDataset, DataLoader, Subset
 import modules   # noqa: F401
 from modules.surrogates  import load_dual_surrogate
 from modules.surrogates  import DeepSetsRecon
+from modules.surrogates.recon import RELTIME_FEATURES, reltime_features
 from modules.surrogates.dual import combine_species_outputs
 from modules.constants import (
     RECON_FOLDER, TRAINING_DATASET_FOLDER, FNN_FOLDER,
@@ -71,6 +72,7 @@ OUTPUT_FOLDER = RECON_FOLDER + "_deepsets"
 # Where the recon's per-detector (E, T) inputs come from — see the module
 # docstring. "sample" is the historical default; the CLI can override.
 RECON_INPUT   = "sample"     # "sample" | "kernel" | "mix"
+INPUT_MODE    = "raw"        # "raw" | "reltime" (DeepSetsRecon input transform, see recon.py)
 MIX_FRAC      = 0.5          # P(row uses kernel labels) when RECON_INPUT == "mix"
 
 # ── Architecture ─────────────────────────────────────────────────────────────
@@ -361,6 +363,7 @@ def _save_ckpt(path: str,
             # other way. Old checkpoints have no key -> read as "sample".
             recon_input=RECON_INPUT,
             mix_frac=(MIX_FRAC if RECON_INPUT == "mix" else None),
+            input_mode=INPUT_MODE,
         ),
         **extra,
     }, path)
@@ -421,7 +424,7 @@ def _plot_curves(log, path: str, adam_epochs: int = 0,
 
 def main():
     global N_EPOCHS, LBFGS_MAX_ITER, ADAM_PATIENCE
-    global RECON_INPUT, MIX_FRAC, OUTPUT_FOLDER
+    global RECON_INPUT, MIX_FRAC, OUTPUT_FOLDER, INPUT_MODE
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs",      type=int, default=N_EPOCHS)
     ap.add_argument("--adam-patience", type=int, default=ADAM_PATIENCE,
@@ -442,8 +445,13 @@ def main():
                          "'_deepsets_expB1' instead of the production "
                          "recon.pt. Use for any run that is not meant to "
                          "become the checkpoint Stage 4 / true_utility.py load.")
+    ap.add_argument("--input-mode", choices=("raw", "reltime"), default=INPUT_MODE,
+                    help="'reltime': positions relative to the first timed hit, linear dt in ns, lit (E > 0) "
+                         "and timed (T > 0) flags, and the reference's absolute position/time "
+                         "(recon.reltime_features)")
     args = ap.parse_args()
     RECON_INPUT, MIX_FRAC = args.recon_input, float(args.mix_frac)
+    INPUT_MODE = args.input_mode
     N_EPOCHS, LBFGS_MAX_ITER = int(args.epochs), int(args.lbfgs_iters)
     ADAM_PATIENCE = int(args.adam_patience)
     if args.out_suffix:
@@ -548,7 +556,21 @@ def main():
                            E_pred[keep].mean(),    T_pred[keep].mean()])   # (4,)
     in_std  = torch.stack([xy[keep, :, 0].std(),  xy[keep, :, 1].std(),
                            E_pred[keep].std(),     T_pred[keep].std()]).clamp(min=1e-8)
-    print(f"[norm] per-feat mean={in_mean.tolist()}  std={in_std.tolist()}")
+    if INPUT_MODE == "reltime":
+        # Stats of the transformed features the encoder sees, on a seeded sample of 300k clean rows.
+        _g = torch.Generator().manual_seed(SEED)
+        _ok = torch.nonzero(keep).squeeze(-1)                 # clean rows, as the raw stats above
+        _rows = _ok[torch.randperm(_ok.numel(), generator=_g)[:300_000]]
+        _f = []
+        with torch.no_grad():
+            for _lo in range(0, _rows.numel(), 8192):
+                _r = _rows[_lo:_lo + 8192]
+                _x = torch.stack([xy[_r, :, 0], xy[_r, :, 1], E_pred[_r], T_pred[_r]], dim=-1).to(DEVICE)
+                _f.append(reltime_features(_x).reshape(-1, RELTIME_FEATURES).cpu())
+        _f = torch.cat(_f)
+        in_mean, in_std = _f.mean(0), _f.std(0).clamp(min=1e-8)
+        del _f
+    print(f"[norm] input_mode={INPUT_MODE} per-feat mean={in_mean.tolist()}  std={in_std.tolist()}")
 
     full_ds  = TensorDataset(xy, E_pred, T_pred, target)
     train_ds = Subset(full_ds, train_idx.tolist())
@@ -563,6 +585,7 @@ def main():
     recon = DeepSetsRecon(
         n_det=N_DETECTORS, input_features=RECON_INPUT_FEATURES, output_dim=4,
         hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
+        input_mode=INPUT_MODE,
     ).to(DEVICE)
     recon.set_normalization(
         in_mean  = in_mean.to(DEVICE),
@@ -685,6 +708,7 @@ def main():
                     hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
                     recon_input=RECON_INPUT,
                     mix_frac=(MIX_FRAC if RECON_INPUT == "mix" else None),
+                    input_mode=INPUT_MODE,
                 ),
             }, f, indent=2)
         _plot_curves(log, os.path.join(OUTPUT_FOLDER, "recon_train_curves.png"))
@@ -871,6 +895,7 @@ def main():
                 hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
                 recon_input=RECON_INPUT,
                 mix_frac=(MIX_FRAC if RECON_INPUT == "mix" else None),
+                input_mode=INPUT_MODE,
             ),
         }, f, indent=2)
     _plot_curves(full_log, os.path.join(OUTPUT_FOLDER, "recon_train_curves.png"),

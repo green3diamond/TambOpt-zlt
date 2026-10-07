@@ -73,6 +73,41 @@ class Reconstruction(nn.Module):
         return out_n * self.out_std + self.out_mean
 
 
+RELTIME_FEATURES = 9
+
+
+def reltime_features(x: torch.Tensor) -> torch.Tensor:
+    """(B, n, 4) raw [x, y, log1p E, log1p(t * 1e6)] -> (B, n, 9) relative-time features.
+
+        [x - x0, y - y0, log1p E, dt in ns, lit, timed, x0, y0, log1p(t0 in us)]
+
+    lit   = E > 0: the detector saw any deposit.
+    timed = T > 0: it has a leading-edge time. The kernel times a detector only when one point's deposit
+            clears HIT_DEPOSIT_MIN (kernel.py), so most lit detectors have E > 0 but T = 0 (the sentinel).
+    Reference (x0, y0, t0): the earliest timed detector; with none timed, the highest-E lit detector
+    (t0 = 0); with nothing lit, the array's mean position (t0 = 0). dt = t - t0 for timed detectors,
+    0 otherwise (`timed` tells "first hit" from "no time"). x0, y0, log1p(t0) are broadcast to every
+    detector so nothing absolute is lost. The raw log-time input squashes the ~10-100 ns differences
+    that set the direction into ~0.005 of a unit; dt keeps them linear. Differentiable a.e. in x, y.
+    """
+    pos, E, T = x[..., :2], x[..., 2], x[..., 3]
+    lit, timed = E > 0, T > 0
+    t_us = torch.expm1(T.clamp(min=0.0))
+    big = torch.finfo(t_us.dtype).max
+    k_t = torch.where(timed, t_us, torch.full_like(t_us, big)).argmin(dim=1)           # earliest timed
+    k_e = torch.where(lit, E, torch.full_like(E, -big)).argmax(dim=1)                  # brightest lit
+    any_t, any_l = timed.any(dim=1), lit.any(dim=1)
+    k = torch.where(any_t, k_t, k_e)
+    p_k = pos.gather(1, k[:, None, None].expand(-1, 1, 2)).squeeze(1)                  # (B, 2)
+    p0 = torch.where((any_t | any_l)[:, None], p_k, pos.mean(dim=1))
+    t0 = torch.where(any_t, t_us.gather(1, k[:, None]).squeeze(1), torch.zeros_like(t_us[:, 0]))
+    timedf, litf = timed.to(x.dtype), lit.to(x.dtype)
+    dt_ns = (t_us - t0[:, None]) * 1e3 * timedf
+    n = x.shape[1]
+    return torch.cat([pos - p0[:, None, :], E[..., None], dt_ns[..., None], litf[..., None], timedf[..., None],
+                      p0[:, None, :].expand(-1, n, -1), torch.log1p(t0)[:, None, None].expand(-1, n, 1)], dim=-1)
+
+
 class DeepSetsRecon(nn.Module):
     """Permutation-invariant set→4-vector reconstruction.
 
@@ -92,20 +127,25 @@ class DeepSetsRecon(nn.Module):
                  context:        int = 128,
                  n_enc:          int = 3,
                  n_dec:          int = 2,
-                 pool:           str = "mean"):
+                 pool:           str = "mean",
+                 input_mode:     str = "raw"):
         super().__init__()
         self.n_det          = n_det
         self.input_features = input_features
         self.output_dim     = output_dim
         self.pool           = pool
+        # "raw": the encoder sees the 4 raw features; "reltime": reltime_features() first (9 features).
+        # Callers always pass the raw (B, n, 4) input either way.
+        self.input_mode     = input_mode
+        enc_in = RELTIME_FEATURES if input_mode == "reltime" else input_features
 
         pool_dim = hidden * 2 if pool == "maxmean" else hidden
-        self.encoder      = _mlp(input_features, hidden, hidden, n_enc)
+        self.encoder      = _mlp(enc_in, hidden, hidden, n_enc)
         self.context_proj = nn.Linear(pool_dim, context)
         self.decoder      = _mlp(context, hidden, output_dim, n_dec)
 
-        self.register_buffer("in_mean",  torch.zeros(input_features))
-        self.register_buffer("in_std",   torch.ones(input_features))
+        self.register_buffer("in_mean",  torch.zeros(enc_in))
+        self.register_buffer("in_std",   torch.ones(enc_in))
         self.register_buffer("out_mean", torch.zeros(output_dim))
         self.register_buffer("out_std",  torch.ones(output_dim))
 
@@ -123,7 +163,9 @@ class DeepSetsRecon(nn.Module):
         """Args: x of shape (B, n_det, input_features) in raw units.
         Returns: (B, output_dim) in raw primary-encoding units.
         """
-        x_n   = (x - self.in_mean) / self.in_std        # broadcast (input_features,)
+        if self.input_mode == "reltime":
+            x = reltime_features(x)
+        x_n   = (x - self.in_mean) / self.in_std        # broadcast (features,)
         h     = self.encoder(x_n)                        # (B, n_det, hidden)
         if self.pool == "maxmean":
             pooled = torch.cat([h.mean(dim=1), h.max(dim=1).values], dim=-1)  # (B, 2*hidden)
@@ -154,6 +196,7 @@ def build_recon_from_ckpt(ckpt: dict, n_det: int, device=None):
             n_enc=int(cfg.get("n_enc", 3)),
             n_dec=int(cfg.get("n_dec", 2)),
             pool=cfg.get("pool", "mean"),
+            input_mode=cfg.get("input_mode", "raw"),
         )
     else:
         model = Reconstruction(
