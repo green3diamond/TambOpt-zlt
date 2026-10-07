@@ -196,6 +196,11 @@ pages.append(table_page("Key layouts: zoo → relative-time recon", [
     "Grid N = 4 / 5 / 10 / 20 / 50 / 100 within 5°: 9.2 / 12.8 / 28.5 / 42.7 / 69.0 / 77.8% → 10.2 / 12.6 / 30.5 / 44.1 / 71.0 / 80.7%",
     "Ranking unchanged: even coverage (grid, ~3 km disk) still on top; cores and small clusters still far behind",
 ]))
+pages.append(page([ZC + "disks_vs_radius_reltime_lbfgs25_vs_zoo.png"], [
+    "Disks of 10 / 20 / 50 / 100 detectors centred on the plane; dashed = zoo recon, solid = relative-time recon",
+    "Peaks (relative-time), 10 / 20 / 50 / 100 det.: within 1° 2.4 / 5.7 / 10.3 / 14.4%, 2.5° 12 / 25 / 42 / 51%, 5° 30 / 53 / 76 / 83%",
+    "Zoo: 2.2 / 4.4 / 9.2 / 13.1%, 10 / 21 / 38 / 47%, 28 / 51 / 71 / 79% · higher at almost every radius and N",
+    "Same shape: every N still peaks at r ≈ 3 km (10 det. at 1.5 km); the 100-det. 1° peak moves from 4.5 to 3 km"]))
 pages.append(page([ZC + "lit_resolution_reltime_lbfgs25_vs_zoo.png"], [
     "Spread layouts: median error floor 2.62–2.69° → 2.41–2.47° (6–15 lit); 68% error 3.8–4.0° → 3.6–3.7°",
     "Within 1° at 6–12 lit: 12–14% → 15–16%; median error lower at every lit count from 2 to 29, same flat shape",

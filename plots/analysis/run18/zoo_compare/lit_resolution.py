@@ -22,6 +22,7 @@ n_ev = int(ev.max()) + 1
 EDGES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 30, 10 ** 9]
 LABS = ["0", "1", "2", "3", "4", "5", "6-7", "8-9", "10-12", "13-15", "16-19", "20-29", "30+"]
 rng = np.random.default_rng(0)
+YLIM_ANG, YLIM_F1 = (0.9, 20.0), (0.0, 18.0)          # shared with plot_res_compare.py
 BOOT = [np.bincount(rng.integers(0, n_ev, n_ev), minlength=n_ev) for _ in range(200)]
 
 
@@ -60,13 +61,13 @@ for g, r in res.items():
         ax.fill_between(x[ok], b[:, 0], b[:, 1], color=COL[g], alpha=0.15, lw=0)
     axs[2].bar(x[ok] + (-0.2 if g == "all" else 0.2), [r[i]["n_showers"] for i in ok], 0.38, color=COL[g], label=g)
 axs[0].axhline(1, color="#c23b6b", lw=1.2, ls=":"); axs[0].text(0, 1.05, " 1°", color="#c23b6b")
-axs[0].set(yscale="log", ylabel="angle error [deg]", title="Angular resolution vs lit detectors (median, 68%)")
-axs[1].set(ylabel="share within 1° [%]", title="Share within 1° (band: 16–84% over shower resamples)")
+axs[0].set(yscale="log", ylim=YLIM_ANG, ylabel="angle error [deg]", title="Angular resolution vs lit detectors (median, 68%)")
+axs[1].set(ylim=YLIM_F1, ylabel="share within 1° [%]", title="Share within 1° (band: 16–84% over shower resamples)")
 axs[2].set(ylabel="distinct showers in the bin (of 1,536)", title="How many different showers each bin holds")
 for ax in axs:
     ax.set_xticks(x); ax.set_xticklabels(LABS, rotation=45); ax.set_xlabel("detectors with ≥ 1 count")
     ax.grid(alpha=0.25, lw=0.5); ax.legend(frameon=False, fontsize=9)
-fig.suptitle(f"Zoo recon · {len(P['names'])} distinct layouts × {n_ev} held-out showers · spread = grids, optimized, "
+fig.suptitle(f"{sys.argv[1] if len(sys.argv) > 1 else 'Zoo'} recon · {len(P['names'])} distinct layouts × {n_ev} held-out showers · spread = grids, optimized, "
              "disks ≥ 2 km, 500 m clusters", fontsize=12.5)
 fig.tight_layout()
 fig.savefig(f"{Z}/lit_resolution{SUF}.png", dpi=120, facecolor="white", bbox_inches="tight")
