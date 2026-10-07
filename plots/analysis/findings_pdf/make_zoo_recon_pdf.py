@@ -131,7 +131,7 @@ pages.append(page([ZC + "disks_vs_radius.png"], [
     "Disks of 20 / 50 / 100 detectors centred on the plane, radius 0.1–12 km; solid = zoo recon, dashed = old recon",
     "Every curve peaks at r ≈ 3 km (the disk just spans the 6 km plane); only 100 det. within 1° peaks at 4.5 km (13.1%)",
     "Peaks (zoo): within 1° 4.4 / 9.2 / 13.1%, within 2.5° 21 / 38 / 47%, within 5° 51 / 71 / 79% for 20 / 50 / 100 det.",
-    "Zoo gains most for compact disks (≤ 0.5 km: +3–6 pts within 5°) and for disks wider than the plane"]))
+    "Zoo gains most for compact disks (≤ 0.5 km: +3–7 pts within 5°) and for disks wider than the plane"]))
 
 pages.append(page([ZC + "compare_detcount.png"], [
     "Grid with N detectors: zoo recon better at every N, most at small N (within 5°: N = 20 39 → 43%, N = 10 26 → 29%)",
