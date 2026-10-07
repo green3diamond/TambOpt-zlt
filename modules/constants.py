@@ -163,6 +163,9 @@ AZIMUTH_MAX  = 360.0 # degrees
 # a sibling run folder (e.g. a verbatim copy of Stage 0/1 output used to try a
 # different Stage 2/3/4 config) is a one-line change here.
 RUN_LOCATION = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/19_plane45S_12km_showerframe_400k"
+# TAMBOPT_RUN_LOCATION overrides it (with every folder derived below), e.g. to train on another run's
+# Stage 1 data from this branch. The geometry paths above are not touched.
+RUN_LOCATION = os.environ.get("TAMBOPT_RUN_LOCATION", RUN_LOCATION)
 SHOWER_CACHE   = os.path.join(RUN_LOCATION, "v6_run_00")
 
 # Generated figures (EDA PNGs, paper PDFs) live outside the repo — they are

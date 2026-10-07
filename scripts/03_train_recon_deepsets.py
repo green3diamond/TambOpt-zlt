@@ -73,6 +73,7 @@ OUTPUT_FOLDER = RECON_FOLDER + "_deepsets"
 # docstring. "sample" is the historical default; the CLI can override.
 RECON_INPUT   = "sample"     # "sample" | "kernel" | "mix"
 INPUT_MODE    = "raw"        # "raw" | "reltime" (DeepSetsRecon input transform, see recon.py)
+WEIGHT_DECAY  = 0.0          # > 0: AdamW with this decoupled weight decay (per step the weights shrink by LR * WEIGHT_DECAY)
 MIX_FRAC      = 0.5          # P(row uses kernel labels) when RECON_INPUT == "mix"
 
 # ── Architecture ─────────────────────────────────────────────────────────────
@@ -424,7 +425,7 @@ def _plot_curves(log, path: str, adam_epochs: int = 0,
 
 def main():
     global N_EPOCHS, LBFGS_MAX_ITER, ADAM_PATIENCE
-    global RECON_INPUT, MIX_FRAC, OUTPUT_FOLDER, INPUT_MODE
+    global RECON_INPUT, MIX_FRAC, OUTPUT_FOLDER, INPUT_MODE, WEIGHT_DECAY
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs",      type=int, default=N_EPOCHS)
     ap.add_argument("--adam-patience", type=int, default=ADAM_PATIENCE,
@@ -449,9 +450,12 @@ def main():
                     help="'reltime': positions relative to the first timed hit, linear dt in ns, lit (E > 0) "
                          "and timed (T > 0) flags, and the reference's absolute position/time "
                          "(recon.reltime_features)")
+    ap.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY,
+                    help="AdamW decoupled weight decay for the Adam phase (0 = plain Adam, as before)")
     args = ap.parse_args()
     RECON_INPUT, MIX_FRAC = args.recon_input, float(args.mix_frac)
     INPUT_MODE = args.input_mode
+    WEIGHT_DECAY = float(args.weight_decay)
     N_EPOCHS, LBFGS_MAX_ITER = int(args.epochs), int(args.lbfgs_iters)
     ADAM_PATIENCE = int(args.adam_patience)
     if args.out_suffix:
@@ -596,7 +600,9 @@ def main():
     n_params = sum(p.numel() for p in recon.parameters() if p.requires_grad)
     print(f"[model] DeepSetsRecon  params={n_params:,}")
 
-    optimizer = torch.optim.Adam(recon.parameters(), lr=LR)
+    optimizer = (torch.optim.AdamW(recon.parameters(), lr=LR, weight_decay=WEIGHT_DECAY) if WEIGHT_DECAY > 0
+                 else torch.optim.Adam(recon.parameters(), lr=LR))
+    print(f"[optim] {type(optimizer).__name__} lr={LR} weight_decay={WEIGHT_DECAY}")
 
     # gpu_requeue can preempt mid-training; recon_resume.pt lets the job
     # continue from the last RESUME_CKPT_INTERVAL-epoch checkpoint rather than
@@ -704,6 +710,7 @@ def main():
                 "best_epoch": best_epoch,
                 "config": dict(
                     batch_size=BATCH_SIZE, n_epochs=N_EPOCHS, adam_patience=ADAM_PATIENCE, lr=LR,
+                    weight_decay=WEIGHT_DECAY,
                     grad_clip=GRAD_CLIP, val_frac=VAL_FRAC, seed=SEED,
                     hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
                     recon_input=RECON_INPUT,
@@ -888,7 +895,7 @@ def main():
             "adam_best_val": adam_best_val,
             "adam_best_epoch": best_epoch,
             "config": dict(
-                batch_size=BATCH_SIZE, n_epochs=N_EPOCHS, lr=LR,
+                batch_size=BATCH_SIZE, n_epochs=N_EPOCHS, lr=LR, weight_decay=WEIGHT_DECAY,
                 grad_clip=GRAD_CLIP, val_frac=VAL_FRAC, seed=SEED,
                 lbfgs_lr=LBFGS_LR, lbfgs_max_iter=LBFGS_MAX_ITER,
                 lbfgs_history_size=LBFGS_HISTORY_SIZE,
