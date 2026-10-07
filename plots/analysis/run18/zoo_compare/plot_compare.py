@@ -79,7 +79,7 @@ h += [plt.Line2D([], [], color=GREY, marker="D", ls="", label="other N (grid_nN)
 axs[2].legend(handles=h, fontsize=9, frameon=False, loc="lower right")
 fig.suptitle("Every test layout, scored by both recons on the same 1,536 held-out showers (above the line = zoo better)",
              fontsize=13, color=INK)
-fig.tight_layout(); fig.savefig(os.path.join(Z, "compare_scatter.png"), dpi=120, facecolor="white")
+fig.tight_layout(); fig.savefig(os.path.join(Z, "compare_scatter.png"), dpi=120, facecolor="white", bbox_inches="tight")
 
 # 2. best per family and N
 fams = ["grid", "disk", "cluster", "core", "hybrid", "optimized"]
@@ -111,7 +111,7 @@ for i, th in enumerate((1, 5)):
             ax.set_ylabel(f"share within {th:g}° [%]")
 axs[0, 0].legend(frameon=False, fontsize=9)
 fig.suptitle("Best layout of each family: old recon vs zoo recon", fontsize=13, color=INK)
-fig.tight_layout(); fig.savefig(os.path.join(Z, "compare_best.png"), dpi=120, facecolor="white")
+fig.tight_layout(); fig.savefig(os.path.join(Z, "compare_best.png"), dpi=120, facecolor="white", bbox_inches="tight")
 json.dump({k: {t: dict(frac=v[0], layout=v[1]) for t, v in c.items()} for k, c in summary.items()},
           open(os.path.join(Z, "compare_summary.json"), "w"), indent=1)
 
@@ -126,7 +126,7 @@ for ax, (key, th) in zip(axs, (("good1_angle", 1), ("good25_angle", 2.5), ("good
            title=f"Grid with N detectors · within {th:g}°")
     ax.set_xticks(ns); ax.set_xticklabels([str(n) for n in ns]); ax.grid(alpha=0.25, lw=0.5)
 axs[0].legend(frameon=False)
-fig.tight_layout(); fig.savefig(os.path.join(Z, "compare_detcount.png"), dpi=120, facecolor="white")
+fig.tight_layout(); fig.savefig(os.path.join(Z, "compare_detcount.png"), dpi=120, facecolor="white", bbox_inches="tight")
 
 # console summary
 for th in THETAS:
