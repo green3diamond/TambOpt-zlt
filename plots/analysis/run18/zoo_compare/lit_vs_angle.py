@@ -68,8 +68,9 @@ clouds, B, _, prim = load_events(args.n_events, dev, m)
 kern = GS.CachedKernel(clouds, surface, dev, chunk=64, expected_primary=prim)
 E_true, th_t, ph_t = primary_to_physical_labels(prim)
 
-rows = {"lit": [], "lit5": [], "sum": [], "ang": [], "kind": [], "n": []}
-seen = set()
+rows = {"lit": [], "lit5": [], "sum": [], "ang": [], "kind": [], "n": [], "ev": [], "lay": []}
+seen, seen_xy = set(), set()
+names = []
 for s, f in LISTS.items():
     for line in open(f):
         if not line.strip():
@@ -80,6 +81,11 @@ for s, f in LISTS.items():
         seen.add(path)
         L = torch.load(path, map_location="cpu")
         e, n = torch.as_tensor(L["x"]).float().to(dev), torch.as_tensor(L["y"]).float().to(dev)
+        key = tuple(sorted(zip(np.round(e.cpu().numpy(), 1), np.round(n.cpu().numpy(), 1))))
+        if key in seen_xy:                       # same detector positions listed under another set
+            continue
+        seen_xy.add(key)
+        names.append(name)
         nd = e.numel()
         xy = torch.stack([e, n], -1)[None].expand(B, -1, -1)
         with torch.no_grad():
@@ -96,11 +102,16 @@ for s, f in LISTS.items():
         rows["ang"].append(a.cpu().numpy())
         rows["kind"] += [kind(name)] * B
         rows["n"] += [nd] * B
+        rows["ev"].append(np.arange(B))
+        rows["lay"] += [len(names) - 1] * B
         print(f"[{name:28s}] n={nd:3d} lit med {np.median(rows['lit'][-1]):.0f}  within 1° {np.mean(rows['ang'][-1] < 1):.3f}",
               flush=True)
 lit, lit5, tot, ang = (np.concatenate(rows[k]) for k in ("lit", "lit5", "sum", "ang"))
 kinds, ns = np.array(rows["kind"]), np.array(rows["n"])
-print(f"{len(seen)} layouts, {ang.size} shower-layout pairs")
+evs, lays = np.concatenate(rows["ev"]), np.array(rows["lay"])
+np.savez(f"{Z}/lit_vs_angle_pairs.npz", lit=lit, lit5=lit5, tot=tot, ang=ang, kind=kinds, n=ns, ev=evs, lay=lays,
+         names=np.array(names))
+print(f"{len(names)} distinct layouts, {ang.size} shower-layout pairs")
 
 BINS = list(range(0, 13)) + [15, 20, 30]
 lab_bins = [str(b) if b < 12 else f"{b}+" for b in range(0, 12)] + ["12-14", "15-19", "20-29", "30+"]
@@ -154,7 +165,7 @@ ax.bar(xs, [n for _, n in binned(lit, np.ones_like(ang, bool), 1)], color="#9aa4
 ax.set_xticks(xs); ax.set_xticklabels(lab_bins, rotation=45, fontsize=8)
 ax.set(xlabel="detectors with ≥ 1 count", ylabel="shower-layout pairs", title="How often (all layouts pooled)")
 ax.grid(alpha=0.25, lw=0.5, axis="y")
-fig.suptitle(f"Zoo recon · {len(seen)} test layouts × {B} held-out showers pooled · spread = grids, optimized, disks "
+fig.suptitle(f"Zoo recon · {len(names)} distinct test layouts × {B} held-out showers pooled · spread = grids, optimized, disks "
              f"≥ 2 km, 500 m clusters; compact = cores, disks ≤ 500 m, clusters ≤ 200 m", fontsize=12.5)
 fig.tight_layout()
 fig.savefig(f"{Z}/lit_vs_angle.png", dpi=120, facecolor="white", bbox_inches="tight")
