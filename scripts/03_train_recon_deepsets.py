@@ -112,7 +112,7 @@ LBFGS_CHUNK        = 4_096
 # the 7.7M-row corpus (job 45345560) a closure call costs ~60-85s, and iters
 # 200-321 bought 0.00003 val for ~3h while train loss kept falling -- grinding
 # into the train set, not learning.
-LBFGS_PATIENCE      = 150
+LBFGS_PATIENCE      = 50
 # The sweep is driven as repeated bounded .step() calls of this many iterations
 # rather than one step(max_iter=LBFGS_MAX_ITER), so a gpu_requeue preemption
 # resumes with the Hessian history intact instead of restarting cold.
