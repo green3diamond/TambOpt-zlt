@@ -213,6 +213,13 @@ pages.append(page([ZC + "lit_geometry.png"], [
     "Mean distance 600–1200 m and baseline ≥ 800 m are best; within 1° vs > 5° showers: baseline 1.1 km vs 0.7 km, NN 278 vs 226 m",
     "Above ~800 m spacing too few lit detectors sit in one footprint (~900 m across): the optimum spacing is ~300–600 m"]))
 
+pages.append(section_page("Test layouts",
+                          "The 112 distinct layouts behind the lit-detector slides, with their scores (relative-time recon)"))
+for _k in range(1, 6):
+    pages.append(page([ZC + f"layout_catalog_p{_k}.png"], [
+        "Per panel: share within 1° and 5°, median angle error; per shower: lit detectors (≥ 1 count), their nearest-neighbour "
+        "spacing and baseline (medians; spacing/baseline over showers with ≥ 2 lit)"]))
+
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
 print(f"[write] {OUT}  ({len(pages)} pages)")
