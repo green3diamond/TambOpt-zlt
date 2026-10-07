@@ -14,8 +14,10 @@ Geometry (site-local ENU, metres, origin = Malata's `location` so every frame ma
 
 Primaries (tau-loader schema, modules/showers/tau.py: position/direction (3,N), energy, pdg):
     one 6-D Latin hypercube per event:
-        decay point in the box in front of the plane: along f [500, 500 + side], along g
+        decay point in the box in front of the plane: along f [500, 500 + depth] (--box-depth, default side), along g
         +-side/2, Up [0, side] m
+    Run 19: --side 12000 --box-depth 6000 --max-dist 11500: a 12 km deep box put half the decays farther than
+    the 12 km (24 planes x 500 m) the C8 showers are recorded over; with the 6 km box 24% still were.
         target on the plane: along strike [0, side] m, down dip [0, side] m
         log10(E / GeV) in [5, 7]
     direction = unit(target - decay). Rejected (decay redrawn): decay-target distance < --min-dist,
@@ -50,8 +52,9 @@ FACINGS = {"east": (1.0, 0.0), "south": (0.0, -1.0), "north": (0.0, 1.0), "west"
 class Plane:
     """The tilted square plane and the decay box in front of it."""
 
-    def __init__(self, side, facing):
+    def __init__(self, side, facing, box_depth=None):
         self.side = float(side)
+        self.depth = float(box_depth) if box_depth else self.side   # decay box extent along f (run 19: 6 km)
         self.f = np.array(FACINGS[facing])                      # horizontal outward normal (E, N)
         self.g = np.array([-self.f[1], self.f[0]])              # strike (E, N)
         self.D = self.side * math.cos(TILT)                     # horizontal extent of the dip
@@ -64,8 +67,8 @@ class Plane:
         return np.concatenate([h, up[..., None]], axis=-1)
 
     def box(self, u):
-        """(n, 3) uniform u -> decay points: along f [500, 500 + side], along g +-side/2, Up [0, side]."""
-        a = 500.0 + u[:, 0] * self.side
+        """(n, 3) uniform u -> decay points: along f [500, 500 + depth], along g +-side/2, Up [0, side]."""
+        a = 500.0 + u[:, 0] * self.depth
         b = (u[:, 1] - 0.5) * self.side
         h = a[:, None] * self.f + b[:, None] * self.g
         return np.concatenate([h, (u[:, 2] * self.side)[:, None]], axis=1)
@@ -112,13 +115,13 @@ def write_geometry(path, n_grid, plane, group):
     return verts_enu
 
 
-def _valid(decay, target, min_dist, zen_lo, zen_hi, min_angle_b):
+def _valid(decay, target, min_dist, zen_lo, zen_hi, min_angle_b, max_dist=np.inf):
     v = target - decay
     dist = np.linalg.norm(v, axis=1)
     u = v / np.maximum(dist, 1e-9)[:, None]
     zen = np.degrees(np.arccos(np.clip(u[:, 2], -1, 1)))
     ang_b = np.degrees(np.arccos(np.clip(np.abs(u[:, 0]), 0, 1)))     # 3-D angle to the +-x axis
-    return (dist >= min_dist) & (zen >= zen_lo) & (zen <= zen_hi) & (ang_b >= min_angle_b)
+    return (dist >= min_dist) & (dist <= max_dist) & (zen >= zen_lo) & (zen <= zen_hi) & (ang_b >= min_angle_b)
 
 
 def _draw(plane, n, seed, cuts, max_redraw=200):
@@ -174,20 +177,25 @@ def main():
                     help="vertices per plane side (default: ~136 m spacing, 23 at 3 km, 45 at 6 km)")
     ap.add_argument("--min-dist", type=float, default=1000.0)
     ap.add_argument("--zenith", type=float, nargs=2, default=[60.0, 120.0])
+    ap.add_argument("--max-dist", type=float, default=float("inf"),
+                    help="redraw decays farther than this from their target [m] (run 19: 11500; C8 covers 12 km)")
+    ap.add_argument("--box-depth", type=float, default=None,
+                    help="decay box extent in front of the plane [m] (default: --side). Run 19: 6000, as run 18, "
+                         "so the decay-target distance stays within the 12 km the C8 showers cover")
     ap.add_argument("--min-angle-b", type=float, default=0.0,
                     help="reject directions within this 3-D angle [deg] of the +-x axis (C8 field)")
     args = ap.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
-    plane = Plane(args.side, args.facing)
+    plane = Plane(args.side, args.facing, args.box_depth)
     n_grid = args.n_grid or int(round(args.side / 136.4)) + 1
-    cuts = (args.min_dist, args.zenith[0], args.zenith[1], args.min_angle_b)
+    cuts = (args.min_dist, args.zenith[0], args.zenith[1], args.min_angle_b, args.max_dist)
 
     verts = write_geometry(os.path.join(args.out_dir, f"{args.group}.h5"), n_grid, plane, args.group)
     decay, direc, log_e, target, dist, acc, n_top = sample_primaries(plane, args.n_events, args.seed, cuts)
     # checks
     assert len(log_e) == args.n_events
     assert np.allclose(plane.height_above(target), 0.0, atol=1e-6), "targets off the plane"
-    assert (dist >= args.min_dist).all() and np.allclose(np.linalg.norm(direc, axis=1), 1.0)
+    assert (dist >= args.min_dist).all() and (dist <= args.max_dist).all() and np.allclose(np.linalg.norm(direc, axis=1), 1.0)
     assert (plane.height_above(decay) > 0).all(), "decay behind the plane"
     zen = np.degrees(np.arccos(direc[:, 2]))
     ang_b = np.degrees(np.arccos(np.abs(direc[:, 0])))
@@ -231,7 +239,7 @@ def main():
     for a in ax.ravel():
         a.grid(alpha=0.25, lw=0.5)
     fig.suptitle(f"Plane primaries: {args.side / 1000:g} km plane facing {args.facing}, {len(log_e)} events, LHS, "
-                 f"min distance {args.min_dist:.0f} m, zenith {args.zenith[0]:.0f}-{args.zenith[1]:.0f} deg, "
+                 f"distance {args.min_dist:.0f}-{args.max_dist:.0f} m, zenith {args.zenith[0]:.0f}-{args.zenith[1]:.0f} deg, "
                  f">= {args.min_angle_b:g} deg from the x axis")
     fig.tight_layout()
     fig.savefig(os.path.join(args.out_dir, "plane_primaries.png"), dpi=110)

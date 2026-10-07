@@ -195,8 +195,8 @@ _ALL_STRATEGIES = {
     "latin_hypercube_b": ("layout_latin_hypercube", dict()),
     "clusters_a":        ("layout_clusters",        dict()),
     "clusters_b":        ("layout_clusters",        dict()),
-    "disk_a":            ("layout_disk",            dict()),
-    "grid_patch_a":      ("layout_grid_patch",      dict()),
+    "disk_a":            ("layout_disk",            dict(r_max=8000.0)),      # run 19: 12 km plane (run 18: 4000)
+    "grid_patch_a":      ("layout_grid_patch",      dict(side_max=12000.0)),  # run 19: 12 km plane (run 18: 6000)
 }
 
 # The strategies a dataset build runs, IN ORDER. Position here IS the
