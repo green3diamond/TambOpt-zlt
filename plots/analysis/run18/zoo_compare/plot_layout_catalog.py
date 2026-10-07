@@ -3,7 +3,7 @@
 Each panel: the detector positions on the 6 km plane, and (relative-time recon, the same 1,536 held-out showers,
 from lit_geometry_pairs.npz) the share within 1 and 5 deg, the median angle error, and per shower the median
 number of lit detectors (>= 1 count), their median nearest-neighbour spacing and their baseline (largest distance).
-Ranked best to worst by the share within 1 deg (frame colour = family). Writes layout_catalog_p<k>.png
+Grouped by detector count (one page each for 100, 50, 20; 25/10/5/4 share a page), ranked best to worst\nwithin each count by the share within 1 deg (frame colour = family). Writes layout_catalog_p<k>.png
 (45 panels per page, shaped like a PDF slide).
 """
 import os
@@ -69,17 +69,27 @@ lit, ang, lay, nn, base = P["lit"], P["ang"], P["lay"], P["nn"], P["base"]
 f1 = {x: float(np.mean(ang[lay == i] < 1)) for i, x in enumerate(names)}
 f5 = {x: float(np.mean(ang[lay == i] < 5)) for i, x in enumerate(names)}
 # Ranked best to worst by the share of showers within 1 deg (ties: by share within 5 deg).
-order = sorted(names, key=lambda x: (-f1[x], -f5[x], x))
+def ranked(group):
+    """Best to worst by the share within 1 deg (ties: share within 5 deg)."""
+    return sorted(group, key=lambda x: (-f1[x], -f5[x], x))
+
+
+# One page per detector count (100, 50, 20); the small counts (25, 10, 5, 4) share a page.
+# Ranks are within each detector count.
+counts = sorted({ndet(x) for x in names}, reverse=True)
+PAGES = [[c] for c in counts if c >= 20 and c != 25] + [[c for c in counts if c < 20 or c == 25]]
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
                      layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
 mesh = np.asarray(m.centroids_ENU) / 1e3
 ROWS, COLS = 5, 9
 PER = ROWS * COLS
-for page in range(0, len(order), PER):
+for pg, group in enumerate(PAGES, start=1):
+    items = [(r, nm) for c in group for r, nm in enumerate(ranked([x for x in names if ndet(x) == c]), start=1)]
+    assert len(items) <= PER, (group, len(items))
     fig, axs = plt.subplots(ROWS, COLS, figsize=(33.5, 18))      # the slide's shape (3020 x 1620 px)
     for ax in axs.flat:
         ax.axis("off")
-    for rank, (ax, nm) in enumerate(zip(axs.flat, order[page:page + PER]), start=page + 1):
+    for ax, (rank, nm) in zip(axs.flat, items):
         k = lay == names.index(nm)
         a, l = ang[k], lit[k]
         e, n = paths[nm]
@@ -88,17 +98,18 @@ for page in range(0, len(order), PER):
         ax.scatter(e / 1e3, n / 1e3, s=9 if ndet(nm) <= 50 else 6, color=COL[family(nm)], lw=0)
         ax.set_xlim(mesh[:, 0].min() - 0.2, mesh[:, 0].max() + 0.2); ax.set_ylim(mesh[:, 1].min() - 0.2, mesh[:, 1].max() + 0.2)
         ax.set_aspect("equal")
-        ax.set_title(f"#{rank}  {nm}  ·  {ndet(nm)} det.\n"
+        ax.set_title(f"#{rank} of {ndet(nm)} det.  ·  {nm}\n"
                      f"1°: {100 * np.mean(a < 1):.1f}%   5°: {100 * np.mean(a < 5):.1f}%   median {np.median(a):.2f}°\n"
                      f"lit {np.median(l):.0f}   NN {np.nanmedian(nn[k]):.0f} m   baseline {np.nanmedian(base[k]):.0f} m",
                      fontsize=10, color="#1f2328")
         for sp in ax.spines.values():
             sp.set_color(COL[family(nm)]); sp.set_linewidth(1.2)
-    fig.suptitle(f"Test layouts ranked by share of showers within 1°: #{page + 1}–{min(page + PER, len(order))} of {len(order)} · "
-                 "relative-time recon, 1,536 held-out showers · frame: grid blue, disk green, cluster orange, core red, "
-                 "hybrid purple, optimized grey\nlit = median detectors with ≥ 1 count per shower · NN spacing / baseline = "
-                 "medians over showers with ≥ 2 lit", fontsize=17)
+    lab = " / ".join(str(c) for c in group)
+    fig.suptitle(f"{lab} detectors: test layouts ranked by share of showers within 1° (rank within each detector count) · "
+                 "relative-time recon, 1,536 held-out showers\nframe: grid blue, disk green, cluster orange, core red, "
+                 "hybrid purple, optimized grey · lit = median detectors with ≥ 1 count per shower · NN spacing / baseline "
+                 "= medians over showers with ≥ 2 lit", fontsize=17)
     fig.tight_layout(rect=(0, 0, 1, 0.95), h_pad=0.6, w_pad=0.3)
-    out = f"{Z}/layout_catalog_p{page // PER + 1}.png"
+    out = f"{Z}/layout_catalog_p{pg}.png"
     fig.savefig(out, dpi=80, facecolor="white"); plt.close(fig)
     print("[write]", out)

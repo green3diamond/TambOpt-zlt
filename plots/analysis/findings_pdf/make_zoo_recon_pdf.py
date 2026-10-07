@@ -214,7 +214,7 @@ pages.append(page([ZC + "lit_geometry.png"], [
     "Above ~800 m spacing too few lit detectors sit in one footprint (~900 m across): the optimum spacing is ~300–600 m"]))
 
 pages.append(section_page("Test layouts",
-                          "The 112 distinct layouts ranked best to worst by the share of showers within 1° (relative-time recon)"))
+                          "The 112 distinct layouts by detector count, ranked best to worst by the share within 1° (relative-time recon)"))
 
 
 def full_page(path):
