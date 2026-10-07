@@ -164,6 +164,44 @@ pages.append(text_page("Conclusions", [
     "Next: a direct timing-plane fit on lit detectors (is 2.6° the recon or the signal?); uneven, Malata-like illumination",
 ]))
 
+# ── Relative-time recon (snapshot of the running job) ───────────────────────
+pages.append(section_page("Relative-time recon",
+                          "Same zoo data and training; new input encoding · snapshot at L-BFGS step 25 (job still running)"))
+pages.append(text_page("What changed: the recon's input", [
+    "Old input per detector: x, y (absolute), log1p E, log1p(t in µs since the decay); unlit detectors had t = 0",
+    "     → a 1° tilt over 1 km (~60 ns) was ~0.005 in log units on a 3–30 µs offset; t = 0 read as a very early hit",
+    "New input (9 features, built inside the model, callers unchanged; branch run18-reltime-recon):",
+    "     dx, dy, dt relative to the reference detector (dt linear, ns) · log1p E · lit (E > 0) · timed (T > 0)",
+    "     · reference x0, y0, log1p(t0) broadcast to every detector, so nothing absolute is lost",
+    "Reference = earliest timed detector (else brightest lit, else array centre); untimed detectors get dt = 0",
+    "Most lit detectors have no time: the kernel times a detector only if one point clears HIT_DEPOSIT_MIN",
+    "     (training rows: 36% of slots have E > 0, 5.6% have a time)",
+    "Same zoo dataset (9 layout types), model size, loss, Adam (patience 50) and L-BFGS as the zoo recon",
+    "Val loss: Adam best 0.0788 at epoch 43 (zoo: 0.0908 at 167); L-BFGS step 25: 0.0782 (zoo final: 0.0893)",
+]))
+pages.append(page([ZC + "compare_scatter_reltime_lbfgs25_vs_zoo.png"], [
+    "Same 129 test layouts and 1,536 held-out showers; x = zoo recon, y = relative-time recon (snapshot)",
+    "Better on 84% of layouts within 1° (median +0.5 pts), 94% within 2.5° (+2.3), 96% within 5° (+3.5)",
+    "Median angle error per layout: −0.56° (median change); largest gains for optimized, clusters and cores"]))
+pages.append(table_page("Key layouts: zoo → relative-time recon", [
+    "layout                 within 1°      within 2.5°    within 5°      median error",
+    "grid (100)             12.3 → 13.9    47.4 → 50.9    77.8 → 80.7    2.65° → 2.45°",
+    "disk 3 km (100)        12.0 → 14.4    46.7 → 50.9    78.8 → 82.8    2.68° → 2.45°",
+    "disk 4.5 km (100)      13.1 → 12.4    46.6 → 49.0    76.9 → 81.6    2.67° → 2.55°",
+    "clusters 20×5, 500 m   9.9 → 12.0     39.1 → 43.0    72.1 → 74.7    3.13° → 2.95°",
+    "core 500 m (100)       1.7 → 2.4      9.2 → 11.3     24.7 → 30.3    10.1° → 8.6°",
+    "grid 50                7.3 → 8.8      32.7 → 37.1    66.9 → 70.1    3.58° → 3.26°",
+    "grid 20                3.1 → 2.8      15.0 → 16.4    40.6 → 41.6    6.19° → 6.07°",
+], [
+    "Grid N = 4 / 5 / 10 / 20 / 50 / 100 within 5°: 9.2 / 12.8 / 28.5 / 42.7 / 69.0 / 77.8% → 10.2 / 12.6 / 30.5 / 44.1 / 71.0 / 80.7%",
+    "Ranking unchanged: even coverage (grid, ~3 km disk) still on top; cores and small clusters still far behind",
+]))
+pages.append(page([ZC + "lit_resolution_reltime_lbfgs25_vs_zoo.png"], [
+    "Spread layouts: median error floor 2.62–2.69° → 2.41–2.47° (6–15 lit); 68% error 3.8–4.0° → 3.6–3.7°",
+    "Within 1° at 6–12 lit: 12–14% → 15–16%; median error lower at every lit count from 2 to 29, same flat shape",
+    "A real but modest gain (~0.2° on the median): the encoding was part of the limit, not all of it",
+    "Final scores after L-BFGS finishes; next candidates: angle loss, attention over detector pairs, timing-plane fit"]))
+
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
 print(f"[write] {OUT}  ({len(pages)} pages)")

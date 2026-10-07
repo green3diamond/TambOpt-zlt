@@ -7,6 +7,7 @@ bin). Also the number of distinct showers per bin. Writes lit_resolution.png and
 """
 import json
 import os
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -14,7 +15,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 Z = os.path.dirname(os.path.abspath(__file__))
-P = np.load(f"{Z}/lit_vs_angle_pairs.npz")
+SUF = f"_{sys.argv[1]}" if len(sys.argv) > 1 else ""      # e.g. reltime_lbfgs25 (lit_vs_angle.py --tag)
+P = np.load(f"{Z}/lit_vs_angle_pairs{SUF}.npz")
 lit, ang, kind, ev = P["lit"], P["ang"], P["kind"], P["ev"]
 n_ev = int(ev.max()) + 1
 EDGES = [0, 1, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 30, 10 ** 9]
@@ -67,12 +69,12 @@ for ax in axs:
 fig.suptitle(f"Zoo recon · {len(P['names'])} distinct layouts × {n_ev} held-out showers · spread = grids, optimized, "
              "disks ≥ 2 km, 500 m clusters", fontsize=12.5)
 fig.tight_layout()
-fig.savefig(f"{Z}/lit_resolution.png", dpi=120, facecolor="white", bbox_inches="tight")
-json.dump(dict(bins=LABS, **res), open(f"{Z}/lit_resolution.json", "w"), indent=1)
+fig.savefig(f"{Z}/lit_resolution{SUF}.png", dpi=120, facecolor="white", bbox_inches="tight")
+json.dump(dict(bins=LABS, **res), open(f"{Z}/lit_resolution{SUF}.json", "w"), indent=1)
 for g, r in res.items():
     print(g)
     for l, s in zip(LABS, r):
         if s:
             print(f"  {l:>6}: median {s['med']:5.2f}° [{s['med_band'][0]:.2f}-{s['med_band'][1]:.2f}]  68% {s['p68']:5.2f}°  "
                   f"within 1° {100 * s['f1']:4.1f}%  showers {s['n_showers']:4d}  pairs {s['n_pairs']}")
-print("[write] lit_resolution.png lit_resolution.json")
+print(f"[write] lit_resolution{SUF}.png lit_resolution{SUF}.json")

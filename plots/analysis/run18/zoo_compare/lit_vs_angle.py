@@ -39,7 +39,9 @@ R18 = os.path.dirname(D)
 ap = argparse.ArgumentParser()
 ap.add_argument("--recon-dir", default=os.path.join(R18, "test_v6_run_03_recentered_deepsets_zoo"))
 ap.add_argument("--n-events", type=int, default=1536)
+ap.add_argument("--tag", default="", help="suffix for the output files (default: none = the zoo recon)")
 args = ap.parse_args()
+SUF = f"_{args.tag}" if args.tag else ""
 
 LISTS = {"core_test_ndet": f"{D}/core_test_ndet/layouts.txt", "clusters": f"{D}/clusters/layouts.txt",
          "angleonly": f"{Z}/layouts_angleonly.txt", "disks_n10": f"{Z}/layouts_disks_n10.txt"}
@@ -109,7 +111,7 @@ for s, f in LISTS.items():
 lit, lit5, tot, ang = (np.concatenate(rows[k]) for k in ("lit", "lit5", "sum", "ang"))
 kinds, ns = np.array(rows["kind"]), np.array(rows["n"])
 evs, lays = np.concatenate(rows["ev"]), np.array(rows["lay"])
-np.savez(f"{Z}/lit_vs_angle_pairs.npz", lit=lit, lit5=lit5, tot=tot, ang=ang, kind=kinds, n=ns, ev=evs, lay=lays,
+np.savez(f"{Z}/lit_vs_angle_pairs{SUF}.npz", lit=lit, lit5=lit5, tot=tot, ang=ang, kind=kinds, n=ns, ev=evs, lay=lays,
          names=np.array(names))
 print(f"{len(names)} distinct layouts, {ang.size} shower-layout pairs")
 
@@ -168,9 +170,9 @@ ax.grid(alpha=0.25, lw=0.5, axis="y")
 fig.suptitle(f"Zoo recon · {len(names)} distinct test layouts × {B} held-out showers pooled · spread = grids, optimized, disks "
              f"≥ 2 km, 500 m clusters; compact = cores, disks ≤ 500 m, clusters ≤ 200 m", fontsize=12.5)
 fig.tight_layout()
-fig.savefig(f"{Z}/lit_vs_angle.png", dpi=120, facecolor="white", bbox_inches="tight")
+fig.savefig(f"{Z}/lit_vs_angle{SUF}.png", dpi=120, facecolor="white", bbox_inches="tight")
 json.dump({"bins": lab_bins, "res": {k: [[None if np.isnan(v) else v, c] for v, c in b] for k, b in res.items()}},
-          open(f"{Z}/lit_vs_angle.json", "w"), indent=1)
+          open(f"{Z}/lit_vs_angle{SUF}.json", "w"), indent=1)
 for th in (1, 2.5, 5):
     print(f"within {th:g}°: " + "  ".join(f"{l}:{100 * v:.0f}%" for l, (v, _) in zip(lab_bins, res[f'all|{th:g}'])
                                          if not np.isnan(v)))
