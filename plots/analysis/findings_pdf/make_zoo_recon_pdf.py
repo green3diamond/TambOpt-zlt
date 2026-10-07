@@ -122,6 +122,11 @@ pages.append(page([ZC + "compare_best.png"], [
     "100 det. within 1°: grid 12.3%, disk 4.5 km 13.1%, optimized 13.1%, best cluster 9.9%, best core 1.7%",
     "20 det. within 5°: grid 35.6 → 40.6%, 3 km disk 46.0 → 50.6%, best cluster 43.4 → 47.5%"]))
 
+pages.append(page([ZC + "best_layouts_1deg.png"], [
+    "The layouts behind the previous page, within 1°: zoo recon's best per family in blue, old recon's best in grey if different",
+    "The winners are the spread-out members of each family (500 m clusters, widest disks, cores with a wide halo)"]))
+pages.append(page([ZC + "best_layouts_5deg.png"], ["Same, within 5°"]))
+
 pages.append(page([ZC + "compare_detcount.png"], [
     "Grid with N detectors: zoo recon better at every N, most at small N (within 5°: N = 20 39 → 43%, N = 10 26 → 29%)",
     "At 100 detectors almost the same (within 5° 76.8 → 77.8%, within 1° 12.2 → 12.3%)"]))
