@@ -127,6 +127,12 @@ pages.append(page([ZC + "best_layouts_1deg.png"], [
     "The winners are the spread-out members of each family (500 m clusters, widest disks, cores with a wide halo)"]))
 pages.append(page([ZC + "best_layouts_5deg.png"], ["Same, within 5°"]))
 
+pages.append(page([ZC + "disks_vs_radius.png"], [
+    "Disks of 20 / 50 / 100 detectors centred on the plane, radius 0.1–12 km; solid = zoo recon, dashed = old recon",
+    "Every curve peaks at r ≈ 3 km (the disk just spans the 6 km plane); only 100 det. within 1° peaks at 4.5 km (13.1%)",
+    "Peaks (zoo): within 1° 4.4 / 9.2 / 13.1%, within 2.5° 21 / 38 / 47%, within 5° 51 / 71 / 79% for 20 / 50 / 100 det.",
+    "Zoo gains most for compact disks (≤ 0.5 km: +3–6 pts within 5°) and for disks wider than the plane"]))
+
 pages.append(page([ZC + "compare_detcount.png"], [
     "Grid with N detectors: zoo recon better at every N, most at small N (within 5°: N = 20 39 → 43%, N = 10 26 → 29%)",
     "At 100 detectors almost the same (within 5° 76.8 → 77.8%, within 1° 12.2 → 12.3%)"]))
