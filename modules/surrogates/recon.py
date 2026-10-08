@@ -7,8 +7,11 @@ denormalization, same `set_normalization()` contract and buffer names.
 `DeepSetsRecon` is the permutation-equivariant version Step 3 trains.
 """
 
+import math
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..constants import N_DETECTORS
 from .blocks import _mlp
@@ -176,6 +179,101 @@ class DeepSetsRecon(nn.Module):
         return out_n * self.out_std + self.out_mean
 
 
+PAIR_FEATURES = 6
+
+
+def pair_features(x: torch.Tensor) -> torch.Tensor:
+    """(B, n, 4) raw [x, y, log1p E, log1p(t * 1e6)] -> (B, n, n, 6), [b, i, j] = detector j relative to i:
+    dx, dy, dist [km], dt [us] (0 unless both timed), both_timed, d log1p E."""
+    pos, E, T = x[..., :2], x[..., 2], x[..., 3]
+    timed = (T > 0).to(x.dtype)
+    t_us = torch.expm1(T.clamp(min=0.0))
+    d = (pos[:, None, :, :] - pos[:, :, None, :]) / 1000.0
+    dist = (d.pow(2).sum(-1) + 1e-6).sqrt()
+    both = timed[:, :, None] * timed[:, None, :]
+    dt = (t_us[:, None, :] - t_us[:, :, None]) * both
+    dE = E[:, None, :] - E[:, :, None]
+    return torch.stack([d[..., 0], d[..., 1], dist, dt, both, dE], dim=-1)
+
+
+class _PairBiasBlock(nn.Module):
+    """Pre-LN self-attention + FFN; `bias` (B, heads, n, n) is added to the attention logits."""
+
+    def __init__(self, d: int, heads: int):
+        super().__init__()
+        self.heads = heads
+        self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
+        self.qkv, self.out = nn.Linear(d, 3 * d), nn.Linear(d, d)
+        self.ffn = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+
+    def forward(self, z, bias):
+        B, n, d = z.shape
+        q, k, v = self.qkv(self.ln1(z)).view(B, n, 3, self.heads, d // self.heads).permute(2, 0, 3, 1, 4)
+        a = F.scaled_dot_product_attention(q, k, v, attn_mask=bias)              # (B, heads, n, d/heads)
+        z = z + self.out(a.transpose(1, 2).reshape(B, n, d))
+        return z + self.ffn(self.ln2(z))
+
+
+class SetTransformerRecon(nn.Module):
+    """DeepSetsRecon with attention between detectors before the pool.
+
+    token_i = encoder(features_i)                       as DeepSetsRecon (reltime_features by default)
+    bias_ij = pair_mlp(pair_features_ij) + log w_j      per head; w_j = soft "hit" weight from E_j
+    z       = n_blocks x [attention(z, bias) + FFN]     no positional encoding: permutation-equivariant
+    c       = context_proj([sum w z / sum w, max(z + log w)])
+    out     = decoder(c)
+
+    Detectors below ~hit_e_min counts get w -> 0 (log w >= -30): they are not attended to and not
+    pooled. Everything is smooth in x, y. Input: (B, n_det, 4) raw, as DeepSetsRecon.
+    """
+
+    def __init__(self,
+                 n_det:          int = N_DETECTORS,
+                 input_features: int = 4,
+                 output_dim:     int = 4,
+                 hidden:         int = 256,
+                 context:        int = 128,
+                 n_enc:          int = 4,
+                 n_dec:          int = 4,
+                 d_model:        int = 128,
+                 n_heads:        int = 4,
+                 n_blocks:       int = 3,
+                 pair_hidden:    int = 32,
+                 hit_e_min:      float = 0.1,
+                 hit_tau:        float = 0.5,
+                 input_mode:     str = "reltime"):
+        super().__init__()
+        self.n_det, self.input_features, self.output_dim = n_det, input_features, output_dim
+        self.n_heads, self.hit_e_min, self.hit_tau, self.input_mode = n_heads, hit_e_min, hit_tau, input_mode
+        enc_in = RELTIME_FEATURES if input_mode == "reltime" else input_features
+        self.encoder      = _mlp(enc_in, hidden, d_model, n_enc)
+        self.pair_mlp     = _mlp(PAIR_FEATURES, pair_hidden, n_heads, 2)
+        self.blocks       = nn.ModuleList(_PairBiasBlock(d_model, n_heads) for _ in range(n_blocks))
+        self.context_proj = nn.Linear(2 * d_model, context)
+        self.decoder      = _mlp(context, hidden, output_dim, n_dec)
+
+        self.register_buffer("in_mean",  torch.zeros(enc_in))
+        self.register_buffer("in_std",   torch.ones(enc_in))
+        self.register_buffer("out_mean", torch.zeros(output_dim))
+        self.register_buffer("out_std",  torch.ones(output_dim))
+
+    set_normalization = DeepSetsRecon.set_normalization
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Soft hit weight on log(counts): ~1 above hit_e_min, 1/2 at it, -> 0 below (hit_tau in e-folds of E).
+        log_e = torch.log(torch.expm1(x[..., 2].clamp(min=0.0)) + 1e-12)
+        logw = F.logsigmoid((log_e - math.log(self.hit_e_min)) / self.hit_tau).clamp(min=-30.0)          # (B, n)
+        f = reltime_features(x) if self.input_mode == "reltime" else x
+        z = self.encoder((f - self.in_mean) / self.in_std)                                # (B, n, d)
+        bias = self.pair_mlp(pair_features(x)).permute(0, 3, 1, 2) + logw[:, None, None, :]   # (B, h, n, n)
+        for blk in self.blocks:
+            z = blk(z, bias)
+        w = logw.exp()[..., None]
+        pooled = torch.cat([(w * z).sum(1) / w.sum(1).clamp(min=1e-6), (z + logw[..., None]).amax(1)], dim=-1)
+        out_n = self.decoder(self.context_proj(pooled))
+        return out_n * self.out_std + self.out_mean
+
+
 def build_recon_from_ckpt(ckpt: dict, n_det: int, device=None):
     """Polymorphic recon loader — dispatches on ckpt["config"]["model_type"].
 
@@ -197,6 +295,14 @@ def build_recon_from_ckpt(ckpt: dict, n_det: int, device=None):
             n_dec=int(cfg.get("n_dec", 2)),
             pool=cfg.get("pool", "mean"),
             input_mode=cfg.get("input_mode", "raw"),
+        )
+    elif mtype == "settf":
+        model = SetTransformerRecon(
+            n_det=n_det_ckpt, input_features=input_features,
+            hidden=int(cfg["hidden"]), context=int(cfg["context"]), n_enc=int(cfg["n_enc"]), n_dec=int(cfg["n_dec"]),
+            d_model=int(cfg["d_model"]), n_heads=int(cfg["n_heads"]), n_blocks=int(cfg["n_blocks"]),
+            pair_hidden=int(cfg["pair_hidden"]), hit_e_min=float(cfg["hit_e_min"]), hit_tau=float(cfg["hit_tau"]),
+            input_mode=cfg.get("input_mode", "reltime"),
         )
     else:
         model = Reconstruction(
