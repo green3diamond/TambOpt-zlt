@@ -213,6 +213,24 @@ pages.append(page([ZC + "lit_geometry.png"], [
     "Mean distance 600–1200 m and baseline ≥ 800 m are best; within 1° vs > 5° showers: baseline 1.1 km vs 0.7 km, NN 278 vs 226 m",
     "Above ~800 m spacing too few lit detectors sit in one footprint (~900 m across): the optimum spacing is ~300–600 m"]))
 
+pages.append(section_page("Test layouts",
+                          "The 112 distinct layouts by detector count, ranked best to worst by the share within 1° (relative-time recon)"))
+
+
+def full_page(path):
+    """One figure filling the slide (margins M)."""
+    img = Image.open(path).convert("RGB")
+    k = min((W - 2 * M) / img.width, (H - 2 * M) / img.height)
+    img = img.resize((int(img.width * k), int(img.height * k)), Image.LANCZOS)
+    p = Image.new("RGB", (W, H), "white")
+    p.paste(img, ((W - img.width) // 2, (H - img.height) // 2))
+    return p
+
+
+import glob as _glob  # noqa: E402
+for _f in sorted(_glob.glob(ZC + "layout_catalog_p*.png")):
+    pages.append(full_page(_f))
+
 # ── Weight decay ───────────────────────────────────────────────────────────
 WD = R18 + "diagnostics/wd_sweep/"
 pages.append(section_page("Weight decay", "Does regularising the relative-time recon help? · AdamW sweep on run 18 data"))
@@ -243,24 +261,6 @@ pages.append(table_page("Weight-decay sweep: results (Adam phase only, ≤ 80 ep
 ]))
 pages.append(page([WD + "wd_sweep.png"], [
     "Val loss per epoch (left) and the train–val gap (right): without decay the gap keeps growing; 0.03 and 0.1 hold val down"]))
-
-pages.append(section_page("Test layouts",
-                          "The 112 distinct layouts by detector count, ranked best to worst by the share within 1° (relative-time recon)"))
-
-
-def full_page(path):
-    """One figure filling the slide (margins M)."""
-    img = Image.open(path).convert("RGB")
-    k = min((W - 2 * M) / img.width, (H - 2 * M) / img.height)
-    img = img.resize((int(img.width * k), int(img.height * k)), Image.LANCZOS)
-    p = Image.new("RGB", (W, H), "white")
-    p.paste(img, ((W - img.width) // 2, (H - img.height) // 2))
-    return p
-
-
-import glob as _glob  # noqa: E402
-for _f in sorted(_glob.glob(ZC + "layout_catalog_p*.png")):
-    pages.append(full_page(_f))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
