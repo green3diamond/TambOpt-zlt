@@ -201,11 +201,108 @@ pages.append(page([ZC + "disks_vs_radius_reltime_lbfgs25_vs_zoo.png"], [
     "Peaks (relative-time), 10 / 20 / 50 / 100 det.: within 1° 2.4 / 5.7 / 10.3 / 14.4%, 2.5° 12 / 25 / 42 / 51%, 5° 30 / 53 / 76 / 83%",
     "Zoo: 2.2 / 4.4 / 9.2 / 13.1%, 10 / 21 / 38 / 47%, 28 / 51 / 71 / 79% · higher at almost every radius and N",
     "Same shape: every N still peaks at r ≈ 3 km (10 det. at 1.5 km); the 100-det. 1° peak moves from 4.5 to 3 km"]))
+import json as _json  # noqa: E402
+import re as _re  # noqa: E402
+
+
+def _disk_scores(tag, th):
+    """{(N, r_m): % within th} for the centred disks, from zoo_compare/<tag>/<set>/scores_pad_<th>deg.json."""
+    out = {}
+    for st in ("disks_n10", "core_test_ndet", "angleonly"):
+        for k, v in _json.load(open(f"{ZC}{tag}/{st}/scores_pad_{th:g}deg.json")).items():
+            m = _re.fullmatch(r"disk_r(\d+)(?:_n(\d+))?", k)
+            if m:
+                out[(int(m.group(2) or 100), int(m.group(1)))] = 100 * v["frac_good_t"]
+    return out
+
+
+RADII = (750, 1000, 1500, 2000, 3000, 4500)
+COVER = ("7%", "13%", "28%", "50%", "92%", "100%")      # share of the 5.9 x 4.2 km plane within r of its centre
+for _th in (1, 2.5, 5):
+    d = _disk_scores("reltime_lbfgs25", _th)
+    rows = ["detectors \\ radius   " + "".join(f"{r / 1e3:g} km".ljust(9) for r in RADII),
+            "plane covered          " + "".join(c.ljust(9) for c in COVER)]
+    for n in (10, 20, 50, 100):
+        best = max(RADII, key=lambda r: d[(n, r)])
+        rows.append(f"{n:<23d}" + "".join((f"[{d[(n, r)]:.1f}]" if r == best else f"{d[(n, r)]:.1f}").ljust(9) for r in RADII))
+    dg = [(10, 20, 1500), (20, 50, 2000), (50, 100, 3000)]
+    ar = [((10, 1500), (20, 2000), "1.5 → ~2.1 km (2 km disk)"), ((20, 2000), (50, 3000), "~2.1 → ~3.35 km (3 km disk)")]
+    rows += ["", "step        more density, same area             more area, same density (radius ∝ √N)"]
+    for k, (a, b, r) in enumerate(dg):
+        den = f"r {r / 1e3:g} km: {d[(a, r)]:.1f} → {d[(b, r)]:.1f} ({d[(b, r)] - d[(a, r)]:+.1f})"
+        if k < len(ar):
+            (n0, r0), (n1, r1), lab = ar[k]
+            are = f"{lab}: {d[(n0, r0)]:.1f} → {d[(n1, r1)]:.1f} ({d[(n1, r1)] - d[(n0, r0)]:+.1f})"
+        else:
+            are = "not possible: the plane is full"
+        rows.append(f"{a} → {b}".ljust(12) + den.ljust(36) + are)
+    notes = ["[ ] = best radius per detector count · 3 and 4.5 km exceed the plane's 2.1 km N–S half-width",
+             "Plane covered: share of the 5.9 × 4.2 km plane within r of its centre (estimate)",
+             "Scores: zoo_compare/reltime_lbfgs25/*/scores_pad_*deg.json (job 51084214, 1,536 showers)"]
+    if _th == 1:
+        notes.insert(0, "Relative-time recon. Up to ~50 det. more area beats more density; once the plane is full only density is left")
+    pages.append(table_page(f"Disks: more density or more area? · within {_th:g}°",
+                            rows, notes))
 pages.append(page([ZC + "lit_resolution_reltime_lbfgs25_vs_zoo.png"], [
     "Spread layouts: median error floor 2.62–2.69° → 2.41–2.47° (6–15 lit); 68% error 3.8–4.0° → 3.6–3.7°",
     "Within 1° at 6–12 lit: 12–14% → 15–16%; median error lower at every lit count from 2 to 29, same flat shape",
     "A real but modest gain (~0.2° on the median): the encoding was part of the limit, not all of it",
     "Final scores after L-BFGS finishes; next candidates: angle loss, attention over detector pairs, timing-plane fit"]))
+
+pages.append(page([ZC + "lit_geometry.png"], [
+    "Same 112 layouts × 1,536 showers; per shower, the lit detectors' (≥ 1 count) mean distance, nearest-neighbour spacing and baseline",
+    "Best (6–15 lit): nearest-neighbour spacing 300–600 m → median 2.4°, 15–16% within 1°; < 100 m → 3.7–4.0°, 6–7%",
+    "Mean distance 600–1200 m and baseline ≥ 800 m are best; within 1° vs > 5° showers: baseline 1.1 km vs 0.7 km, NN 278 vs 226 m",
+    "Above ~800 m spacing too few lit detectors sit in one footprint (~900 m across): the optimum spacing is ~300–600 m"]))
+
+pages.append(section_page("Test layouts",
+                          "The 112 distinct layouts by detector count, ranked best to worst by the share within 1° (relative-time recon)"))
+
+
+def full_page(path):
+    """One figure filling the slide (margins M)."""
+    img = Image.open(path).convert("RGB")
+    k = min((W - 2 * M) / img.width, (H - 2 * M) / img.height)
+    img = img.resize((int(img.width * k), int(img.height * k)), Image.LANCZOS)
+    p = Image.new("RGB", (W, H), "white")
+    p.paste(img, ((W - img.width) // 2, (H - img.height) // 2))
+    return p
+
+
+import glob as _glob  # noqa: E402
+for _f in sorted(_glob.glob(ZC + "layout_catalog_p*.png")):
+    pages.append(full_page(_f))
+
+# ── Weight decay ───────────────────────────────────────────────────────────
+WD = R18 + "diagnostics/wd_sweep/"
+pages.append(section_page("Weight decay", "Does regularising the relative-time recon help? · AdamW sweep on run 18 data"))
+pages.append(text_page("Weight-decay sweep: setup", [
+    "Why: the relative-time recon overfits after epoch 43 (val 0.0788 then rises while train keeps falling); no dropout, no decay",
+    "Unchanged: relative-time DeepSets recon (431k parameters), run 18 zoo data (9 layout types, 4.85M training rows)",
+    "Each run is a full retrain from scratch, only the optimiser changes: AdamW (decoupled decay), lr 3e-5, batch 256",
+    "Weight decay wd = 0.01 / 0.03 / 0.1 / 0.3 (per step the weights shrink by lr × wd: 0.06% … 16% per epoch)",
+    "Shortened schedule: ≤ 80 epochs, stop after 30 without improvement, no L-BFGS (the full run had 600 / 50 / L-BFGS)",
+    "Baseline wd 0: the relative-time recon's own Adam phase (first 80 epochs), same data, seed and model",
+    "4 GPU jobs in parallel (~2.5–3.5 h each, with requeues resumed from per-epoch checkpoints)",
+    "Next: the wd 0.03 recon is finished with L-BFGS (job running), then scored on the test layouts",
+]))
+pages.append(table_page("Weight-decay sweep: results (Adam phase only, ≤ 80 epochs)", [
+    "wd      best val  @epoch  direction  energy  rise by ep 80   first epoch with val ≤ 0.0790 / 0.0785 / 0.0780",
+    "0       0.0788      43     0.0314    0.0474    +0.0008        40 / never / never",
+    "0.01    0.0783      53     0.0314    0.0470    +0.0005        38 / 53 / never",
+    "0.03    0.0777      78     0.0311    0.0467    +0.0001        38 / 53 / 69",
+    "0.1     0.0783      80     0.0315    0.0469     0.0000        62 / 67 / never",
+    "0.3     0.0834      66     0.0332    0.0502    +0.0004        never",
+], [
+    "direction = dx + dy + dz and energy = logE terms of the val loss at the best epoch",
+    "rise by ep 80 = the run's own val at epoch 80 minus its own best val: how much it got worse after its best epoch (overfitting)",
+    "     e.g. no decay: best 0.0788 at epoch 43, 0.0796 at epoch 80 → +0.0008 · wd 0.03: 0.0777 → 0.0778 → +0.0001",
+    "wd 0.03 is best: −0.0011 vs no decay (−1.4%), mostly energy; direction only −1%; no overfitting by epoch 80",
+    "It reaches val ≤ 0.0785 in 53 epochs; no decay never gets there with Adam (0.0782 only after L-BFGS, ~4.2 h)",
+    "0.1 learns slower but its val is still falling at 80; 0.3 is too strong · Default for future trainings: wd 0.03",
+]))
+pages.append(page([WD + "wd_sweep.png"], [
+    "Val loss per epoch (left) and the train–val gap (right): without decay the gap keeps growing; 0.03 and 0.1 hold val down"]))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
