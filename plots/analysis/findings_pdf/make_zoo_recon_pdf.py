@@ -213,6 +213,35 @@ pages.append(page([ZC + "lit_geometry.png"], [
     "Mean distance 600–1200 m and baseline ≥ 800 m are best; within 1° vs > 5° showers: baseline 1.1 km vs 0.7 km, NN 278 vs 226 m",
     "Above ~800 m spacing too few lit detectors sit in one footprint (~900 m across): the optimum spacing is ~300–600 m"]))
 
+# ── Weight decay ───────────────────────────────────────────────────────────
+WD = R18 + "diagnostics/wd_sweep/"
+pages.append(section_page("Weight decay", "Does regularising the relative-time recon help? · AdamW sweep on run 18 data"))
+pages.append(text_page("Weight-decay sweep: setup", [
+    "Why: the relative-time recon overfits after epoch 43 (val 0.0788 then rises while train keeps falling); no dropout, no decay",
+    "Unchanged: relative-time DeepSets recon (431k parameters), run 18 zoo data (9 layout types, 4.85M training rows)",
+    "Each run is a full retrain from scratch, only the optimiser changes: AdamW (decoupled decay), lr 3e-5, batch 256",
+    "Weight decay wd = 0.01 / 0.03 / 0.1 / 0.3 (per step the weights shrink by lr × wd: 0.06% … 16% per epoch)",
+    "Shortened schedule: ≤ 80 epochs, stop after 30 without improvement, no L-BFGS (the full run had 600 / 50 / L-BFGS)",
+    "Baseline wd 0: the relative-time recon's own Adam phase (first 80 epochs), same data, seed and model",
+    "4 GPU jobs in parallel (~2.5–3.5 h each, with requeues resumed from per-epoch checkpoints)",
+    "Next: the wd 0.03 recon is finished with L-BFGS (job running), then scored on the test layouts",
+]))
+pages.append(table_page("Weight-decay sweep: results (Adam phase only, ≤ 80 epochs)", [
+    "wd      best val  @epoch  direction  energy  rise by ep 80   first epoch with val ≤ 0.0790 / 0.0785 / 0.0780",
+    "0       0.0788      43     0.0314    0.0474    +0.0008        40 / never / never",
+    "0.01    0.0783      53     0.0314    0.0470    +0.0005        38 / 53 / never",
+    "0.03    0.0777      78     0.0311    0.0467    +0.0001        38 / 53 / 69",
+    "0.1     0.0783      80     0.0315    0.0469     0.0000        62 / 67 / never",
+    "0.3     0.0834      66     0.0332    0.0502    +0.0004        never",
+], [
+    "direction = dx + dy + dz and energy = logE terms of the val loss at the best epoch; rise = val at epoch 80 − best val",
+    "wd 0.03 is best: −0.0011 vs no decay (−1.4%), mostly energy; direction only −1%; no overfitting by epoch 80",
+    "It reaches val ≤ 0.0785 in 53 epochs; no decay never gets there with Adam (0.0782 only after L-BFGS, ~4.2 h)",
+    "0.1 learns slower but its val is still falling at 80; 0.3 is too strong · Default for future trainings: wd 0.03",
+]))
+pages.append(page([WD + "wd_sweep.png"], [
+    "Val loss per epoch (left) and the train–val gap (right): without decay the gap keeps growing; 0.03 and 0.1 hold val down"]))
+
 pages.append(section_page("Test layouts",
                           "The 112 distinct layouts by detector count, ranked best to worst by the share within 1° (relative-time recon)"))
 
