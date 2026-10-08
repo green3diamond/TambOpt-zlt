@@ -201,6 +201,48 @@ pages.append(page([ZC + "disks_vs_radius_reltime_lbfgs25_vs_zoo.png"], [
     "Peaks (relative-time), 10 / 20 / 50 / 100 det.: within 1° 2.4 / 5.7 / 10.3 / 14.4%, 2.5° 12 / 25 / 42 / 51%, 5° 30 / 53 / 76 / 83%",
     "Zoo: 2.2 / 4.4 / 9.2 / 13.1%, 10 / 21 / 38 / 47%, 28 / 51 / 71 / 79% · higher at almost every radius and N",
     "Same shape: every N still peaks at r ≈ 3 km (10 det. at 1.5 km); the 100-det. 1° peak moves from 4.5 to 3 km"]))
+import json as _json  # noqa: E402
+import re as _re  # noqa: E402
+
+
+def _disk_scores(tag, th):
+    """{(N, r_m): % within th} for the centred disks, from zoo_compare/<tag>/<set>/scores_pad_<th>deg.json."""
+    out = {}
+    for st in ("disks_n10", "core_test_ndet", "angleonly"):
+        for k, v in _json.load(open(f"{ZC}{tag}/{st}/scores_pad_{th:g}deg.json")).items():
+            m = _re.fullmatch(r"disk_r(\d+)(?:_n(\d+))?", k)
+            if m:
+                out[(int(m.group(2) or 100), int(m.group(1)))] = 100 * v["frac_good_t"]
+    return out
+
+
+RADII = (750, 1000, 1500, 2000, 3000, 4500)
+COVER = ("7%", "13%", "28%", "50%", "92%", "100%")      # share of the 5.9 x 4.2 km plane within r of its centre
+for _th in (1, 2.5, 5):
+    d = _disk_scores("reltime_lbfgs25", _th)
+    rows = ["detectors \\ radius   " + "".join(f"{r / 1e3:g} km".ljust(9) for r in RADII),
+            "plane covered          " + "".join(c.ljust(9) for c in COVER)]
+    for n in (10, 20, 50, 100):
+        best = max(RADII, key=lambda r: d[(n, r)])
+        rows.append(f"{n:<23d}" + "".join((f"[{d[(n, r)]:.1f}]" if r == best else f"{d[(n, r)]:.1f}").ljust(9) for r in RADII))
+    dg = [(10, 20, 1500), (20, 50, 2000), (50, 100, 3000)]
+    ar = [((10, 1500), (20, 2000), "1.5 → ~2.1 km (2 km disk)"), ((20, 2000), (50, 3000), "~2.1 → ~3.35 km (3 km disk)")]
+    rows += ["", "step        more density, same area             more area, same density (radius ∝ √N)"]
+    for k, (a, b, r) in enumerate(dg):
+        den = f"r {r / 1e3:g} km: {d[(a, r)]:.1f} → {d[(b, r)]:.1f} ({d[(b, r)] - d[(a, r)]:+.1f})"
+        if k < len(ar):
+            (n0, r0), (n1, r1), lab = ar[k]
+            are = f"{lab}: {d[(n0, r0)]:.1f} → {d[(n1, r1)]:.1f} ({d[(n1, r1)] - d[(n0, r0)]:+.1f})"
+        else:
+            are = "not possible: the plane is full"
+        rows.append(f"{a} → {b}".ljust(12) + den.ljust(36) + are)
+    notes = ["[ ] = best radius per detector count · 3 and 4.5 km exceed the plane's 2.1 km N–S half-width",
+             "Plane covered: share of the 5.9 × 4.2 km plane within r of its centre (estimate)",
+             "Scores: zoo_compare/reltime_lbfgs25/*/scores_pad_*deg.json (job 51084214, 1,536 showers)"]
+    if _th == 1:
+        notes.insert(0, "Relative-time recon. Up to ~50 det. more area beats more density; once the plane is full only density is left")
+    pages.append(table_page(f"Disks: more density or more area? · within {_th:g}°",
+                            rows, notes))
 pages.append(page([ZC + "lit_resolution_reltime_lbfgs25_vs_zoo.png"], [
     "Spread layouts: median error floor 2.62–2.69° → 2.41–2.47° (6–15 lit); 68% error 3.8–4.0° → 3.6–3.7°",
     "Within 1° at 6–12 lit: 12–14% → 15–16%; median error lower at every lit count from 2 to 29, same flat shape",
