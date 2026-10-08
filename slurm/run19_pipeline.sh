@@ -20,7 +20,8 @@
 #
 #   sbatch slurm/run19_pipeline.sh gen      Stage 0: showers
 #   sbatch slurm/run19_pipeline.sh build    Stage 1: kernel labels, 9 layout types
-#   sbatch slurm/run19_pipeline.sh recon    Stage 3: relative-time recon on kernel responses
+#   sbatch slurm/run19_pipeline.sh recon    Stage 3: relative-time recon, AdamW weight decay 0.03 (run 18 sweep), then L-BFGS
+#   sbatch slurm/run19_pipeline.sh tests    layout tests (plots/analysis/run19/tests/run_tests.sh), after the recon
 #
 # Status keys in pipeline_status_run19_<mode>.json make requeues resume from the last finished step.
 
@@ -53,9 +54,12 @@ gen)
 build)
     run_once 01_build python -u scripts/01_build_dataset_northeast.py
     ;;
+tests)
+    run_once tests bash plots/analysis/run19/tests/run_tests.sh
+    ;;
 recon)
     run_once 03_recon python -u scripts/03_train_recon_deepsets.py --recon-input kernel --adam-patience 50 \
-        --input-mode reltime
+        --input-mode reltime --weight-decay 0.03
     ;;
 *)
     echo "unknown mode $MODE"; exit 1 ;;

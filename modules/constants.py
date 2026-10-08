@@ -12,6 +12,9 @@ import os
 # Run 18: 6x6 km, plane45s.h5 / plane45s in 18_plane45S_6km_showerframe_200k/inputs.
 GEOMETRY_PATH = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/19_plane45S_12km_showerframe_400k/inputs/plane45s12.h5"
 GEOMETRY_GROUP = "plane45s12"
+# TAMBOPT_GEOMETRY_PATH / _GROUP override them (with TAMBOPT_RUN_LOCATION: run another run's tests from this branch).
+GEOMETRY_PATH = os.environ.get("TAMBOPT_GEOMETRY_PATH", GEOMETRY_PATH)
+GEOMETRY_GROUP = os.environ.get("TAMBOPT_GEOMETRY_GROUP", GEOMETRY_GROUP)
 DET_KEY        = "detector1"
 
 # Prefer a copy of the mesh next to the repo, else the absolute path. Centralized
