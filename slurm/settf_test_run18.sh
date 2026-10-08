@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -p gpu_requeue
 #SBATCH --mem=200g
-#SBATCH --time=16:00:00
+#SBATCH --time=20:00:00
 #SBATCH -c 8
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=a100
