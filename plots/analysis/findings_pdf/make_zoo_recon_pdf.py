@@ -273,6 +273,26 @@ import glob as _glob  # noqa: E402
 for _f in sorted(_glob.glob(ZC + "layout_catalog_p*.png")):
     pages.append(full_page(_f))
 
+# ── 1 deg optimisations ────────────────────────────────────────────────────
+OP = ZC + "opt1deg/"
+pages.append(section_page("1° optimisations",
+                          "Two-tier utility, λ = 0, good = angle within 1° · 5k steps from the grid and the centre · 100 and 10 detectors"))
+pages.append(text_page("1° optimisations: setup", [
+    "Utility: two-tier, λ = 0 (only showers within 1° count, no energy term), calibration kernel_1deg_angleonly",
+    "Recon in the loop: relative-time DeepSets (zoo data, best L-BFGS step) · kernel in the loop, 512 fresh showers per step",
+    "5,000 steps, lr 10 m, best layout picked on a separate 1,024-shower scoring set every 250 steps",
+    "Starts: grid (init_layout 'grid') and centre (Gaussian blob, σ ≈ 17 m, seed 0) · 100 and 10 detectors · 4 GPU jobs",
+    "Scored here on the 1,536 held-out showers used for every test layout, within 1 / 2.5 / 5° (angle only)",
+    "Also scored with the wd 0.03 recon (dots on the next slide) to check the result does not depend on the recon",
+]))
+pages.append(page([OP + "opt1deg.png"], [
+    "100 det.: from the grid, +0.4 / +0.4 / +2.4 pts at 1 / 2.5 / 5° (1° is within noise, ±0.9 pts); the layout spreads out evenly",
+    "100 det.: from the centre, 0.7 → 4.6% within 1° and 13 → 46% within 5°, but still far below the grid (median 5.6° vs 2.4°)",
+    "10 det.: from the grid, +0.3 / +2.4 / +2.1 pts · from the centre, 0.3 → 1.3% within 1°, below the grid start",
+    "Neither start finds a denser core: the optimiser spreads detectors out, consistent with the coverage tests",
+    "wd 0.03 recon gives the same ranking (within ~1 pt; 100 det. grid: 15.4% vs 14.3% within 1°)",
+]))
+
 # ── Weight decay ───────────────────────────────────────────────────────────
 WD = R18 + "diagnostics/wd_sweep/"
 pages.append(section_page("Weight decay", "Does regularising the relative-time recon help? · AdamW sweep on run 18 data"))
@@ -284,7 +304,7 @@ pages.append(text_page("Weight-decay sweep: setup", [
     "Shortened schedule: ≤ 80 epochs, stop after 30 without improvement, no L-BFGS (the full run had 600 / 50 / L-BFGS)",
     "Baseline wd 0: the relative-time recon's own Adam phase (first 80 epochs), same data, seed and model",
     "4 GPU jobs in parallel (~2.5–3.5 h each, with requeues resumed from per-epoch checkpoints)",
-    "Next: the wd 0.03 recon is finished with L-BFGS (job running), then scored on the test layouts",
+    "wd 0.03 + L-BFGS (80 epochs Adam, then L-BFGS): best val 0.0769 vs 0.0782 without decay (−1.7%)",
 ]))
 pages.append(table_page("Weight-decay sweep: results (Adam phase only, ≤ 80 epochs)", [
     "wd      best val  @epoch  direction  energy  rise by ep 80   first epoch with val ≤ 0.0790 / 0.0785 / 0.0780",
