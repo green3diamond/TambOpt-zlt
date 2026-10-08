@@ -19,11 +19,10 @@ source slurm/gpu_gate.sh
 gpu_health_gate
 SUF=$1; WD=$2
 export TAMBOPT_DATASET_TAG=zoo MPLCONFIGDIR=/tmp/mplcache_$USER
-D=$(python -c 'import sys; sys.path.insert(0, "."); import modules.constants as C; print(C.RECON_FOLDER + "_deepsets")')_$SUF
-[ -f "$D/recon.pt" ] || { echo "missing $D/recon.pt"; exit 1; }
-[ -f "$D/recon_train_log_adam.json" ] || cp "$D/recon_train_log.json" "$D/recon_train_log_adam.json"
-[ -f "$D/recon_train_curves_adam.png" ] || cp "$D/recon_train_curves.png" "$D/recon_train_curves_adam.png"
-# First start only: mark Adam done (a requeue keeps the L-BFGS resume state the script writes itself).
-[ -f "$D/recon_resume.pt" ] || python -c "import torch; torch.save({'adam_done': True}, '$D/recon_resume.pt')"
-python -u scripts/03_train_recon_deepsets.py --recon-input kernel --input-mode reltime --weight-decay "$WD" \
-    --epochs 80 --out-suffix "$SUF"
+D=/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/18_plane45S_6km_showerframe_200k/test_v6_run_03_recentered_deepsets_$SUF
+cp -n $D/recon_train_log.json $D/recon_train_log_adam.json      # keep the Adam log (L-BFGS rewrites it)
+cp -n $D/recon_train_curves.png $D/recon_train_curves_adam.png
+# Tell 03 that Adam is done, so it loads recon.pt and runs only L-BFGS (skipped on a requeue: 03's own resume file is kept)
+[ -f $D/recon_resume.pt ] || python -c "import torch; torch.save({'adam_done': True}, '$D/recon_resume.pt')"
+python -u scripts/03_train_recon_deepsets.py --recon-input kernel --input-mode reltime --weight-decay $WD \
+    --epochs 80 --out-suffix $SUF
