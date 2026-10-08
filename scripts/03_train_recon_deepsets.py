@@ -60,7 +60,7 @@ from torch.utils.data import TensorDataset, DataLoader, Subset
 import modules   # noqa: F401
 from modules.surrogates  import load_dual_surrogate
 from modules.surrogates  import DeepSetsRecon, SetTransformerRecon
-from modules.surrogates.recon import RELTIME_FEATURES, reltime_features
+from modules.surrogates.recon import INPUT_MODES, RELTIME_FEATURES, encoder_features
 from modules.surrogates.dual import combine_species_outputs
 from modules.constants import (
     RECON_FOLDER, TRAINING_DATASET_FOLDER, FNN_FOLDER,
@@ -72,7 +72,7 @@ OUTPUT_FOLDER = RECON_FOLDER + "_deepsets"
 # Where the recon's per-detector (E, T) inputs come from — see the module
 # docstring. "sample" is the historical default; the CLI can override.
 RECON_INPUT   = "sample"     # "sample" | "kernel" | "mix"
-INPUT_MODE    = "raw"        # "raw" | "reltime" (DeepSetsRecon input transform, see recon.py)
+INPUT_MODE    = "raw"        # "raw" | "reltime" | "reltime1" (encoder input transform, see recon.py)
 WEIGHT_DECAY  = 0.0          # > 0: AdamW with this decoupled weight decay (per step the weights shrink by LR * WEIGHT_DECAY)
 MIX_FRAC      = 0.5          # P(row uses kernel labels) when RECON_INPUT == "mix"
 
@@ -462,10 +462,11 @@ def main():
                          "'_deepsets_expB1' instead of the production "
                          "recon.pt. Use for any run that is not meant to "
                          "become the checkpoint Stage 4 / true_utility.py load.")
-    ap.add_argument("--input-mode", choices=("raw", "reltime"), default=INPUT_MODE,
+    ap.add_argument("--input-mode", choices=INPUT_MODES, default=INPUT_MODE,
                     help="'reltime': positions relative to the first timed hit, linear dt in ns, lit (E > 0) "
                          "and timed (T > 0) flags, and the reference's absolute position/time "
-                         "(recon.reltime_features)")
+                         "(recon.reltime_features); 'reltime1': the same with the reference at the earliest timed "
+                         "detector with >= 1 count")
     ap.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY,
                     help="AdamW decoupled weight decay for the Adam phase (0 = plain Adam, as before)")
     ap.add_argument("--model", choices=("deepsets", "settf"), default=MODEL,
@@ -580,7 +581,7 @@ def main():
                            E_pred[keep].mean(),    T_pred[keep].mean()])   # (4,)
     in_std  = torch.stack([xy[keep, :, 0].std(),  xy[keep, :, 1].std(),
                            E_pred[keep].std(),     T_pred[keep].std()]).clamp(min=1e-8)
-    if INPUT_MODE == "reltime":
+    if INPUT_MODE != "raw":
         # Stats of the transformed features the encoder sees, on a seeded sample of 300k clean rows.
         _g = torch.Generator().manual_seed(SEED)
         _ok = torch.nonzero(keep).squeeze(-1)                 # clean rows, as the raw stats above
@@ -590,7 +591,7 @@ def main():
             for _lo in range(0, _rows.numel(), 8192):
                 _r = _rows[_lo:_lo + 8192]
                 _x = torch.stack([xy[_r, :, 0], xy[_r, :, 1], E_pred[_r], T_pred[_r]], dim=-1).to(DEVICE)
-                _f.append(reltime_features(_x).reshape(-1, RELTIME_FEATURES).cpu())
+                _f.append(encoder_features(_x, INPUT_MODE).reshape(-1, RELTIME_FEATURES).cpu())
         _f = torch.cat(_f)
         in_mean, in_std = _f.mean(0), _f.std(0).clamp(min=1e-8)
         del _f

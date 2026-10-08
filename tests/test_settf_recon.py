@@ -50,3 +50,15 @@ def test_ckpt_round_trip():
     ck = dict(config=cfg, num_detectors=100, input_features=4, state_dict=m.state_dict(),
               input_mean=m.in_mean, input_std=m.in_std, target_mean=m.out_mean, target_std=m.out_std)
     assert torch.allclose(build_recon_from_ckpt(ck, 100)(x), m(x), atol=1e-6)
+
+
+def test_reltime1_reference():
+    from modules.surrogates.recon import reltime_features
+    x = torch.zeros(1, 3, 4)
+    x[0, :, 0] = torch.tensor([0.0, 100.0, 200.0])
+    x[0, :, 2] = torch.log1p(torch.tensor([0.01, 5.0, 3.0]))           # faint, bright, bright
+    x[0, :, 3] = torch.log1p(torch.tensor([10.0, 10.2, 10.1]))         # the faint one is earliest
+    assert reltime_features(x)[0, 0, 6] == 0.0                         # reltime: faint reference at x = 0
+    assert reltime_features(x, 1.0)[0, 0, 6] == 200.0                  # reltime1: earliest bright, x = 200
+    m = SetTransformerRecon(n_blocks=1, input_mode="reltime1").eval()
+    assert torch.isfinite(m(_input())).all()
