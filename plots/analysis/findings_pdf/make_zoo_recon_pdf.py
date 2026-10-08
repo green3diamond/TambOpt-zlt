@@ -234,7 +234,9 @@ pages.append(table_page("Weight-decay sweep: results (Adam phase only, ≤ 80 ep
     "0.1     0.0783      80     0.0315    0.0469     0.0000        62 / 67 / never",
     "0.3     0.0834      66     0.0332    0.0502    +0.0004        never",
 ], [
-    "direction = dx + dy + dz and energy = logE terms of the val loss at the best epoch; rise = val at epoch 80 − best val",
+    "direction = dx + dy + dz and energy = logE terms of the val loss at the best epoch",
+    "rise by ep 80 = the run's own val at epoch 80 minus its own best val: how much it got worse after its best epoch (overfitting)",
+    "     e.g. no decay: best 0.0788 at epoch 43, 0.0796 at epoch 80 → +0.0008 · wd 0.03: 0.0777 → 0.0778 → +0.0001",
     "wd 0.03 is best: −0.0011 vs no decay (−1.4%), mostly energy; direction only −1%; no overfitting by epoch 80",
     "It reaches val ≤ 0.0785 in 53 epochs; no decay never gets there with Adam (0.0782 only after L-BFGS, ~4.2 h)",
     "0.1 learns slower but its val is still falling at 80; 0.3 is too strong · Default for future trainings: wd 0.03",
