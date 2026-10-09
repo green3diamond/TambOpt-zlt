@@ -9,5 +9,5 @@ T=$(python -c 'import sys; sys.path.insert(0, "."); import modules.constants as 
 mkdir -p "$T"
 [ -s "$T/layouts.txt" ] || python -u $H/make_layouts.py
 [ -s "$T/pairs.npz" ] || python -u $H/score_all.py
-[ -s "$T/detcount/detector_count_grid.json" ] || python -u scripts/diagnostics/detector_count_grid.py --out "$T/detcount"
+[ -s "$T/detcount/detector_count_grid.json" ] || python -u scripts/diagnostics/detector_count_grid.py --n-events 5000 --out "$T/detcount"
 python -u $H/analyze.py

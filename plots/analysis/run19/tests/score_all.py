@@ -5,7 +5,7 @@ Per shower x layout pair: lit detectors (>= 1 count, kernel), their mean pairwis
 spacing and baseline (largest distance), and the angle error. The recon gets exactly the layout's N detectors (no
 padding). Writes tests/scores.json and tests/pairs.npz (read by analyze.py).
 
-    python score_all.py [--recon-dir <dir>] [--n-events 1536] [--tag <suffix>]
+    python score_all.py [--recon-dir <dir>] [--n-events 5000] [--tag <suffix>]
 """
 import argparse
 import importlib.util
@@ -31,7 +31,7 @@ T = os.path.join(C.RUN_LOCATION, "diagnostics", "tests")
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--recon-dir", default=C.RECON_FOLDER + "_deepsets")
-ap.add_argument("--n-events", type=int, default=1536)
+ap.add_argument("--n-events", type=int, default=5000)
 ap.add_argument("--tag", default="", help="suffix for scores_<tag>.json / pairs_<tag>.npz (e.g. another recon)")
 args = ap.parse_args()
 SUF = f"_{args.tag}" if args.tag else ""
