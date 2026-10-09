@@ -59,7 +59,7 @@ tests)
     ;;
 recon)
     run_once 03_recon python -u scripts/03_train_recon_deepsets.py --recon-input kernel --adam-patience 50 \
-        --input-mode reltime --weight-decay 0.03
+        --input-mode reltime1 --weight-decay 0.03
     ;;
 *)
     echo "unknown mode $MODE"; exit 1 ;;

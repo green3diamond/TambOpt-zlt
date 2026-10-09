@@ -12,6 +12,7 @@ Run 18 (6 × 6 km South-facing 45° plane, 210,600 showers) found:
 - **Resolution floor:** the recon's resolution stops improving at ~6 lit detectors. Median error: zoo recon ~2.65°, relative-time recon ~2.45°. At most 12–16% of showers land within 1°.
 - **Density vs area:** up to ~50 detectors on 25 km², more area beats more density at 1°, 2.5° and 5°. Once the plane is full, extra detectors can only add density, and that still pays.
 - **Weight decay:** AdamW with wd 0.03 gives ~1% lower val loss in ~2/3 of the Adam time.
+- **reltime1** (run 18 test, 2026-10-09): same val as wd 0.03 + L-BFGS with Adam alone (0.0769); test-layout shares unchanged (±0.1 pts), so it saves training time, not accuracy.
 
 Run 19 repeats the experiment on a plane twice as large in each direction, about 4× the area.
 **Prediction:** what matters is detectors per area relative to the fixed shower footprint (~1 km across). By that measure:
@@ -28,7 +29,7 @@ That is the first place where concentrating detectors should pay.
 - **Showers:** 421,200 (2× run 18, half its shower density).
 - **Detectors:** 100, ~1.2 km apart on the full plane.
 - **Folder:** `detector_optimization_v6/19_plane45S_12km_showerframe_400k/`. Run 18 is untouched.
-- **Recon:** relative-time input (`--input-mode reltime`), **AdamW weight decay 0.03**, Adam with patience 50, then L-BFGS (patience 50).
+- **Recon:** relative-time input with the dt reference at the earliest timed detector with ≥ 1 count (`--input-mode reltime1`), **AdamW weight decay 0.03**, Adam with patience 50, then L-BFGS (patience 50).
 - **Scope:** recon plus layout tests. No Stage 2. Kernel-in-the-loop optimizations only if the run 18 1° runs show they are worth it.
 - **Jobs:** run from the main checkout (no worktree for runs). The worktree `.claude/worktrees/run19-edit` was used for editing only, while run 18 jobs were running from the main checkout.
 - **Unchanged from run 18:**
@@ -42,8 +43,8 @@ That is the first place where concentrating detectors should pay.
   - overrides `TAMBOPT_RUN_LOCATION`, `TAMBOPT_GEOMETRY_PATH` and `TAMBOPT_GEOMETRY_GROUP`, to run another run's tests from this branch;
   - `TAMBOPT_DATASET_TAG`.
 - **`modules/layouts/strategies.py`:** `disk_a` r_max 8 km and `grid_patch_a` side_max 12 km (run 18: 4 / 6 km). Clusters stay 30–600 m.
-- **`scripts/03_train_recon_deepsets.py`:** `--input-mode reltime`, `--weight-decay`, L-BFGS patience 50.
-- **`slurm/run19_guard.sh` and `slurm/run19_pipeline.sh`:** modes `gen`, `build`, `recon` (reltime, wd 0.03) and `tests`.
+- **`scripts/03_train_recon_deepsets.py`:** `--input-mode reltime1`, `--weight-decay`, L-BFGS patience 50.
+- **`slurm/run19_guard.sh` and `slurm/run19_pipeline.sh`:** modes `gen`, `build`, `recon` (reltime1, wd 0.03) and `tests`.
 - **Test suite**, `plots/analysis/run19/tests/`. Outputs go to `<run19>/diagnostics/tests/`.
   - `make_layouts.py`:
     - grids, N = 4–100;
