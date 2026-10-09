@@ -1,9 +1,9 @@
 # Run 19: 12 × 12 km plane, 421,200 showers, 100 detectors, relative-time recon with weight decay
 
-Status (2026-10-08): paused, nothing running. Branch `run19-12km` now includes `run18-reltime-recon`: weight decay,
-the L-BFGS finish, `--n-det` and the test scripts. Inputs are final. To restart:
-- clean the partial Stage 0 output;
-- check out `run19-12km` in the main checkout, once the run 18 jobs are done;
+Status (2026-10-09): not started, nothing running. The run 19 folder was deleted for a full restart (inputs included).
+The main checkout is on `run19-12km`, which now includes `run18-reltime-recon` (weight decay, L-BFGS finish,
+`--n-det`, test scripts) and `run18-settf-recon` (`reltime1`, attention recon code, plane-fit gate). To restart:
+- regenerate the inputs (step 1);
 - submit gen → build → recon → tests.
 
 ## Context
@@ -13,6 +13,9 @@ Run 18 (6 × 6 km South-facing 45° plane, 210,600 showers) found:
 - **Density vs area:** up to ~50 detectors on 25 km², more area beats more density at 1°, 2.5° and 5°. Once the plane is full, extra detectors can only add density, and that still pays.
 - **Weight decay:** AdamW with wd 0.03 gives ~1% lower val loss in ~2/3 of the Adam time.
 - **reltime1** (run 18 test, 2026-10-09): same val as wd 0.03 + L-BFGS with Adam alone (0.0769); test-layout shares unchanged (±0.1 pts), so it saves training time, not accuracy.
+- **Attention recon** (set transformer, run 18): no gain (best val 0.0784, overfits after epoch 26). A plane-front fit on the
+  kernel times reaches the same ~10% within 1°, so the 1° ceiling sits in the kernel times, not the recon.
+- **1° optimizations** (run 18): neither grid nor centre starts beat the grid; skipped for run 19.
 
 Run 19 repeats the experiment on a plane twice as large in each direction, about 4× the area.
 **Prediction:** what matters is detectors per area relative to the fixed shower footprint (~1 km across). By that measure:
@@ -35,14 +38,15 @@ That is the first place where concentrating detectors should pay.
 - **Unchanged from run 18:**
   - the shower-frame kernel, ring showers and interpolated times;
   - widths k = 8, capped at 50 m;
-  - the 9-type layout zoo, with sizes scaled to the plane.
+  - the layout zoo, with sizes scaled to the plane, plus a second random grid patch (`grid_patch_b`): 10 strategies.
 
 ## Code (branch `run19-12km`)
 - **`modules/constants.py`:**
   - run 19 `RUN_LOCATION`, geometry (`plane45s12`), `TAU_WHOLESKY_PATH`, `NUM_SHOWERS = 421_200`;
   - overrides `TAMBOPT_RUN_LOCATION`, `TAMBOPT_GEOMETRY_PATH` and `TAMBOPT_GEOMETRY_GROUP`, to run another run's tests from this branch;
   - `TAMBOPT_DATASET_TAG`.
-- **`modules/layouts/strategies.py`:** `disk_a` r_max 8 km and `grid_patch_a` side_max 12 km (run 18: 4 / 6 km). Clusters stay 30–600 m.
+- **`modules/layouts/strategies.py`:** `disk_a` r_max 8 km and `grid_patch_a` side_max 12 km (run 18: 4 / 6 km); `grid_patch_b` appended
+  (same generator, own draws: grid patches 1/9 → 2/10 of the rows, dataset +11%). Clusters stay 30–600 m.
 - **`scripts/03_train_recon_deepsets.py`:** `--input-mode reltime1`, `--weight-decay`, L-BFGS patience 50.
 - **`slurm/run19_guard.sh` and `slurm/run19_pipeline.sh`:** modes `gen`, `build`, `recon` (reltime1, wd 0.03) and `tests`.
 - **Test suite**, `plots/analysis/run19/tests/`. Outputs go to `<run19>/diagnostics/tests/`.
@@ -51,7 +55,7 @@ That is the first place where concentrating detectors should pay.
     - centred disks, N = 10/20/50/100, radius 0.1–12 km;
     - cores 100–500 m and hybrids, N = 20/50/100;
     - clusters, K × M with r 50–1000 m.
-  - `score_all.py`: one pass with the run's recon on the 1,536 held-out showers.
+  - `score_all.py`: one pass with the run's recon on 5,000 held-out showers (±0.5 pts at 1°; 16 GB peak on an A100).
     - per layout: within 1/2.5/5°, good at 5°, median error;
     - per shower × layout: lit detectors, their mean distance, nearest-neighbour spacing, baseline, and the angle error.
 
@@ -63,18 +67,17 @@ That is the first place where concentrating detectors should pay.
     - accuracy vs lit-detector spacing;
     - best per family;
     - the layout catalogue (grouped by N, ranked by share within 1°).
-  - `run_tests.sh`: runs those three scripts plus `detector_count_grid.py`, skipping finished steps.
+  - `run_tests.sh`: runs those three scripts plus `detector_count_grid.py` (5,000 showers), skipping finished steps.
   - Smoke-tested on run 18 data (job 51257524).
 
 ## Steps
-1. **Inputs:** done.
+1. **Inputs:** regenerate with the command above into `<run19>/inputs` (seeded, so identical to the deleted ones).
    - Decay–target distance p5/p50/p95: 4.5 / 9.0 / 11.3 km (run 18 median: 6.5 km).
    - Zenith p5/p50/p95: 65 / 86 / 99°.
-2. **Layout-zoo check** on the 12 km plane: done (`<run19>/diagnostics/zoo/zoo_layouts.png`).
-3. **Restart, once the run 18 jobs from the main checkout are done:**
-   - check out `run19-12km`;
-   - remove `<run19>/v6_run_00` (partial Stage 0) and `pipeline_status_run19_*.json`;
-   - submit gen (~20 h) → build (~6 h) → recon (~1–1.5 days) → tests (~1 h), chained with `afterok` on gpu_requeue.
+2. **Layout-zoo check** on the 12 km plane: one draw per strategy looked right (2026-10-09), except `center_gauss400`
+   (σ 400 m, a ~1.5 km blob on a 12 km plane; scaling to 800 m is open).
+3. **Submit** from the main checkout: gen (~20 h) → build (~7 h) → recon (~1–1.5 days) → tests (~2 h), chained with
+   `afterok` on gpu_requeue.
 4. **PDF:** `figures/run19_12km.pdf`. Same structure as the run 18 one, compared against run 18's relative-time recon.
 
 ## Expected
