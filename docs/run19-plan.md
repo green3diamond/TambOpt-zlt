@@ -26,7 +26,7 @@ That is the first place where concentrating detectors should pay.
 
 ## Decisions (user, 2026-10-07 / 08)
 - **Plane:** 12 × 12 km, 45°, facing South:
-  `scripts/17_make_plane_inputs.py --side 12000 --box-depth 6000 --max-dist 11500 --facing south --zenith 60 100 --min-angle-b 30 --group plane45s12 --seed 19`.
+  `scripts/17_make_plane_inputs.py --out-dir <run19>/inputs --n-events 421200 --side 12000 --box-depth 6000 --max-dist 11500 --facing south --zenith 60 100 --min-angle-b 30 --group plane45s12 --seed 19`.
   - **Decay box:** 0.5–6.5 km in front of the plane, as in run 18, but 12 km wide and 12 km high.
   - **Distance cap:** decays more than 11.5 km from their target are redrawn, because the C8 showers cover only 12 km (24 planes × 500 m). With a 12 km-deep box half the decays were past 12 km; with the 6 km box alone, 24% still were. The targets stay uniform on the plane, and no event is dropped.
 - **Showers:** 421,200 (2× run 18, half its shower density).

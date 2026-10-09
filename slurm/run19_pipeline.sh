@@ -15,12 +15,12 @@
 # Run 19 (branch run19-12km): run 18 at twice the size. 12x12 km plane at 45 deg facing South, 421,200 LHS
 # tau decays south of it aimed at LHS points on the plane (2x run 18's showers = half its density), zenith
 # 60-100 deg, >= 30 deg from the C8 field (x) axis (scripts/17_make_plane_inputs.py --side 12000, in
-# <RUN_LOCATION>/inputs). Same shower-frame kernel as run 18; 100 detectors; the 9-type layout zoo
-# (disk and grid-patch sizes scaled to the plane); recon with the relative-time input; no Stage 2.
+# <RUN_LOCATION>/inputs). Same shower-frame kernel as run 18; 100 detectors; the layout zoo, 11 strategies
+# (disk, grid-patch and centre-blob sizes scaled to the plane); recon with the relative-time input; no Stage 2.
 #
 #   sbatch slurm/run19_pipeline.sh gen      Stage 0: showers
-#   sbatch slurm/run19_pipeline.sh build    Stage 1: kernel labels, 9 layout types
-#   sbatch slurm/run19_pipeline.sh recon    Stage 3: relative-time recon, AdamW weight decay 0.03 (run 18 sweep), then L-BFGS
+#   sbatch slurm/run19_pipeline.sh build    Stage 1: kernel labels, 11 layout strategies
+#   sbatch slurm/run19_pipeline.sh recon    Stage 3: relative-time recon (reltime1), AdamW weight decay 0.03 (run 18 sweep), then L-BFGS
 #   sbatch slurm/run19_pipeline.sh tests    layout tests (plots/analysis/run19/tests/run_tests.sh), after the recon
 #
 # Status keys in pipeline_status_run19_<mode>.json make requeues resume from the last finished step.
