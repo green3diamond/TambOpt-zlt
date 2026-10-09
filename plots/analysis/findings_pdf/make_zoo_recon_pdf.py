@@ -293,6 +293,25 @@ pages.append(page([OP + "opt1deg.png"], [
     "wd 0.03 recon gives the same ranking (within ~1 pt; 100 det. grid: 15.4% vs 14.3% within 1°)",
 ]))
 
+# ── Attention recon ────────────────────────────────────────────────────────
+pages.append(section_page("Attention recon",
+                          "Is there direction information the DeepSets recon leaves unused? · plane-front gate, then a set transformer"))
+pages.append(page([ZC + "planefit_check.png"], [
+    "Gate: least-squares plane-front fit on the kernel times (timed detectors ≥ 0.1 count), no learning",
+    "Same 112 layouts × 1,536 held-out showers; 74k of 172k pairs fittable (≥ 3 non-collinear timed)",
+    "Recon beats the fit on the median everywhere (by 1–2.5°): it also uses the energy pattern",
+    "Within 1° both reach ~9–11% from 6 timed detectors up → the 1° ceiling is in the kernel times",
+    "Only with 3–5 timed detectors is the fit 1–2 pts better within 1°: little information left unused",
+]))
+pages.append(page([ZC + "settf/settf_vs_deepsets.png"], [
+    "Attention: DeepSets encoder → 128-d tokens → 3 attention blocks with a pair bias (Δx, Δy, Δt, ΔlogE …)",
+    "     soft mask (< 0.1 count ignored) → masked mean + max → same decoder · 961k params (DeepSets 431k)",
+    "Input reltime1: dt from the earliest timed detector with ≥ 1 count (old reference: E < 0.1 in 82%)",
+    "Same setup as DeepSets wd 0.03: AdamW, lr 3e-5, batch 256, ≤ 80 epochs, no L-BFGS · 10 min/epoch",
+    "Learns faster (val 0.0806 vs 0.0842 at epoch 10) but overfits after epoch 26: 0.0784 vs 0.0777",
+    "Direction part bottoms out at 0.0317 vs 0.0310 → no gain, as the gate predicted · keep DeepSets",
+]))
+
 # ── Weight decay ───────────────────────────────────────────────────────────
 WD = R18 + "diagnostics/wd_sweep/"
 pages.append(section_page("Weight decay", "Does regularising the relative-time recon help? · AdamW sweep on run 18 data"))
