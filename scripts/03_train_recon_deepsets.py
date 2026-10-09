@@ -59,8 +59,8 @@ from torch.utils.data import TensorDataset, DataLoader, Subset
 
 import modules   # noqa: F401
 from modules.surrogates  import load_dual_surrogate
-from modules.surrogates  import DeepSetsRecon
-from modules.surrogates.recon import RELTIME_FEATURES, reltime_features
+from modules.surrogates  import DeepSetsRecon, SetTransformerRecon
+from modules.surrogates.recon import INPUT_MODES, RELTIME_FEATURES, encoder_features
 from modules.surrogates.dual import combine_species_outputs
 from modules.constants import (
     RECON_FOLDER, TRAINING_DATASET_FOLDER, FNN_FOLDER,
@@ -72,7 +72,7 @@ OUTPUT_FOLDER = RECON_FOLDER + "_deepsets"
 # Where the recon's per-detector (E, T) inputs come from — see the module
 # docstring. "sample" is the historical default; the CLI can override.
 RECON_INPUT   = "sample"     # "sample" | "kernel" | "mix"
-INPUT_MODE    = "raw"        # "raw" | "reltime" (DeepSetsRecon input transform, see recon.py)
+INPUT_MODE    = "raw"        # "raw" | "reltime" | "reltime1" (encoder input transform, see recon.py)
 WEIGHT_DECAY  = 0.0          # > 0: AdamW with this decoupled weight decay (per step the weights shrink by LR * WEIGHT_DECAY)
 MIX_FRAC      = 0.5          # P(row uses kernel labels) when RECON_INPUT == "mix"
 
@@ -87,6 +87,24 @@ CONTEXT  = 128
 N_ENC    = 4
 N_DEC    = 4
 POOL     = "maxmean"   # "mean" or "maxmean"; maxmean doubles context_proj input
+# --model settf: SetTransformerRecon (recon.py) -- the encoder above maps to D_MODEL tokens, N_BLOCKS attention
+# blocks with a pair-feature bias, masked maxmean pool, the same decoder.
+MODEL       = "deepsets"   # "deepsets" | "settf"
+D_MODEL     = 128
+N_HEADS     = 4
+N_BLOCKS    = 3
+PAIR_HIDDEN = 32
+HIT_E_MIN   = 0.1
+HIT_TAU     = 0.5
+
+
+def _arch_cfg() -> dict:
+    """Architecture keys saved in the checkpoint config (build_recon_from_ckpt reads them)."""
+    cfg = dict(model_type=MODEL, hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL)
+    if MODEL == "settf":
+        cfg.update(d_model=D_MODEL, n_heads=N_HEADS, n_blocks=N_BLOCKS, pair_hidden=PAIR_HIDDEN,
+                   hit_e_min=HIT_E_MIN, hit_tau=HIT_TAU)
+    return cfg
 
 # ── Training ─────────────────────────────────────────────────────────────────
 BATCH_SIZE = 256
@@ -335,7 +353,7 @@ def _validate(recon: nn.Module, loader: DataLoader, device: torch.device) -> dic
 
 
 def _save_ckpt(path: str,
-               recon: DeepSetsRecon,
+               recon: nn.Module,
                epoch: int,
                val: dict,
                in_mean: torch.Tensor, in_std: torch.Tensor,
@@ -354,9 +372,7 @@ def _save_ckpt(path: str,
         "target_mean": tgt_mean.detach().cpu(),
         "target_std":  tgt_std .detach().cpu(),
         "config": dict(
-            model_type="deepsets",
-            hidden=HIDDEN, context=CONTEXT,
-            n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
+            **_arch_cfg(),
             output_dim=4,
             # What the recon's (E, T) inputs were during training. Stage 4 and
             # true_utility.py feed it different response sources, so a checkpoint
@@ -425,7 +441,7 @@ def _plot_curves(log, path: str, adam_epochs: int = 0,
 
 def main():
     global N_EPOCHS, LBFGS_MAX_ITER, ADAM_PATIENCE
-    global RECON_INPUT, MIX_FRAC, OUTPUT_FOLDER, INPUT_MODE, WEIGHT_DECAY
+    global RECON_INPUT, MIX_FRAC, OUTPUT_FOLDER, INPUT_MODE, WEIGHT_DECAY, MODEL, N_BLOCKS
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs",      type=int, default=N_EPOCHS)
     ap.add_argument("--adam-patience", type=int, default=ADAM_PATIENCE,
@@ -446,13 +462,18 @@ def main():
                          "'_deepsets_expB1' instead of the production "
                          "recon.pt. Use for any run that is not meant to "
                          "become the checkpoint Stage 4 / true_utility.py load.")
-    ap.add_argument("--input-mode", choices=("raw", "reltime"), default=INPUT_MODE,
+    ap.add_argument("--input-mode", choices=INPUT_MODES, default=INPUT_MODE,
                     help="'reltime': positions relative to the first timed hit, linear dt in ns, lit (E > 0) "
                          "and timed (T > 0) flags, and the reference's absolute position/time "
-                         "(recon.reltime_features)")
+                         "(recon.reltime_features); 'reltime1': the same with the reference at the earliest timed "
+                         "detector with >= 1 count")
     ap.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY,
                     help="AdamW decoupled weight decay for the Adam phase (0 = plain Adam, as before)")
+    ap.add_argument("--model", choices=("deepsets", "settf"), default=MODEL,
+                    help="'settf': SetTransformerRecon (attention between detectors with a pair-feature bias)")
+    ap.add_argument("--n-blocks", type=int, default=N_BLOCKS, help="attention blocks for --model settf")
     args = ap.parse_args()
+    MODEL, N_BLOCKS = args.model, int(args.n_blocks)
     RECON_INPUT, MIX_FRAC = args.recon_input, float(args.mix_frac)
     INPUT_MODE = args.input_mode
     WEIGHT_DECAY = float(args.weight_decay)
@@ -469,7 +490,7 @@ def main():
     print(f"fnn ckpts     : {FNN_FOLDER}  (fnn_electron.pt + fnn_muon.pt)")
     print(f"output        : {OUTPUT_FOLDER}")
     print(f"device        : {DEVICE}  batch={BATCH_SIZE}  epochs={N_EPOCHS}")
-    print(f"arch          : hidden={HIDDEN} context={CONTEXT} n_enc={N_ENC} n_dec={N_DEC} pool={POOL}")
+    print(f"arch          : {_arch_cfg()}")
 
     t0 = time.time()
     primary   = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "primary.pt")).float()
@@ -560,7 +581,7 @@ def main():
                            E_pred[keep].mean(),    T_pred[keep].mean()])   # (4,)
     in_std  = torch.stack([xy[keep, :, 0].std(),  xy[keep, :, 1].std(),
                            E_pred[keep].std(),     T_pred[keep].std()]).clamp(min=1e-8)
-    if INPUT_MODE == "reltime":
+    if INPUT_MODE != "raw":
         # Stats of the transformed features the encoder sees, on a seeded sample of 300k clean rows.
         _g = torch.Generator().manual_seed(SEED)
         _ok = torch.nonzero(keep).squeeze(-1)                 # clean rows, as the raw stats above
@@ -570,7 +591,7 @@ def main():
             for _lo in range(0, _rows.numel(), 8192):
                 _r = _rows[_lo:_lo + 8192]
                 _x = torch.stack([xy[_r, :, 0], xy[_r, :, 1], E_pred[_r], T_pred[_r]], dim=-1).to(DEVICE)
-                _f.append(reltime_features(_x).reshape(-1, RELTIME_FEATURES).cpu())
+                _f.append(encoder_features(_x, INPUT_MODE).reshape(-1, RELTIME_FEATURES).cpu())
         _f = torch.cat(_f)
         in_mean, in_std = _f.mean(0), _f.std(0).clamp(min=1e-8)
         del _f
@@ -586,11 +607,18 @@ def main():
                               num_workers=NUM_WORKERS, pin_memory=pin)
 
     torch.manual_seed(SEED)
-    recon = DeepSetsRecon(
-        n_det=N_DETECTORS, input_features=RECON_INPUT_FEATURES, output_dim=4,
-        hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
-        input_mode=INPUT_MODE,
-    ).to(DEVICE)
+    if MODEL == "settf":
+        recon = SetTransformerRecon(
+            n_det=N_DETECTORS, input_features=RECON_INPUT_FEATURES, output_dim=4,
+            hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, d_model=D_MODEL, n_heads=N_HEADS,
+            n_blocks=N_BLOCKS, pair_hidden=PAIR_HIDDEN, hit_e_min=HIT_E_MIN, hit_tau=HIT_TAU, input_mode=INPUT_MODE,
+        ).to(DEVICE)
+    else:
+        recon = DeepSetsRecon(
+            n_det=N_DETECTORS, input_features=RECON_INPUT_FEATURES, output_dim=4,
+            hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
+            input_mode=INPUT_MODE,
+        ).to(DEVICE)
     recon.set_normalization(
         in_mean  = in_mean.to(DEVICE),
         in_std   = in_std.to(DEVICE),
@@ -598,7 +626,7 @@ def main():
         out_std  = tgt_std.to(DEVICE),
     )
     n_params = sum(p.numel() for p in recon.parameters() if p.requires_grad)
-    print(f"[model] DeepSetsRecon  params={n_params:,}")
+    print(f"[model] {type(recon).__name__}  params={n_params:,}")
 
     optimizer = (torch.optim.AdamW(recon.parameters(), lr=LR, weight_decay=WEIGHT_DECAY) if WEIGHT_DECAY > 0
                  else torch.optim.Adam(recon.parameters(), lr=LR))
@@ -712,7 +740,7 @@ def main():
                     batch_size=BATCH_SIZE, n_epochs=N_EPOCHS, adam_patience=ADAM_PATIENCE, lr=LR,
                     weight_decay=WEIGHT_DECAY,
                     grad_clip=GRAD_CLIP, val_frac=VAL_FRAC, seed=SEED,
-                    hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
+                    **_arch_cfg(),
                     recon_input=RECON_INPUT,
                     mix_frac=(MIX_FRAC if RECON_INPUT == "mix" else None),
                     input_mode=INPUT_MODE,
@@ -899,7 +927,7 @@ def main():
                 grad_clip=GRAD_CLIP, val_frac=VAL_FRAC, seed=SEED,
                 lbfgs_lr=LBFGS_LR, lbfgs_max_iter=LBFGS_MAX_ITER,
                 lbfgs_history_size=LBFGS_HISTORY_SIZE,
-                hidden=HIDDEN, context=CONTEXT, n_enc=N_ENC, n_dec=N_DEC, pool=POOL,
+                **_arch_cfg(),
                 recon_input=RECON_INPUT,
                 mix_frac=(MIX_FRAC if RECON_INPUT == "mix" else None),
                 input_mode=INPUT_MODE,
