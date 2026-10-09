@@ -38,7 +38,7 @@ That is the first place where concentrating detectors should pay.
 - **Unchanged from run 18:**
   - the shower-frame kernel, ring showers and interpolated times;
   - widths k = 8, capped at 50 m;
-  - the layout zoo, with sizes scaled to the plane, plus a second random grid patch (`grid_patch_b`): 10 strategies.
+  - the layout zoo, with sizes scaled to the plane, plus a second random grid patch (`grid_patch_b`) and a wider centre blob (`center_gauss800`): 11 strategies.
 
 ## Code (branch `run19-12km`)
 - **`modules/constants.py`:**
@@ -46,7 +46,7 @@ That is the first place where concentrating detectors should pay.
   - overrides `TAMBOPT_RUN_LOCATION`, `TAMBOPT_GEOMETRY_PATH` and `TAMBOPT_GEOMETRY_GROUP`, to run another run's tests from this branch;
   - `TAMBOPT_DATASET_TAG`.
 - **`modules/layouts/strategies.py`:** `disk_a` r_max 8 km and `grid_patch_a` side_max 12 km (run 18: 4 / 6 km); `grid_patch_b` appended
-  (same generator, own draws: grid patches 1/9 → 2/10 of the rows, dataset +11%). Clusters stay 30–600 m.
+  (same generator, own draws: grid patches 1/9 → 2/11 of the rows) and `center_gauss800` appended (σ 800 m); dataset +22% vs 9 strategies. Clusters stay 30–600 m.
 - **`scripts/03_train_recon_deepsets.py`:** `--input-mode reltime1`, `--weight-decay`, L-BFGS patience 50.
 - **`slurm/run19_guard.sh` and `slurm/run19_pipeline.sh`:** modes `gen`, `build`, `recon` (reltime1, wd 0.03) and `tests`.
 - **Test suite**, `plots/analysis/run19/tests/`. Outputs go to `<run19>/diagnostics/tests/`.
@@ -74,8 +74,8 @@ That is the first place where concentrating detectors should pay.
 1. **Inputs:** regenerate with the command above into `<run19>/inputs` (seeded, so identical to the deleted ones).
    - Decay–target distance p5/p50/p95: 4.5 / 9.0 / 11.3 km (run 18 median: 6.5 km).
    - Zenith p5/p50/p95: 65 / 86 / 99°.
-2. **Layout-zoo check** on the 12 km plane: one draw per strategy looked right (2026-10-09), except `center_gauss400`
-   (σ 400 m, a ~1.5 km blob on a 12 km plane; scaling to 800 m is open).
+2. **Layout-zoo check** on the 12 km plane: one draw per strategy looked right (2026-10-09). `center_gauss400` is a
+   ~1.5 km blob on the 12 km plane, so `center_gauss800` is appended (11 strategies).
 3. **Submit** from the main checkout: gen (~20 h) → build (~7 h) → recon (~1–1.5 days) → tests (~2 h), chained with
    `afterok` on gpu_requeue.
 4. **PDF:** `figures/run19_12km.pdf`. Same structure as the run 18 one, compared against run 18's relative-time recon.

@@ -186,6 +186,7 @@ _ALL_STRATEGIES = {
     "grid_jit200":       ("layout_grid",            dict(jitter_sigma=200.0)),
     "center_gauss200":   ("layout_center_gaussian", dict(sigma=200.0)),
     "center_gauss400":   ("layout_center_gaussian", dict(sigma=400.0)),
+    "center_gauss800":   ("layout_center_gaussian", dict(sigma=800.0)),   # run 19: 12 km plane
     "rings_R300":        ("layout_rings",           dict(outer_radius=300.0,  n_rings=5, jitter_sigma=200.0)),
     "rings_R800":        ("layout_rings",           dict(outer_radius=800.0,  n_rings=6, jitter_sigma=200.0)),
     "rings_R1800":       ("layout_rings",           dict(outer_radius=1800.0, n_rings=8, jitter_sigma=200.0)),
@@ -224,6 +225,8 @@ ACTIVE_STRATEGIES = (
     "grid_patch_a",
     # Run 19 (2026-10-09): a second random grid patch per shower (grid patches 1/9 -> 2/10 of the rows).
     "grid_patch_b",
+    # Run 19 (2026-10-09): a wider centre blob for the 12 km plane (center_gauss400 is ~1.5 km across there).
+    "center_gauss800",
 )
 
 _STRATEGIES = [(name, *_ALL_STRATEGIES[name]) for name in ACTIVE_STRATEGIES]
