@@ -197,6 +197,7 @@ _ALL_STRATEGIES = {
     "clusters_b":        ("layout_clusters",        dict()),
     "disk_a":            ("layout_disk",            dict(r_max=8000.0)),      # run 19: 12 km plane (run 18: 4000)
     "grid_patch_a":      ("layout_grid_patch",      dict(side_max=12000.0)),  # run 19: 12 km plane (run 18: 6000)
+    "grid_patch_b":      ("layout_grid_patch",      dict(side_max=12000.0)),
 }
 
 # The strategies a dataset build runs, IN ORDER. Position here IS the
@@ -221,6 +222,8 @@ ACTIVE_STRATEGIES = (
     "clusters_b",
     "disk_a",
     "grid_patch_a",
+    # Run 19 (2026-10-09): a second random grid patch per shower (grid patches 1/9 -> 2/10 of the rows).
+    "grid_patch_b",
 )
 
 _STRATEGIES = [(name, *_ALL_STRATEGIES[name]) for name in ACTIVE_STRATEGIES]
