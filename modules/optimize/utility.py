@@ -100,3 +100,15 @@ def U_two_tier(a_deg, e_err, theta_good=5.0, e_good=0.2, s_theta=1.0, s_e=0.05,
     g = torch.sigmoid((theta_good - a_deg) / s_theta) * torch.sigmoid((e_good - e_err) / s_e)
     q = 1.0 / (1.0 + (a_deg / theta_ref) ** 2 + (e_err / e_ref) ** 2)
     return torch.mean(g + lam * (1.0 - g) * q), g
+
+
+def U_three_tier(a_deg, det, w1=0.9, w5=0.3, wd=0.1, s1=0.2, s5=1.0):
+    """Exclusive three-level utility (run 19): each shower scores its best level,
+        w1 if within 1 deg, else w5 if within 5 deg, else wd if detected (det in (0, 1)), else 0.
+    Soft: g1 = sigmoid((1 - a) / s1), g5 = sigmoid((5 - a) / s5),
+        u = w1 g1 + w5 (1 - g1) g5 + wd (1 - g1) (1 - g5) det,   U = mean(u).
+    Angle only (no energy condition). Returns (U, g1, g5)."""
+    g1 = torch.sigmoid((1.0 - a_deg) / s1)
+    g5 = torch.sigmoid((5.0 - a_deg) / s5)
+    u = w1 * g1 + w5 * (1.0 - g1) * g5 + wd * (1.0 - g1) * (1.0 - g5) * det
+    return torch.mean(u), g1, g5

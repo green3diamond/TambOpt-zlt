@@ -14,7 +14,7 @@
 # Kernel-in-the-loop Stage 4 on run 19 (as kernel_opt_run18.sh): the Stage-1 event pool, 512 fresh events
 # per step, best layout on a separate 1,024-event scoring set; the run's recon (trained on the
 # shower-frame kernel, default *_deepsets folder). Needs kernel_bw_run19.sh and the recon first.
-# Usage: sbatch slurm/kernel_opt_run19.sh <grid|center> <current|twotier> [lambda] [lr] [epochs] [calib]
+# Usage: sbatch slurm/kernel_opt_run19.sh <grid|center> <current|twotier|threetier> [lambda] [lr] [epochs] [calib]
 #   calib (two-tier only): two_tier_calibration_<calib>.json in the run folder, default kernel_5deg;
 #   e.g. kernel_5deg_angleonly ("good" = angle within 5 deg, no energy condition) -> suffix _angleonly;
 #   kernel_1deg_angleonly -> suffix _1deg_angleonly.
@@ -30,6 +30,10 @@ RK=${RECON_DIR:-$(python -c 'import sys; sys.path.insert(0, "."); import modules
 [ -f "$RK/recon.pt" ] || { echo "recon missing: $RK/recon.pt (run run18_pipeline.sh recon)"; exit 1; }
 if [ "$UTIL" = current ]; then
     TAG=current
+elif [ "$UTIL" = threetier ]; then
+    # exclusive levels: 0.9 within 1 deg, 0.3 within 5 deg, 0.1 detected (>= 3 detectors > 1 particle); angle only
+    export TAMBOPT_UTILITY=three_tier TAMBOPT_THREE_TIER="${THREE_TIER_W:-0.9,0.3,0.1}"
+    TAG="threetier_${TAMBOPT_THREE_TIER//[.,]/}"
 else
     export TAMBOPT_UTILITY=two_tier TAMBOPT_TWO_TIER_LAMBDA="$LAM" TAMBOPT_TWO_TIER_CALIB="$R/two_tier_calibration_${CALIB}.json"
     [ -f "$TAMBOPT_TWO_TIER_CALIB" ] || { echo "missing $TAMBOPT_TWO_TIER_CALIB"; exit 1; }

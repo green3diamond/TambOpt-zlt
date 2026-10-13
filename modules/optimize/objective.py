@@ -25,7 +25,7 @@ from ..constants import (
 from ..surrogates import load_dual_surrogate
 from ..surrogates import build_recon_from_ckpt
 # modules/__init__ injected the v3 (`modules`) path on package import.
-from .utility import reconstructability, U_E, U_angle, U_PR, U_two_tier, angle_between_deg
+from .utility import reconstructability, U_E, U_angle, U_PR, U_two_tier, U_three_tier, angle_between_deg
 
 # Utility selector (run 17). "current" = the weighted 1/err^2 composite below; "two_tier" =
 # U_two_tier (count showers reconstructed well, bounded partial credit for the rest), with
@@ -35,6 +35,10 @@ from .utility import reconstructability, U_E, U_angle, U_PR, U_two_tier, angle_b
 UTILITY_MODE      = os.environ.get("TAMBOPT_UTILITY", "current")
 TWO_TIER_LAMBDA   = float(os.environ.get("TAMBOPT_TWO_TIER_LAMBDA", "0.3"))
 TWO_TIER_CALIB    = os.environ.get("TAMBOPT_TWO_TIER_CALIB", "")
+# "three_tier" (run 19): U_three_tier, exclusive levels 1 deg / 5 deg / detected (>= 3 detectors with
+# > 1 particle, soft); weights w1,w5,wd from TAMBOPT_THREE_TIER (default 0.9,0.3,0.1). Same x30 scale.
+THREE_TIER_W      = tuple(float(v) for v in os.environ.get("TAMBOPT_THREE_TIER", "0.9,0.3,0.1").split(","))
+THREE_TIER_MIN_DET = 3
 # U_two_tier lives in (0, 1); Stage 4's penalty weight and gradient clip are quoted "in units
 # of U" for a composite of order 30, so the two-tier value is scaled to that range.
 TWO_TIER_SCALE    = 30.0
@@ -336,6 +340,20 @@ def utility_of_xy(x_det: torch.Tensor,
         reconstruct_threshold=RECONSTRUCT_THRESHOLD,
         tau_reconstruct=TAU_RECONSTRUCT,
     )
+    if UTILITY_MODE == "three_tier":
+        a = angle_between_deg(_sph(theta_pred, phi_pred), _sph(theta_true, phi_true))
+        # soft "detected": detectors above 1 particle (tau 5), count soft-thresholded at 2.5 (tau 2): n = 2 -> 0.27,
+        # 3 -> 0.73, 4 -> 0.95
+        det = reconstructability(torch.expm1(E_pred_det), layout_threshold=LAYOUT_THRESHOLD, tau_layout=TAU_LAYOUT,
+                                 reconstruct_threshold=THREE_TIER_MIN_DET - 0.5, tau_reconstruct=2.0)
+        w1, w5, wd = THREE_TIER_W
+        u_tt, g1, g5 = U_three_tier(a, det, w1, w5, wd)
+        U = TWO_TIER_SCALE * u_tt
+        # parts slots reused for the level shares (x30): u_theta = U, u_phi = within 1, u_e = within 5, u_pr = detected
+        parts = dict(u_theta=U, u_phi=TWO_TIER_SCALE * g1.mean(), u_e=TWO_TIER_SCALE * g5.mean(),
+                     u_pr=TWO_TIER_SCALE * det.mean())
+        U = _apply_offmesh_penalty(U, parts, x_det, y_det, mesh_en, penalty_w, penalty_r0)
+        return U, r, parts
     if UTILITY_MODE == "two_tier":
         p = _two_tier_params()
         a = angle_between_deg(_sph(theta_pred, phi_pred), _sph(theta_true, phi_true))
