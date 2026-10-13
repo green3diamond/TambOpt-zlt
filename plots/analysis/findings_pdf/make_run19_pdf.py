@@ -249,6 +249,27 @@ pages.append(table_page("Run 18 vs run 19: grid and best layout per detector cou
     "     fewer showers near the array edge); at equal detector count it does worse: 4× the area to cover",
 ]))
 
+# ── Optimisations ────────────────────────────────────────────────────────────
+pages.append(section_page("Layout optimisations", "Kernel-in-the-loop L-BFGS on detector positions (submitted 2026-10-13, results pending)"))
+pages.append(table_page("Optimisation runs (100 detectors, run 19 recon)", [
+    "utility                                        grid start      centre start",
+    "current (weighted 1/err² composite)            52546049        52546052",
+    "two-tier, good = 5° and |Δlog E| < 0.2, λ = 0   52546050        52546053",
+    "two-tier, same, λ = 0.3                         52546051        52546054",
+    "three-tier: 0.9 / 0.3 / 0.1 (1° / 5° / seen)    52546510        52547481",
+], ["Same settings as run 18's runs: lr 10 m, 20,000 steps, 512 fresh showers per step from the Stage 0 pool,",
+    "     best layout picked on a separate 1,024-shower scoring set every 250 steps; kernel widths cached first (52546048)",
+    "Two-tier: U = mean[g + λ (1 − g) q], g = soft 'good', q = 1 / (1 + (a / 20°)² + (e / 0.5)²)",
+    "Results will be scored on the 5,000 test showers at 1 / 2.5 / 5° against the grid and centre starts",
+]))
+pages.append(page([P + "three_tier_sigmoids.png"], [
+    "Three-tier: each shower scores its best level: 0.9 within 1°, 0.3 within 5°, 0.1 if detected (≥ 3 detectors > 1 particle)",
+    "     u = 0.9 g1 + 0.3 (1 − g1) g5 + 0.1 (1 − g1)(1 − g5) d,  U = 30 · mean(u) · angle only, no energy condition",
+    "g1 = σ((1° − a) / 0.2°) drops 0.92 → 0.08 between 0.5° and 1.5°; g5 = σ((5° − a) / 1°) drops 0.88 → 0.12 between 3° and 7°",
+    "The sigmoids never cross (they meet only at 0°): a clean staircase, but the 0.3 level already slopes from ~2° (0.29 → 0.25 at 4°)",
+    "Soft 'detected' d: detectors above 1 particle, count thresholded at 2.5 → 2 hits 0.27, 3 hits 0.73, 4 hits 0.95",
+]))
+
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
 print(f"[write] {OUT}  ({len(pages)} pages)")
