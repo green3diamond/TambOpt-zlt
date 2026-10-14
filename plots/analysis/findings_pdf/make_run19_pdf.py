@@ -331,6 +331,20 @@ for N in (50, 20):
     pages.append(page([OPT + f"opt_accuracy{SN}.png"], [f"{N} detectors, all 5,000 held-out showers: optimised layouts vs their grid and centre starts"]))
     pages.append(page([OPT + f"opt_accuracy_detected{SN}.png"], [f"{N} detectors, detected showers only (≥ 3 detectors with > 1 particle)"]))
 
+UNOTE = {
+    "_n100": ["From the centre, U rises over all 20,000 steps (two-tier and three-tier still rising at the end: not converged)",
+              "From the grid, U peaks in the first ~2,000 steps, then drifts down (current, three-tier); the scored layout is that peak"],
+    "_n50": ["50 detectors: from the centre U reaches the grid run's level by ~12,000 steps; from the grid it is flat (λ 0.3) or drifts down (λ 0)",
+             "Best layout = the scoring-set maximum (fixed 1,024 showers, every 250 steps), not the last step"],
+    "_n20": ["20 detectors: noisy (few showers hit 3+ detectors); U peaks early (λ 0: ~4,000 steps) and then declines for both starts",
+             "Best layout = the scoring-set maximum, so the late decline does not reach the scored designs"],
+}
+for SN in ("_n100", "_n50", "_n20"):
+    if os.path.exists(OPT + f"opt_utility{SN}.png"):
+        pages.append(page([OPT + f"opt_utility{SN}.png"], [
+            "Light: training-batch U (512 fresh showers per step, 200-step running mean) · dark: scoring-set U (1,024 fixed showers)",
+            *UNOTE[SN]]))
+
 # ── Background noise ─────────────────────────────────────────────────────────
 NZ = R19 + "diagnostics/noise/"
 if os.path.exists(NZ + "noise_scores.json"):
