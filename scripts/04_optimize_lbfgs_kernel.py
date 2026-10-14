@@ -296,6 +296,15 @@ def precompute_bandwidths(mountain, species_index, block=512):
     print(f"[bw] wrote {final}")
 
 
+def lr_at(args, epoch):
+    """--lr, or with --lr-final a log-linear decay from --lr (first step) to --lr-final (last step).
+    A pure function of the step, so a requeued run resumes on the same schedule."""
+    if args.lr_final is None or args.epochs <= 1:
+        return args.lr
+    f = min(max(epoch / (args.epochs - 1), 0.0), 1.0)
+    return args.lr * (args.lr_final / args.lr) ** f
+
+
 def run_main_pool(args, mountain, surface, recon, out_dir):
     pool = MainPool(mountain)
     n_score = args.n_score
@@ -343,6 +352,8 @@ def run_main_pool(args, mountain, surface, recon, out_dir):
         if epoch + 1 < args.epochs:
             nxt = ex.submit(lambda a: pool.load(a, a + B), offset(epoch + 1))
 
+        for grp in optimizer.param_groups:
+            grp["lr"] = lr_at(args, epoch)
         optimizer.zero_grad(set_to_none=True)
         tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True)
         torch.nn.utils.clip_grad_norm_(xy_module.parameters(), max_norm=args.grad_clip)
@@ -366,7 +377,7 @@ def run_main_pool(args, mountain, surface, recon, out_dir):
             print(f"  [{epoch+1:5d}/{args.epochs}] U_batch={tot['U']:+.3f}  "
                   f"(u_theta={tot['u_theta']:.3f} u_phi={tot['u_phi']:.3f} "
                   f"u_e={tot['u_e']:.3f})  r={tot['r_mean']:.3f}  "
-                  f"{(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
+                  f"lr={lr_at(args, epoch):.3g}  {(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
         if (epoch + 1) % args.ckpt_every == 0:
             os.makedirs(out_dir, exist_ok=True)
             torch.save(dict(xy=xy_module.state_dict(), optimizer=optimizer.state_dict(),
@@ -642,6 +653,8 @@ def main():
                          "not accuracy (the split is exact, see its docstring)")
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--lr", type=float, default=1.0)
+    ap.add_argument("--lr-final", type=float, default=None,
+                    help="decay the step size log-linearly from --lr to this over the run (main pool); unset = constant")
     ap.add_argument("--grad-clip", type=float, default=100.0)
     ap.add_argument("--log-every", type=int, default=5)
     ap.add_argument("--recon-folder", default=RECON_FOLDER + "_deepsets")

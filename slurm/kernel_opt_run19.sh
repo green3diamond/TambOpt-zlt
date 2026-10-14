@@ -43,8 +43,11 @@ fi
 N_DET=${N_DET:-100}
 SUFFIX="${TAG}_lr${LR}_${INIT}${RECON_TAG:+_$RECON_TAG}"
 [ "$N_DET" != 100 ] && SUFFIX="${SUFFIX}_n${N_DET}"
+# Env BATCH (showers per step, default 512) and LR_FINAL (log-linear lr decay to this) add _b<B> / _lrd<F> to the suffix.
+[ -n "$BATCH" ] && [ "$BATCH" != 512 ] && SUFFIX="${SUFFIX}_b${BATCH}"
+[ -n "$LR_FINAL" ] && SUFFIX="${SUFFIX}_lrd${LR_FINAL/./p}"
 
 python -u scripts/04_optimize_lbfgs_kernel.py --utility recon --init "$INIT" \
     --lr "$LR" --epochs "$EPOCHS" --log-every 100 \
-    --pool main --batch-events 512 --chunk 32 --n-score 1024 --score-every 250 \
+    --pool main --batch-events ${BATCH:-512} ${LR_FINAL:+--lr-final $LR_FINAL} --chunk 32 --n-score 1024 --score-every 250 \
     --recon-folder "$RK" --out-suffix "$SUFFIX" --n-det "$N_DET" --skip-analytic-eval || exit 1
