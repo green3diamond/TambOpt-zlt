@@ -302,6 +302,35 @@ pages.append(page([OPT + "opt_accuracy_detected.png"], [
     "     vs 12.9 / 49.9 / 81.3% for the grid start: they detect fewer showers (27–33% vs 34%) but mostly reconstruct them better",
     "Each bar uses that layout's own detected showers (~1,500–1,700 of 5,000), so differences of ~1 pt are within noise"]))
 
+for N in (50, 20):
+    SN = f"_n{N}"
+    if not os.path.exists(OPT + f"opt_layouts{SN}.png"):
+        continue
+    pages.append(full_page(OPT + f"opt_layouts{SN}.png"))
+    rows = ["layout                       all showers 1° / 2.5° / 5°   median   detected   detected only 1° / 2.5° / 5°   median"]
+    for scheme in ("grid", "center"):
+        for k in ("start", "twotier_l0", "twotier_l0p3"):
+            r = OS.get(f"{k}_{scheme}{SN}"); lab = LAB[k] + " · " + scheme
+            if r is None:
+                rows.append(f"{lab:<29s}(still running)"); continue
+            rows.append(f"{lab:<29s}" + f"{100*r['all_1']:.1f} / {100*r['all_2.5']:.1f} / {100*r['all_5']:.1f}".ljust(29)
+                        + f"{r['ang_med']:.2f}°".ljust(9) + f"{100*r['detected']:.1f}%".ljust(11)
+                        + f"{100*r['det_1']:.1f} / {100*r['det_2.5']:.1f} / {100*r['det_5']:.1f}".ljust(31) + f"{r['ang_med_det']:.2f}°")
+        rows.append("")
+    bt = best(N); tb = S[bt]
+    rows.append(f"{'best test layout: ' + bt.replace(SN, ''):<29s}" + f"{100*tb['within1']:.1f} / {100*tb['within2p5']:.1f} / {100*tb['within5']:.1f}".ljust(29)
+                + f"{tb['ang_med']:.2f}°")
+    done = [k for k in OS if k.endswith(SN) and not k.startswith("start")]
+    bo = max(done, key=lambda k: OS[k]["all_1"])
+    pages.append(table_page(f"{N} detectors: optimised layouts, reconstruction accuracy", rows, [
+        "Two-tier (good = 5° and |Δlog E| < 0.2), λ = 0 and 0.3 · same settings as the 100-detector runs · 5,000 held-out showers",
+        f"Best optimised at 1°: {LAB[bo.rsplit('_', 2)[0]]} from the {bo.rsplit('_', 2)[1]} ({100*OS[bo]['all_1']:.1f}%) vs grid start "
+        f"{100*OS['start_grid' + SN]['all_1']:.1f}% and best test layout {100*tb['within1']:.1f}%",
+        "Detected-only shares rest on few showers here (detected 3–15% of 5,000), so they are noisy (±1.5–3 pts)",
+    ]))
+    pages.append(page([OPT + f"opt_accuracy{SN}.png"], [f"{N} detectors, all 5,000 held-out showers: optimised layouts vs their grid and centre starts"]))
+    pages.append(page([OPT + f"opt_accuracy_detected{SN}.png"], [f"{N} detectors, detected showers only (≥ 3 detectors with > 1 particle)"]))
+
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
 print(f"[write] {OUT}  ({len(pages)} pages)")

@@ -29,19 +29,21 @@ dev = DCS.DEVICE
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
                      layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
 layouts = {}
-for scheme in ("grid", "center"):
-    e, n = sample_initial_layout_ne(m, n_units=C.N_DETECTORS, scheme=scheme)
-    e, n = project_to_mountain_ne(m, torch.as_tensor(e).float(), torch.as_tensor(n).float())
-    p = f"{O}/layouts/start_{scheme}.pt"; torch.save(dict(x=e.float(), y=n.float()), p); layouts[f"start_{scheme}"] = p
-for key, suf in RUNS:
+for N in (100, 50, 20):
+    SN = "" if N == 100 else f"_n{N}"
     for scheme in ("grid", "center"):
-        d = f"{R}/test_v6_run_04_optimize_lbfgs_kernel_{suf}_{scheme}"
-        log = f"{d}/optimize_log.json"
-        if os.path.exists(f"{d}/layout_best.pt") and os.path.exists(log) and not os.path.exists(f"{d}/opt_state.pt.tmp"):
-            L = json.load(open(log)); h = L if isinstance(L, list) else next(
-                v for v in L.values() if isinstance(v, list) and v and isinstance(v[0], dict) and "U" in v[0])
-            if len(h) >= 20000:
-                layouts[f"{key}_{scheme}"] = f"{d}/layout_best.pt"
+        e, n = sample_initial_layout_ne(m, n_units=N, scheme=scheme)
+        e, n = project_to_mountain_ne(m, torch.as_tensor(e).float(), torch.as_tensor(n).float())
+        p = f"{O}/layouts/start_{scheme}{SN}.pt"; torch.save(dict(x=e.float(), y=n.float()), p); layouts[f"start_{scheme}{SN}"] = p
+    for key, suf in RUNS:
+        for scheme in ("grid", "center"):
+            d = f"{R}/test_v6_run_04_optimize_lbfgs_kernel_{suf}_{scheme}{SN}"
+            log = f"{d}/optimize_log.json"
+            if os.path.exists(f"{d}/layout_best.pt") and os.path.exists(log):
+                L = json.load(open(log)); h = L if isinstance(L, list) else next(
+                    v for v in L.values() if isinstance(v, list) and v and isinstance(v[0], dict) and "U" in v[0])
+                if len(h) >= 20000:
+                    layouts[f"{key}_{scheme}{SN}"] = f"{d}/layout_best.pt"
 print("layouts:", list(layouts))
 
 surface = SurfaceUpMap.from_mountain(m, grid_h=256, grid_w=256).to(dev)
@@ -61,7 +63,7 @@ for name, path in layouts.items():
         hit = (torch.expm1(lab[..., 0]) > 1).sum(1)
     a, hit = a.cpu().numpy(), hit.cpu().numpy()
     det = hit >= MIN_HIT
-    r = dict(path=path, n_events=B, detected=float(det.mean()), hit_med=float(np.median(hit)), ang_med=float(np.median(a)),
+    r = dict(path=path, n_det=int(e.numel()), n_events=B, detected=float(det.mean()), hit_med=float(np.median(hit)), ang_med=float(np.median(a)),
              ang_med_det=float(np.median(a[det])) if det.any() else float("nan"))
     for th, k in ((1, "1"), (2.5, "2.5"), (5, "5")):
         r[f"all_{k}"] = float(np.mean(a < th))
