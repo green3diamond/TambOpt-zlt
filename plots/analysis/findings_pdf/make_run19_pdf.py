@@ -250,7 +250,7 @@ pages.append(table_page("Run 18 vs run 19: grid and best layout per detector cou
 ]))
 
 # ── Optimisations ────────────────────────────────────────────────────────────
-pages.append(section_page("Layout optimisations", "Kernel-in-the-loop L-BFGS on detector positions (submitted 2026-10-13, results pending)"))
+pages.append(section_page("Layout optimisations", "Kernel-in-the-loop L-BFGS on detector positions · scored on the 5,000 held-out test showers"))
 pages.append(table_page("Optimisation runs (100 detectors, run 19 recon)", [
     "utility                                        grid start      centre start",
     "current (weighted 1/err² composite)            52546049        52546052",
@@ -260,7 +260,7 @@ pages.append(table_page("Optimisation runs (100 detectors, run 19 recon)", [
 ], ["Same settings as run 18's runs: lr 10 m, 20,000 steps, 512 fresh showers per step from the Stage 0 pool,",
     "     best layout picked on a separate 1,024-shower scoring set every 250 steps; kernel widths cached first (52546048)",
     "Two-tier: U = mean[g + λ (1 − g) q], g = soft 'good', q = 1 / (1 + (a / 20°)² + (e / 0.5)²)",
-    "Results will be scored on the 5,000 test showers at 1 / 2.5 / 5° against the grid and centre starts",
+    "Scored with the run's recon on the 5,000 held-out test showers (the layout tests' set) at 1 / 2.5 / 5°",
 ]))
 pages.append(page([P + "three_tier_sigmoids.png"], [
     "Three-tier: each shower scores its best level: 0.9 within 1°, 0.3 within 5°, 0.1 if detected (≥ 3 detectors > 1 particle)",
@@ -269,6 +269,38 @@ pages.append(page([P + "three_tier_sigmoids.png"], [
     "The sigmoids never cross (they meet only at 0°): a clean staircase, but the 0.3 level already slopes from ~2° (0.29 → 0.25 at 4°)",
     "Soft 'detected' d: detectors above 1 particle, count thresholded at 2.5 → 2 hits 0.27, 3 hits 0.73, 4 hits 0.95",
 ]))
+
+OPT = R19 + "diagnostics/opt/"
+OS = json.load(open(OPT + "opt_scores.json"))
+LAB = {"start": "start", "current": "current", "twotier_l0": "two-tier λ 0", "twotier_l0p3": "two-tier λ 0.3",
+       "threetier": "three-tier"}
+pages.append(full_page(OPT + "opt_layouts.png"))
+rows = ["layout                       all showers 1° / 2.5° / 5°   median   detected   detected only 1° / 2.5° / 5°   median"]
+for scheme in ("grid", "center"):
+    for k, lab in LAB.items():
+        r = OS.get(f"{k}_{scheme}")
+        if r is None:
+            rows.append(f"{lab + ' · ' + scheme:<29s}(still running)"); continue
+        rows.append(f"{lab + ' · ' + scheme:<29s}" + f"{100*r['all_1']:.1f} / {100*r['all_2.5']:.1f} / {100*r['all_5']:.1f}".ljust(29)
+                    + f"{r['ang_med']:.2f}°".ljust(9) + f"{100*r['detected']:.1f}%".ljust(11)
+                    + f"{100*r['det_1']:.1f} / {100*r['det_2.5']:.1f} / {100*r['det_5']:.1f}".ljust(31) + f"{r['ang_med_det']:.2f}°")
+    rows.append("")
+done = [k for k in OS if not k.startswith("start")]
+bo = max(done, key=lambda k: OS[k]["all_1"]); g = OS["start_grid"]
+pages.append(table_page("Optimised layouts: reconstruction accuracy", rows[:-1], [
+    "Detected = ≥ 3 detectors with > 1 particle (as in three-tier) · 5,000 held-out showers: ±0.45 pts at 10% (all showers)",
+    f"Best over all showers: {LAB[bo.rsplit('_', 1)[0]]} from the {bo.rsplit('_', 1)[1]} ({100*OS[bo]['all_1']:.1f} / {100*OS[bo]['all_2.5']:.1f} / "
+    f"{100*OS[bo]['all_5']:.1f}%) vs the grid start ({100*g['all_1']:.1f} / {100*g['all_2.5']:.1f} / {100*g['all_5']:.1f}%)",
+    "For reference, the best test layout (6 km disk): 11.9 / 45.1 / 77.4% · centre starts end ~1 pt below the grid at 1°",
+]))
+pages.append(page([OPT + "opt_accuracy.png"], [
+    "All showers: every optimisation from the grid gains at 2.5° and 5° (+0.7 to +5.6 pts); at 1° only two-tier and three-tier gain",
+    "From the centre (4% of showers detected at the start) all utilities spread the detectors out and recover to ~9–10% within 1°",
+    "No run produced a dense core: the optimiser always spreads the 100 detectors over the 12 km plane"]))
+pages.append(page([OPT + "opt_accuracy_detected.png"], [
+    "Detected showers only (≥ 3 detectors with > 1 particle): the optimised layouts reconstruct 13.8–17.1% within 1° and 83–85% within 5°",
+    "     vs 12.9 / 49.9 / 81.3% for the grid start: they detect slightly fewer showers (30–33% vs 34%) but reconstruct them better",
+    "Each bar uses that layout's own detected showers (~1,500–1,700 of 5,000), so differences of ~1 pt are within noise"]))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
