@@ -257,7 +257,7 @@ pages.append(table_page("Optimisation runs (100 detectors, run 19 recon)", [
     "two-tier, good = 5° and |Δlog E| < 0.2, λ = 0   52546050        52546053",
     "two-tier, same, λ = 0.3                         52546051        52546054",
     "three-tier: 0.9 / 0.3 / 0.1 (1° / 5° / seen)    52546510        52547481",
-], ["Same settings as run 18's runs: lr 10 m, 20,000 steps, 512 fresh showers per step from the Stage 0 pool,",
+], ["Same settings as run 18's runs: Adam, lr 10 m, 20,000 steps, 512 fresh showers per step from the Stage 0 pool,",
     "     best layout picked on a separate 1,024-shower scoring set every 250 steps; kernel widths cached first (52546048)",
     "Two-tier: U = mean[g + λ (1 − g) q], g = soft 'good', q = 1 / (1 + (a / 20°)² + (e / 0.5)²)",
     "Scored with the run's recon on the 5,000 held-out test showers (the layout tests' set) at 1 / 2.5 / 5°",
@@ -343,6 +343,7 @@ for SN in ("_n100", "_n50", "_n20"):
     if os.path.exists(OPT + f"opt_utility{SN}.png"):
         pages.append(page([OPT + f"opt_utility{SN}.png"], [
             "Light: training-batch U (512 fresh showers per step, 200-step running mean) · dark: scoring-set U (1,024 fixed showers)",
+            "Adam moves each detector ~lr = 10 m per step whatever the gradient size: with noisy gradients a random walk (~10 m × √steps)",
             *UNOTE[SN]]))
 
 # ── Background noise ─────────────────────────────────────────────────────────
