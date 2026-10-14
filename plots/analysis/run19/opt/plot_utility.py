@@ -36,7 +36,7 @@ for N in (100, 50, 20):
             ax.plot(ep[k - 1:], sm, color=SC[scheme], lw=1.2, alpha=0.55, label=f"{scheme} start · training batch (200-step mean)")
             se = [r["epoch"] for r in L["score_log"]]; su = [r["U_score"] for r in L["score_log"]]
             ax.plot(se, su, "o-", color=SC[scheme], lw=1.8, ms=3, label=f"{scheme} start · scoring set (best {max(su):.2f})")
-        ax.set(xlabel="L-BFGS step", ylabel="utility U", title=f"{lab} · {N} detectors")
+        ax.set(xlabel="optimisation step (Adam)", ylabel="utility U", title=f"{lab} · {N} detectors")
         ax.grid(alpha=0.25, lw=0.5); ax.legend(frameon=False, fontsize=8.5)
     fig.suptitle(f"Run 19 optimisations, {N} detectors: utility per step (U scales differ between utilities)", fontsize=13)
     fig.tight_layout(); fig.savefig(f"{O}/opt_utility{SN or '_n100'}.png", dpi=100, facecolor="white"); plt.close(fig)

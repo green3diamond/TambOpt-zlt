@@ -40,7 +40,7 @@ def layout_fig(N):
                          f"med {r['ang_med']:.2f}°\ndetected (≥ 3 hit) {100*r['detected']:.1f}%", fontsize=10.5)
             for sp in ax.spines.values():
                 sp.set_color(col); sp.set_linewidth(1.5)
-    fig.suptitle(f"Run 19 optimised layouts ({N} detectors, 20,000 L-BFGS steps) and their starts · 5,000 held-out test showers", fontsize=15)
+    fig.suptitle(f"Run 19 optimised layouts ({N} detectors, 20,000 Adam steps) and their starts · 5,000 held-out test showers", fontsize=15)
     fig.subplots_adjust(left=0.03, right=0.99, top=0.88, bottom=0.04, wspace=0.18, hspace=0.42); fig.savefig(f"{O}/opt_layouts{SN}.png", dpi=85, facecolor="white"); plt.close(fig)
 
 

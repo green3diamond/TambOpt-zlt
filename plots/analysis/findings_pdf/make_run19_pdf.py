@@ -250,7 +250,7 @@ pages.append(table_page("Run 18 vs run 19: grid and best layout per detector cou
 ]))
 
 # ── Optimisations ────────────────────────────────────────────────────────────
-pages.append(section_page("Layout optimisations", "Kernel-in-the-loop L-BFGS on detector positions · scored on the 5,000 held-out test showers"))
+pages.append(section_page("Layout optimisations", "Kernel-in-the-loop Adam on detector positions (script 04_optimize_lbfgs_kernel.py) · scored on 5,000 test showers"))
 pages.append(table_page("Optimisation runs (100 detectors, run 19 recon)", [
     "utility                                        grid start      centre start",
     "current (weighted 1/err² composite)            52546049        52546052",
