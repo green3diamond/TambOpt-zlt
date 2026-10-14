@@ -17,21 +17,27 @@ LS = {"0": "-", "128": "--", "1000": ":", "10000": "-."}
 NC = {10: "#c23b6b", 20: "#eb6834", 50: "#1baf7a", 100: "#2a78d6"}
 TH = (("1", "1°"), ("2.5", "2.5°"), ("5", "5°"))
 
-fig, axs = plt.subplots(1, 3, figsize=(21, 6.4))
-for ax, (k, lab) in zip(axs, TH):
-    for n, col in NC.items():
-        rs = sorted(int(re.fullmatch(r"disk_r(\d+)_n\d+", x).group(1)) for x in S if re.fullmatch(rf"disk_r\d+_n{n}", x))
-        for w in WS:
-            ax.plot([r / 1e3 for r in rs], [100 * S[f"disk_r{r}_n{n}"][w][f"all_{k}"] for r in rs], LS[w], color=col,
-                    lw=2 if w == "0" else 1.4, label=f"{n} det." if w == "0" else None)
-    ax.set(xscale="log", xlabel="disk radius [km]", ylabel=f"within {lab} and triggered [%]", title=f"Within {lab}")
-    ax.grid(alpha=0.25, lw=0.5)
-for w in WS:
-    axs[1].plot([], [], LS[w], color="#52514e", label=WLAB[w])
-axs[0].legend(frameon=False, fontsize=9); axs[1].legend(frameon=False, fontsize=9, title="window")
-fig.suptitle("Centred disks with cosmic-ray background (1,826 /m²/s, 2 m² detectors, window centred on the front) · "
-             "trigger ≥ 3 detectors > 1 particle · 5,000 showers", fontsize=12.5)
-fig.tight_layout(); fig.savefig(f"{H}/noise_disks.png", dpi=110, facecolor="white"); plt.close(fig)
+def disks_fig(pre, fname, ylab, extra):
+    fig, axs = plt.subplots(1, 3, figsize=(21, 6.4))
+    for ax, (k, lab) in zip(axs, TH):
+        for n, col in NC.items():
+            rs = sorted(int(re.fullmatch(r"disk_r(\d+)_n\d+", x).group(1)) for x in S if re.fullmatch(rf"disk_r\d+_n{n}", x))
+            for w in WS:
+                ax.plot([r / 1e3 for r in rs], [100 * S[f"disk_r{r}_n{n}"][w][f"{pre}_{k}"] for r in rs], LS[w], color=col,
+                        lw=2 if w == "0" else 1.4, label=f"{n} det." if w == "0" else None)
+        ax.set(xscale="log", xlabel="disk radius [km]", ylabel=f"within {lab}{ylab} [%]", title=f"Within {lab}")
+        ax.grid(alpha=0.25, lw=0.5)
+    for w in WS:
+        axs[1].plot([], [], LS[w], color="#52514e", label=WLAB[w])
+    axs[0].legend(frameon=False, fontsize=9); axs[1].legend(frameon=False, fontsize=9, title="window")
+    fig.suptitle("Centred disks with cosmic-ray background (1,826 /m²/s, 2 m² detectors, window centred on the front) · " +
+                 extra + " · 5,000 showers", fontsize=12.5)
+    fig.tight_layout(); fig.savefig(f"{H}/{fname}", dpi=110, facecolor="white"); plt.close(fig)
+
+
+
+disks_fig("all", "noise_disks.png", " and triggered", "trigger ≥ 3 detectors > 1 particle")
+disks_fig("notrig", "noise_disks_notrig.png", "", "no trigger")
 
 # key layouts per N: grid, best disk (no noise), best optimised (no noise)
 keys = []
