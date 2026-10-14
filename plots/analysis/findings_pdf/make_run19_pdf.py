@@ -331,6 +331,50 @@ for N in (50, 20):
     pages.append(page([OPT + f"opt_accuracy{SN}.png"], [f"{N} detectors, all 5,000 held-out showers: optimised layouts vs their grid and centre starts"]))
     pages.append(page([OPT + f"opt_accuracy_detected{SN}.png"], [f"{N} detectors, detected showers only (≥ 3 detectors with > 1 particle)"]))
 
+# ── Background noise ─────────────────────────────────────────────────────────
+NZ = R19 + "diagnostics/noise/"
+if os.path.exists(NZ + "noise_scores.json"):
+    ND = json.load(open(NZ + "noise_scores.json")); NS = ND["scores"]
+    pages.append(section_page("Background noise", "Cosmic-ray muons in the detectors (SWGO rate) · current recon, no retraining"))
+    pages.append(text_page("Background noise: setup", [
+        "Rate: 1,826 muons / m² / s (SWGO, HAP-2024-004, 4.7–5 km altitude) · detectors of 2 m² → 3,652 Hz per detector",
+        "Per detector and shower: N_bg ~ Poisson(λ), λ = 2 m² × 1.826e-6 /ns × W  →  4.7e-4 (128 ns), 3.7e-3 (1 µs), 0.037 (10 µs)",
+        "Window W centred on the true front arrival at each detector (SWGO: trigger, then collect hits consistent with the front)",
+        "     front time from the true direction and the earliest timed detector: t_i = t_ref + (r_i − r_ref)·n / c",
+        "Signal: E' = E + N_bg (1 particle per muon) · T' = min(T, earliest background time), background times uniform in W",
+        "Trigger (as SWGO's multiplicity Ntrigger): ≥ 3 detectors with E' > 1; untriggered showers count as failures",
+        "Recon: the run 19 recon (trained without noise) · 5,000 held-out showers · all test layouts and optimised designs",
+        "How SWGO does it (swgolo148.cpp): every tank's expected count is signal + TankArea × 1.826e-6 × 128 ns, Poisson; tank",
+        "     time = average of signal and background hits; an event counts if ≥ 50 tanks see ≥ 1 particle (Poisson tail)",
+        "Caveat: kernel E = particles collected by a σ = 10 m Gaussian acceptance; its equivalence to a 2 m² detector is not",
+        "     verified · if the kernel's effective area is larger, the noise is underweighted (10 µs = 80× the SWGO window)",
+    ]))
+    keys = []
+    for n in (100, 50, 20, 10):
+        disks = [x for x in NS if re.fullmatch(rf"disk_r\d+_n{n}", x)]
+        opts = [x for x in NS if x.startswith("opt:") and not x.startswith("opt:start") and (x.endswith(f"_n{n}") if n != 100 else "_n" not in x)]
+        keys += [f"grid_n{n}", max(disks, key=lambda x: NS[x]["0"]["all_1"])]
+        if opts:
+            keys.append(max(opts, key=lambda x: NS[x]["0"]["all_1"]))
+    WS = [f"{w:g}" for w in ND["windows_ns"]]
+    WL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
+    rows = ["layout                          " + "".join(f"{WL[w]:>17s}" for w in WS) + "   triggered (no noise → 10 µs)",
+            "                                " + "".join(f"{'1° / 5° [%]':>17s}" for w in WS)]
+    for k in keys:
+        r = NS[k]
+        rows.append(f"{k.replace('opt:', 'opt ').replace('twotier_', '2t ')[:31]:<32s}" + "".join(
+            f"{100*r[w]['all_1']:.1f} / {100*r[w]['all_5']:.1f}".rjust(17) for w in WS)
+            + f"   {100*r[WS[0]]['triggered']:.1f} → {100*r[WS[-1]]['triggered']:.1f}%")
+    g0 = NS["grid_n100"]
+    pages.append(table_page("Background noise: key layouts per window", rows, [
+        "Shares are of all 5,000 showers, counting only triggered showers (≥ 3 detectors > 1 particle, signal + noise)",
+        f"100-det. grid: background-only detectors per shower {g0['128']['bg_only']:.3f} (128 ns), {g0['1000']['bg_only']:.2f} (1 µs), "
+        f"{g0['10000']['bg_only']:.2f} (10 µs)",
+    ]))
+    pages.append(page([NZ + "noise_disks.png"], ["Disks vs radius per window (solid: no noise; dashed 128 ns, dotted 1 µs, dash-dot 10 µs)"]))
+    pages.append(page([NZ + "noise_best.png"], ["Grid, best disk and best optimised design per detector count, per window"]))
+    pages.append(page([NZ + "noise_bgonly.png"], ["Left: detectors that fire on background alone · right: share of showers passing the trigger"]))
+
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
 print(f"[write] {OUT}  ({len(pages)} pages)")
