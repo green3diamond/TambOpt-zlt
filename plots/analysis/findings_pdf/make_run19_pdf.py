@@ -291,15 +291,15 @@ pages.append(table_page("Optimised layouts: reconstruction accuracy", rows[:-1],
     "Detected = ≥ 3 detectors with > 1 particle (as in three-tier) · 5,000 held-out showers: ±0.45 pts at 10% (all showers)",
     f"Best over all showers: {LAB[bo.rsplit('_', 1)[0]]} from the {bo.rsplit('_', 1)[1]} ({100*OS[bo]['all_1']:.1f} / {100*OS[bo]['all_2.5']:.1f} / "
     f"{100*OS[bo]['all_5']:.1f}%) vs the grid start ({100*g['all_1']:.1f} / {100*g['all_2.5']:.1f} / {100*g['all_5']:.1f}%)",
-    "For reference, the best test layout (6 km disk): 11.9 / 45.1 / 77.4% · centre starts end ~1 pt below the grid at 1°",
+    "Reference: best test layout (6 km disk) 11.9 / 45.1 / 77.4% · from the centre: 9.2–9.6% at 1° (three-tier: 6.9%)",
 ]))
 pages.append(page([OPT + "opt_accuracy.png"], [
     "All showers: every optimisation from the grid gains at 2.5° and 5° (+0.7 to +5.6 pts); at 1° only two-tier and three-tier gain",
-    "From the centre (4% of showers detected at the start) all utilities spread the detectors out and recover to ~9–10% within 1°",
+    "From the centre (4% of showers detected at the start) all utilities spread out: 9.2–9.6% within 1°, three-tier only 6.9%",
     "No run produced a dense core: the optimiser always spreads the 100 detectors over the 12 km plane"]))
 pages.append(page([OPT + "opt_accuracy_detected.png"], [
-    "Detected showers only (≥ 3 detectors with > 1 particle): the optimised layouts reconstruct 13.8–17.1% within 1° and 83–85% within 5°",
-    "     vs 12.9 / 49.9 / 81.3% for the grid start: they detect slightly fewer showers (30–33% vs 34%) but reconstruct them better",
+    "Detected showers only (≥ 3 detectors with > 1 particle): the optimised layouts reconstruct 12.9–17.1% within 1° and 79–85% within 5°",
+    "     vs 12.9 / 49.9 / 81.3% for the grid start: they detect fewer showers (27–33% vs 34%) but mostly reconstruct them better",
     "Each bar uses that layout's own detected showers (~1,500–1,700 of 5,000), so differences of ~1 pt are within noise"]))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
