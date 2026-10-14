@@ -8,7 +8,7 @@ shower lambda = 2 * 1.826e-6 * W[ns] in a window W centred on the true front arr
 Trigger: >= 3 detectors with E' > 1. The recon is unchanged (run 19, trained without noise).
 Writes noise_scores.json: {layout: {W: metrics}}; W = 0 is the no-noise baseline through the same code path.
 
-    python score_noise.py [--windows 0 128 1000 10000]
+    python score_noise.py [--windows 0 128 1000 10000] [--layouts other_layouts.txt --no-opt --out other.json]
 """
 import argparse
 import importlib.util
@@ -41,6 +41,9 @@ MIN_HIT = 3
 ap = argparse.ArgumentParser()
 ap.add_argument("--windows", type=float, nargs="+", default=[0, 128, 1000, 10000], help="integration windows [ns]")
 ap.add_argument("--n-events", type=int, default=5000)
+ap.add_argument("--layouts", default=os.path.join(T_DIR, "layouts.txt"), help="name=path.pt lines")
+ap.add_argument("--no-opt", action="store_true", help="skip the optimised designs in opt_scores.json")
+ap.add_argument("--out", default=os.path.join(HERE, "noise_scores.json"))
 args = ap.parse_args()
 
 dev = DCS.DEVICE
@@ -54,10 +57,10 @@ E_true, th_t, ph_t = primary_to_physical_labels(prim)
 n_true = DCS.sph(th_t, ph_t)                                                  # (B, 3) ENU, propagation direction
 
 layouts = {}
-for line in open(os.path.join(T_DIR, "layouts.txt")):
+for line in open(args.layouts):
     if line.strip():
         k, p = line.strip().split("=", 1); layouts[k] = p
-for k, r in json.load(open(OPT)).items():
+for k, r in ({} if args.no_opt else json.load(open(OPT))).items():
     layouts["opt:" + k] = r["path"]
 print(f"{len(layouts)} layouts, windows {args.windows} ns", flush=True)
 
@@ -108,5 +111,5 @@ for li, (name, path) in enumerate(layouts.items()):
     s = "  ".join(f"W={w}: {100*v['all_1']:.1f}/{100*v['all_5']:.1f} trig {100*v['triggered']:.0f}%" for w, v in res.items())
     print(f"[{name:30s}] n={nd:3d}  {s}", flush=True)
 json.dump(dict(rate_per_m2_ns=RATE_PER_M2_NS, area_m2=AREA_M2, min_hit=MIN_HIT, n_events=B, t_fallback_us=T_FALLBACK,
-               windows_ns=args.windows, scores=out), open(os.path.join(HERE, "noise_scores.json"), "w"), indent=1)
-print("[write]", os.path.join(HERE, "noise_scores.json"))
+               windows_ns=args.windows, scores=out), open(args.out, "w"), indent=1)
+print("[write]", args.out)

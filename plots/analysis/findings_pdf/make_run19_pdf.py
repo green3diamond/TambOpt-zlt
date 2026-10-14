@@ -412,6 +412,45 @@ if os.path.exists(NZ + "noise_scores.json"):
     pages.append(page([NZ + "noise_best.png"], ["Grid, best disk and best optimised design per detector count, per window"]))
     pages.append(page([NZ + "noise_bgonly.png"], ["Left: detectors that fire on background alone · right: share of showers passing the trigger"]))
 
+# ── Triplets ─────────────────────────────────────────────────────────────────
+TP = R19 + "diagnostics/triplets/"
+if os.path.exists(TP + "triplet_scores.json"):
+    TS = json.load(open(TP + "triplet_scores.json"))["scores"]
+    pages.append(section_page("Triplet clusters", "3 detectors on a small triangle per cluster vs grid, disks and 2 / 4 / 5-detector clusters · with and without background"))
+    pages.append(text_page("Triplets: setup", [
+        "Designs: K cluster centres on the even grid, 3 detectors on an equilateral triangle of circumradius r around each",
+        "     K = 33 / 16 / 7 / 3 → N = 99 / 48 / 21 / 9 · r = 10, 25, 50, 100, 200, 500 m (side = r√3) · random rotation per triangle",
+        "Compared with: the grid and centred disks (r 0.1–12 km) rebuilt at the same N, and the main test's K × M clusters",
+        "     (M = 2 / 4 / 5, r = 50–1000 m) at N = 100 / 50 / 20",
+        "Idea: one triangle can satisfy the ≥ 3-detector trigger alone, and gives a short-baseline plane-front fit",
+        "Scored as the background test: run 19 recon (no retraining), 5,000 held-out showers, windows 0 / 128 ns / 1 µs / 10 µs,",
+        "     with and without the trigger (≥ 3 detectors > 1 particle; untriggered showers count as failures)",
+    ]))
+    pages.append(page([TP + "triplets_designs.png"], ["Triplet designs: full plane at r = 25 / 100 / 500 m; right: the central cluster for every r"]))
+    pages.append(page([TP + "compare_designs.png"], ["Comparison designs: grid, best disk (no noise, 1°), and the 2 / 4 / 5-detector clusters (r = 100 m shown)"]))
+    TWL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
+    for pre, title in (("notrig", "Triplets, no trigger: within 1° / 5° [%]"), ("all", "Triplets, with trigger: within 1° / 5° [%] and triggered share")):
+        rows = ["layout                    " + "".join(f"{TWL[w]:>15s}" for w in TWL) + "   triggered (no noise)"]
+        for n3, n0 in ((99, 100), (48, 50), (21, 20), (9, 10)):
+            K = n3 // 3
+            dk = max((x for x in TS if re.fullmatch(rf"disk_r\d+_n{n3}", x)), key=lambda x: TS[x]["0"][pre + "_1"])
+            tk = max((x for x in TS if x.startswith(f"tri{K}_")), key=lambda x: TS[x]["0"][pre + "_1"])
+            ck = [x for x in NS if re.fullmatch(rf"clu\d+x\d_r\d+_n{n0}", x)]
+            ks = [(f"grid_n{n3}", TS), (dk, TS), (tk, TS), (f"tri{K}_r50_n{n3}", TS)]
+            if ck:
+                ks.append((max(ck, key=lambda x: NS[x]["0"][pre + "_1"]), NS))
+            for k, src in ks:
+                r = src[k]
+                rows.append(f"{k[:25]:<26s}" + "".join(f"{100*r[w][pre + '_1']:.1f} / {100*r[w][pre + '_5']:.1f}".rjust(15) for w in TWL)
+                            + f"   {100*r['0']['triggered']:.1f}%")
+            rows.append("")
+        pages.append(table_page(title, rows[:-1], ["Per N: grid, best disk, best triplet, triplet r = 50 m, best K × M cluster of the main test (N = 100 / 50 / 20)"]))
+    if os.path.exists(TP + "triplet_findings.json"):
+        pages.append(text_page("Triplets: findings", json.load(open(TP + "triplet_findings.json"))))
+    pages.append(page([TP + "triplets_vs_r_notrig.png"], ["Within 1° vs cluster radius, no trigger · rows N, columns window · lines: grid, best disk"]))
+    pages.append(page([TP + "triplets_vs_r.png"], ["Within 1° vs cluster radius, with the trigger (untriggered showers count as failures)"]))
+    pages.append(page([TP + "triplets_trig.png"], ["Share of showers passing the trigger (≥ 3 detectors > 1 particle) vs cluster radius"]))
+
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
 print(f"[write] {OUT}  ({len(pages)} pages)")
