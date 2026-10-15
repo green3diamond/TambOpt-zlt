@@ -1,11 +1,11 @@
 """Run 19: score the test layouts and the optimised designs with cosmic-ray background added to the detectors.
 
 Background (SWGO / SWGOLO swgolo148.cpp, HAP-2024-004): 1,826 muons / m^2 / s; detectors of 2 m^2, so per detector and
-shower lambda = 2 * 1.826e-6 * W[ns] in a window W centred on the true front arrival at the detector. Per window:
+shower lambda = 2 * 1.826e-6 * W[ns] in one readout window W, shared by all detectors and centred on the shower's
+earliest timed detector t_ref. Per window:
     E' = E + N_bg,  N_bg ~ Poisson(lambda)  (one particle per background muon)
-    T' = min(T, earliest background time),  background times ~ U(t_front - W/2, t_front + W/2)
-    t_front,i = t_ref + (r_i - r_ref) . n / c   (r = (E, N, Up); t_ref, r_ref = the earliest timed detector)
-Trigger: >= 3 detectors with E' > 1. The recon is unchanged (run 19, trained without noise).
+    T' = min(T, earliest background time),  background times ~ U(t_ref - W/2, t_ref + W/2)
+Trigger: >= 3 detectors with E' > 1. Recon: the clean run 19 recon, or --recon-dir (e.g. the noise fine-tune).
 Writes noise_scores.json: {layout: {W: metrics}}; W = 0 is the no-noise baseline through the same code path.
 
     python score_noise.py [--windows 0 128 1000 10000] [--layouts other_layouts.txt --no-opt --out other.json]
@@ -27,7 +27,7 @@ import modules.constants as C  # noqa: E402
 from modules.geometry import load_tr_mountain, SurfaceUpMap  # noqa: E402
 from modules.optimize import load_models  # noqa: E402
 from modules.optimize.objective import primary_to_physical_labels  # noqa: E402
-from modules.optimize.background import RATE_PER_M2_NS, AREA_M2, front_times, add_background  # noqa: E402
+from modules.optimize.background import RATE_PER_M2_NS, AREA_M2, window_centres, add_background  # noqa: E402
 from plots.layouts.true_utility import load_events  # noqa: E402
 
 _s = importlib.util.spec_from_file_location("dcs", os.path.join(REPO, "scripts/diagnostics/detector_count_scan.py"))
@@ -72,13 +72,12 @@ for li, (name, path) in enumerate(layouts.items()):
     e, n = torch.as_tensor(L["x"]).float().to(dev), torch.as_tensor(L["y"]).float().to(dev)
     nd = e.numel()
     xy = torch.stack([e, n], -1)[None].expand(B, -1, -1)
-    P = torch.stack([e, n, surface(n, e)], -1)                                # (nd, 3) ENU m
     with torch.no_grad():
         lab = kern(prim, xy)
         E = torch.expm1(lab[..., 0].clamp(min=0)); t = torch.expm1(lab[..., 1].clamp(min=0)); timed = lab[..., 1] > 0
         if T_FALLBACK is None:
             T_FALLBACK = float(t[timed].median()) if timed.any() else 10.0
-        t_front = front_times(t, timed, P, n_true, T_FALLBACK)                  # (B, nd) us
+        t_front = window_centres(t, timed, T_FALLBACK)                          # (B, nd) us
         res = {}
         for W in args.windows:
             g = torch.Generator(device=dev); g.manual_seed(int(1000003 * li + W))

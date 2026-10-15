@@ -6,7 +6,7 @@ Starts from <RECON_FOLDER>_deepsets/recon.pt (left untouched) and writes a NEW c
 Same corpus, shower-level split and blob filter as 03_train_recon_deepsets.py (kernel labels, --recon-input kernel).
 Each training row gets its own window W drawn uniformly from --windows (default 0 / 128 ns / 1 us / 10 us; 0 keeps
 clean rows in the mix), and background from modules/optimize/background.py: E' = E + Poisson(lambda), T' = min(T,
-earliest background time), times uniform in W around the true front. Normalisation stats are kept from the clean
+earliest background time), times uniform in one readout window W around the shower's earliest hit (no truth). Normalisation stats are kept from the clean
 recon. Validation: a fixed 200k-row slice of the val split with fixed noise (row i gets window i mod len(windows)),
 reported per window; the checkpoint keeps the best mean val over the windows.
 
@@ -25,9 +25,8 @@ from torch.utils.data import DataLoader, RandomSampler, TensorDataset, Subset
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 import modules.constants as C  # noqa: E402
-from modules.geometry import load_tr_mountain, SurfaceUpMap  # noqa: E402
 from modules.optimize import load_models  # noqa: E402
-from modules.optimize.background import front_times, add_background  # noqa: E402
+from modules.optimize.background import window_centres, add_background  # noqa: E402
 
 _s = importlib.util.spec_from_file_location("stage3", os.path.join(REPO, "scripts", "03_train_recon_deepsets.py"))
 S3 = importlib.util.module_from_spec(_s); _s.loader.exec_module(S3)
@@ -51,9 +50,6 @@ WS = torch.tensor(args.windows, dtype=torch.float32)
 print(f"src {args.src}\nout {args.out}\nwindows {args.windows} ns  lr {args.lr}  wd {args.weight_decay}  "
       f"rows/epoch {args.rows_per_epoch}", flush=True)
 
-m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
-                     layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
-surface = SurfaceUpMap.from_mountain(m, grid_h=256, grid_w=256).to(dev)
 
 t0 = time.time()
 primary = torch.load(os.path.join(D, "primary.pt")).float()
@@ -89,11 +85,7 @@ opt = torch.optim.AdamW(recon.parameters(), lr=args.lr, weight_decay=args.weight
 def noisy(idx, xy_b, E_b, T_b, tgt_b, W, gen):
     """Kernel inputs (log1p) -> inputs with background in window W (per row), as the recon reads them."""
     E = torch.expm1(E_b.clamp(min=0)); t = torch.expm1(T_b.clamp(min=0)); timed = T_b > 0
-    B, nd = E.shape
-    up = surface(xy_b[..., 1].reshape(-1), xy_b[..., 0].reshape(-1)).view(B, nd)
-    P = torch.cat([xy_b, up[..., None]], -1)
-    n = tgt_b[:, :3] / tgt_b[:, :3].norm(dim=1, keepdim=True).clamp(min=1e-12)   # propagation direction (ENU)
-    En, Tn, _, _ = add_background(E, t, timed, front_times(t, timed, P, n, T_FALLBACK), W, gen)
+    En, Tn, _, _ = add_background(E, t, timed, window_centres(t, timed, T_FALLBACK), W, gen)
     return torch.stack([xy_b[..., 0], xy_b[..., 1], torch.log1p(En), torch.log1p(Tn)], -1)
 
 

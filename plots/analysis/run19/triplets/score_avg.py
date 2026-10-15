@@ -27,7 +27,7 @@ import modules.constants as C  # noqa: E402
 from modules.geometry import load_tr_mountain, SurfaceUpMap  # noqa: E402
 from modules.optimize import load_models  # noqa: E402
 from modules.optimize.objective import primary_to_physical_labels  # noqa: E402
-from modules.optimize.background import front_times, add_background  # noqa: E402
+from modules.optimize.background import window_centres, add_background  # noqa: E402
 from plots.layouts.true_utility import load_events  # noqa: E402
 
 _s = importlib.util.spec_from_file_location("dcs", os.path.join(REPO, "scripts/diagnostics/detector_count_scan.py"))
@@ -70,14 +70,14 @@ def recon_err(xy, lE, lT):
 
 
 def labels(e, n):
-    """Kernel E [particles], t [us], timed, positions P (nd, 3) for detectors at (e, n)."""
+    """Kernel E [particles], t [us], timed for detectors at (e, n)."""
     global T_FALLBACK
     xy = torch.stack([e, n], -1)[None].expand(B, -1, -1)
     lab = kern(prim, xy)
     E = torch.expm1(lab[..., 0].clamp(min=0)); t = torch.expm1(lab[..., 1].clamp(min=0)); timed = lab[..., 1] > 0
     if T_FALLBACK is None:
         T_FALLBACK = float(t[timed].median()) if timed.any() else 10.0
-    return xy, E, t, timed, torch.stack([e, n, surface(n, e)], -1)
+    return xy, E, t, timed
 
 
 layouts = {}
@@ -94,11 +94,11 @@ for li, (name, path) in enumerate(layouts.items()):
     e, n = torch.as_tensor(L["x"]).float().to(dev), torch.as_tensor(L["y"]).float().to(dev)
     res = {"avg": {}, "centres": {}}
     with torch.no_grad():
-        xy, E, t, timed, P = labels(e, n)
-        t_front = front_times(t, timed, P, n_true, T_FALLBACK)
+        xy, E, t, timed = labels(e, n)
+        t_front = window_centres(t, timed, T_FALLBACK)
         ce, cn = e.view(K, 3).mean(1), n.view(K, 3).mean(1)
-        xy_c, E_c, t_c, timed_c, P_c = labels(ce, cn)
-        tf_c = front_times(t_c, timed_c, P_c, n_true, T_FALLBACK)
+        xy_c, E_c, t_c, timed_c = labels(ce, cn)
+        tf_c = window_centres(t_c, timed_c, T_FALLBACK)
         for W in args.windows:
             g = torch.Generator(device=dev); g.manual_seed(int(1000003 * li + W))
             En, Tn, Nb, hasbg = add_background(E, t, timed, t_front, W, g)

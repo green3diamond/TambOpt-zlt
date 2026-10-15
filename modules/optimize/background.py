@@ -1,10 +1,11 @@
 """Cosmic-ray background in the detectors (SWGO / SWGOLO swgolo148.cpp, HAP-2024-004).
 
-1,826 muons / m^2 / s on detectors of 2 m^2: per detector and shower lambda = 2 * 1.826e-6 * W[ns] in a window W
-centred on the true front arrival at the detector. Per window:
+1,826 muons / m^2 / s on detectors of 2 m^2: per detector and shower lambda = 2 * 1.826e-6 * W[ns] in ONE readout
+window W shared by all detectors, centred on the shower's earliest timed detector t_ref (observed, no truth). Per window:
     E' = E + N_bg,  N_bg ~ Poisson(lambda)  (one particle per background muon)
-    T' = min(T, earliest background time),  background times ~ U(t_front - W/2, t_front + W/2)
-    t_front,i = t_ref + (r_i - r_ref) . n / c   (r = (E, N, Up); t_ref, r_ref = the earliest timed detector)
+    T' = min(T, earliest background time),  background times ~ U(t_ref - W/2, t_ref + W/2)
+(Until 2026-10-15 the window was centred on each detector's TRUE front arrival, t_ref + (r_i - r_ref) . n_true / c:
+background times then carried the true direction, and a recon fine-tuned on them learned to read it.)
 Used by the run 19 noise scoring (plots/analysis/run19/noise/score_noise.py) and the noise fine-tune
 (scripts/03c_finetune_recon_noise.py). E in particles, t in us, positions in m.
 """
@@ -12,25 +13,20 @@ import torch
 
 RATE_PER_M2_NS = 1.826e-6
 AREA_M2 = 2.0
-C_M_PER_US = 299.792458
 
 
-def front_times(t, timed, P, n, t_fallback):
-    """True front arrival per detector [us]. t, timed: (B, nd); P: (nd, 3) or (B, nd, 3) ENU m; n: (B, 3) unit
-    propagation direction. Reference = the earliest timed detector; showers with none use the layout centroid at
-    t_fallback."""
-    B = t.shape[0]
-    P = P.expand(B, -1, -1) if P.dim() == 2 else P
+def window_centres(t, timed, t_fallback):
+    """Readout-window centre per detector [us], (B, nd): the shower's earliest timed detector, the same for every
+    detector; showers with no timed detector use t_fallback. t, timed: (B, nd)."""
     big = torch.finfo(t.dtype).max
-    k_ref = torch.where(timed, t, torch.full_like(t, big)).argmin(1)
-    any_t = timed.any(1)
-    r_ref = torch.where(any_t[:, None], P[torch.arange(B, device=t.device), k_ref], P.mean(1))
-    t_ref = torch.where(any_t, t.gather(1, k_ref[:, None]).squeeze(1), torch.full_like(t[:, 0], t_fallback))
-    return t_ref[:, None] + ((P - r_ref[:, None]) * n[:, None]).sum(-1) / C_M_PER_US
+    t_ref = torch.where(timed, t, torch.full_like(t, big)).min(1).values
+    t_ref = torch.where(timed.any(1), t_ref, torch.full_like(t_ref, t_fallback))
+    return t_ref[:, None].expand_as(t)
 
 
 def add_background(E, t, timed, t_front, W, gen):
-    """E, t, timed, t_front: (B, nd); W: window [ns], a float or a (B,) tensor (one window per shower).
+    """E, t, timed, t_front (window centres, window_centres()): (B, nd); W: window [ns], a float or a (B,) tensor
+    (one window per shower).
     Returns (E', T', N_bg, has_bg)."""
     if torch.is_tensor(W):
         W = W.to(E)[:, None]
