@@ -59,13 +59,43 @@ def text_page(heading, bullets):
 
 
 def table_page(heading, rows, notes):
+    """Monospace table with borders: an outer frame, a line under every row (darker under the header rows and at blank
+    group separators) and column rules in the gutters, i.e. character columns that are blank in every row for >= 2
+    characters. Header = the first row plus any following rows that start with a space."""
     p = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(p)
     d.text((200, 150), heading, fill=INK, font=HEAD)
-    y = 320
+    cw, x0, top = MONO.getlength("M"), 210, 320
+    n = max(len(r) for r in rows)
+    body = [r.ljust(n) for r in rows if r.strip()]
+    gut = [all(r[c] == " " for r in body) for c in range(n)]
+    cols, c = [], 0
+    while c < n:
+        if gut[c]:
+            s = c
+            while c < n and gut[c]:
+                c += 1
+            if c - s >= 2 and s > 0 and c < n:
+                cols.append(x0 + cw * (s + c) / 2)
+        else:
+            c += 1
+    nh = 1
+    while nh < len(rows) and rows[nh][:1] == " ":
+        nh += 1
+    x1, y, LIGHT, DARK = x0 + cw * n + 14, top, "#c9c8c3", "#52514e"
+    d.line([(x0 - 14, y - 10), (x1, y - 10)], fill=DARK, width=3)
     for k, row in enumerate(rows):
-        d.text((210, y), row, fill=INK if k else "#52514e", font=MONO)
+        if not row.strip():
+            d.line([(x0 - 14, y - 10), (x1, y - 10)], fill=DARK, width=3)
+            y += 14
+            continue
+        d.text((x0, y), row, fill=INK if k >= nh else "#52514e", font=MONO)
         y += 58
+        d.line([(x0 - 14, y - 10), (x1, y - 10)], fill=DARK if k == nh - 1 else LIGHT, width=3 if k == nh - 1 else 1)
+    d.line([(x0 - 14, y - 10), (x1, y - 10)], fill=DARK, width=3)
+    for x in [x0 - 14, x1] + cols:
+        frame = x in (x0 - 14, x1)
+        d.line([(x, top - 10), (x, y - 10)], fill=DARK if frame else LIGHT, width=3 if frame else 1)
     y += 40
     for b in notes:
         d.text((210, y), "•  " + b, fill=INK, font=FONT)
@@ -526,6 +556,43 @@ if os.path.exists(TP + "triplet_scores.json"):
         if os.path.exists(TP + "triplet_local_findings.json"):
             pages.append(text_page("Local 2-of-3 trigger: findings", json.load(open(TP + "triplet_local_findings.json"))))
         pages.append(page([TP + "local_vs_r_notrig.png"], ["Within 1° vs triangle size: no local trigger (red), 2-of-3 with hit E' > 0.001 (blue)"]))
+
+# ── kNN 2-of-3 gate on any layout ───────────────────────────────────────────
+if os.path.exists(TP + "knn_scores.json"):
+    KN = json.load(open(TP + "knn_scores.json"))["scores"]
+    pages.append(text_page("kNN 2-of-3 gate: setup", [
+        "A local coincidence for any layout: each detector is read out only if ≥ 2 of {itself, its 2 nearest neighbours}",
+        "     are hit (hit = E' > 0.001); otherwise E = 0 and no time before the recon (clean run 19 recon)",
+        "Neighbours from the layout's East-North positions · for the triangles also 'group' = 2-of-3 within its own triangle",
+        "Layouts: grid and 6 km disk (99 det.), 20 × 5 clusters at 1 km, the 33-triangle layouts · same noise draws per readout",
+        "Background windows 0 / 128 ns / 1 µs / 10 µs, one readout window at the earliest hit · 5,000 held-out showers",
+    ]))
+    TWL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
+    rows = ["layout              readout" + "".join(f"{TWL[w]:>15s}" for w in TWL) + "   read / ghosts",
+            "                           " + "".join(f"{'1° / 5° [%]':>15s}" for w in TWL) + "   (10 µs)"]
+    for ks in (("grid_n99", "disk_r6000_n99", "clu20x5_r1000_n100"), ("tri33_r25_n99",), ("tri33_r100_n99",), ("tri33_r500_n99",)):
+        for k in ks:
+            for rd in ("none", "knn", "group"):
+                if rd in KN[k]:
+                    v = KN[k][rd]
+                    rows.append(f"{k:<20s}{rd:<7s}" + "".join(f"{100*v[w]['notrig_1']:.1f} / {100*v[w]['notrig_5']:.1f}".rjust(15) for w in TWL)
+                                + f"   {v['10000']['read_det']:.0f} / {v['10000']['ghosts']:.2f}")
+        rows.append("")
+    pages.append(table_page("kNN 2-of-3 gate: within 1° / 5° [%]", rows[:-1], [
+        "none = all read out · knn = kNN 2-of-3 · group = 2-of-3 within the triangle · read = detectors read out per shower"]))
+    pages.append(text_page("kNN 2-of-3 gate: findings", [
+        f"From 1 µs up the gate pays: 10 µs grid {100*KN['grid_n99']['none']['10000']['notrig_1']:.1f} → "
+        f"{100*KN['grid_n99']['knn']['10000']['notrig_1']:.1f}%, disk {100*KN['disk_r6000_n99']['none']['10000']['notrig_1']:.1f} → "
+        f"{100*KN['disk_r6000_n99']['knn']['10000']['notrig_1']:.1f}% within 1° (within 5°: ~7% → ~37%)",
+        f"     1 µs: within 5° up everywhere (grid {100*KN['grid_n99']['none']['1000']['notrig_5']:.1f} → "
+        f"{100*KN['grid_n99']['knn']['1000']['notrig_5']:.1f}%); within 1° about even",
+        f"Without noise it costs 20–30% at 1° (grid {100*KN['grid_n99']['none']['0']['notrig_1']:.1f} → "
+        f"{100*KN['grid_n99']['knn']['0']['notrig_1']:.1f}%): lone weak hits are discarded",
+        "~12–13 of 99 detectors read out per shower; ghosts at 10 µs 3.2 → 0.3–0.5 per shower",
+        "With the gate, layout shape matters less: grid 7.6, triangles r = 500 m 7.8, disk 8.1% (no noise); small triangles worst",
+        "Triangles r ≤ 200 m: the 2 nearest neighbours are always the triangle mates, so kNN = group exactly",
+        "     r = 500 m: only 35% are; kNN is slightly better there (7.8 vs 7.4% without noise)",
+    ]))
 
 # ── Triplets with the fine-tuned recon ──────────────────────────────────────
 TFF = [TP + f for f in ("triplet_scores_ft.json", "triplet_avg_scores_ft.json", "triplet_local_scores_ft.json")]
