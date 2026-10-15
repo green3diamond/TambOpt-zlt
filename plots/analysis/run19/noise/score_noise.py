@@ -89,7 +89,7 @@ for li, (name, path) in enumerate(layouts.items()):
             trig = (En > 1).sum(1) >= MIN_HIT
             a, trig = a.cpu().numpy(), trig.cpu().numpy()
             r = dict(n_det=nd, lam=lam, nbg_mean=float(Nb.mean()), bg_only=float((hasbg & ~timed).sum(1).float().mean()),
-                     t_changed=float((hasbg & timed & (t_bg < t)).float().mean()), triggered=float(trig.mean()),
+                     t_changed=float((hasbg & timed & (Tn < t)).float().mean()), triggered=float(trig.mean()),
                      ang_med=float(np.median(a)), ang_med_trig=float(np.median(a[trig])) if trig.any() else float("nan"))
             for th, kk in ((1, "1"), (2.5, "2.5"), (5, "5")):
                 r[f"notrig_{kk}"] = float(np.mean(a < th))
