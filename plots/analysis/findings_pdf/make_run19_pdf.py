@@ -370,11 +370,12 @@ if os.path.exists(NZ + "noise_scores.json"):
     pages.append(text_page("Background noise: setup", [
         "Rate: 1,826 muons / m² / s (SWGO, HAP-2024-004, 4.7–5 km altitude) · detectors of 2 m² → 3,652 Hz per detector",
         "Per detector and shower: N_bg ~ Poisson(λ), λ = 2 m² × 1.826e-6/ns × W = 4.7e-4 (128 ns), 3.7e-3 (1 µs), 0.037 (10 µs)",
-        "Window W centred on the true front arrival at each detector (SWGO: trigger, then collect hits consistent with the front)",
-        "     front time from the true direction and the earliest timed detector: t_i = t_ref + (r_i − r_ref)·n / c",
+        "One readout window W shared by all detectors, centred on the shower's earliest timed detector t_ref (observed, no truth)",
+        "     (a per-detector window centred on the TRUE front leaked the direction: background times carried the front's tilt)",
         "Signal: E' = E + N_bg (1 particle per muon) · T' = min(T, earliest background time), background times uniform in W",
         "Trigger (as SWGO's multiplicity Ntrigger): ≥ 3 detectors with E' > 1; untriggered showers count as failures",
-        "Recon: the run 19 recon (trained without noise) · 5,000 held-out showers · all test layouts and optimised designs",
+        "Recon: the run 19 recon (trained without noise), and the recon fine-tuned with background (end of section)",
+        "     5,000 held-out showers · all test layouts and optimised designs",
         "SWGO (swgolo148.cpp): each tank's expected count is signal + TankArea × 1.826e-6 × 128 ns, Poisson; the tank",
         "     time = average of signal and background hits; an event counts if ≥ 50 tanks see ≥ 1 particle (Poisson tail)",
         "Caveat: kernel E = particles collected by a σ = 10 m Gaussian acceptance; its equivalence to a 2 m² detector is not",
@@ -409,16 +410,18 @@ if os.path.exists(NZ + "noise_scores.json"):
         f"100-det. grid: background-only detectors per shower {g0['128']['bg_only']:.3f} (128 ns), {g0['1000']['bg_only']:.2f} (1 µs), "
         f"{g0['10000']['bg_only']:.2f} (10 µs)",
     ])
+    o1 = max((x for x in NS if x.startswith("opt:") and "_n" not in x and not x.startswith("opt:start")), key=lambda x: NS[x]["1000"]["notrig_1"])
+    d1 = max((x for x in NS if re.fullmatch(r"disk_r\d+_n100", x)), key=lambda x: NS[x]["1000"]["notrig_1"])
     pages.append(text_page("Background noise: findings", [
-        f"128 ns (SWGO window): no measurable effect · grid {100*g0['0']['notrig_1']:.1f} → {100*g0['128']['notrig_1']:.1f}% within 1°",
-        "     0.04 background-only detectors per shower (100-det. grid)",
-        f"1 µs: small loss · {100*g0['1000']['notrig_1']:.1f}% within 1°, {100*g0['1000']['notrig_5']:.1f}% within 5° "
-        f"(no noise {100*g0['0']['notrig_5']:.1f}%) · 0.3 background-only detectors",
-        f"10 µs: the recon breaks down · {100*g0['10000']['notrig_1']:.1f}% within 1°, {100*g0['10000']['notrig_5']:.1f}% within 5°",
-        "     ~3 background-only detectors with random times per shower; the recon (trained without noise)",
-        "     reads them as real hits · training with noise is the fix to test next",
-        "Up to 1 µs the best disk and the optimised layouts stay ahead of the grid",
-        "     (100 det. at 1 µs: optimised 10.1%, 6 km disk 9.6%, grid 8.6% within 1°)",
+        f"128 ns (SWGO window): grid {100*g0['0']['notrig_1']:.1f} → {100*g0['128']['notrig_1']:.1f}% within 1° · "
+        f"{g0['128']['bg_only']:.2f} background-only detectors per shower (100-det. grid)",
+        f"1 µs: {100*g0['1000']['notrig_1']:.1f}% within 1°, {100*g0['1000']['notrig_5']:.1f}% within 5° "
+        f"(no noise {100*g0['0']['notrig_5']:.1f}%) · {g0['1000']['bg_only']:.2f} background-only detectors",
+        f"10 µs: {100*g0['10000']['notrig_1']:.1f}% within 1°, {100*g0['10000']['notrig_5']:.1f}% within 5° · "
+        f"{g0['10000']['bg_only']:.1f} background-only detectors per shower",
+        "     background in the shared window often arrives before a late detector's signal and replaces its time",
+        f"Best at 1 µs (100 det., within 1°): {o1.replace('opt:', 'optimised ')} {100*NS[o1]['1000']['notrig_1']:.1f}%, "
+        f"{d1.split('_')[1][1:]} m disk {100*NS[d1]['1000']['notrig_1']:.1f}%, grid {100*g0['1000']['notrig_1']:.1f}%",
         f"The trigger alone (no noise) cuts the grid from {100*g0['0']['notrig_1']:.1f}% to {100*g0['0']['all_1']:.1f}% within 1°",
         f"     only {100*g0['0']['triggered']:.0f}% of showers have ≥ 3 detectors > 1 particle; the kernel's E is an expectation",
         "     (fractional particles still carry times), not a Poisson count, so the no-trigger numbers are optimistic",
@@ -427,6 +430,29 @@ if os.path.exists(NZ + "noise_scores.json"):
     pages.append(page([NZ + "noise_disks.png"], ["Same with the trigger (≥ 3 detectors > 1 particle); untriggered showers count as failures"]))
     pages.append(page([NZ + "noise_best.png"], ["Grid, best disk and best optimised design per detector count, per window"]))
     pages.append(page([NZ + "noise_bgonly.png"], ["Left: detectors that fire on background alone · right: share of showers passing the trigger"]))
+    FTD = R19 + "test_v6_run_03_recentered_deepsets_noise/"
+    if os.path.exists(NZ + "noise_scores_ft.json") and os.path.exists(FTD + "finetune_log.json"):
+        FS = json.load(open(NZ + "noise_scores_ft.json"))["scores"]; FL = json.load(open(FTD + "finetune_log.json"))
+        v0, vb = FL["log"][0]["val"], FL["log"][FL["best_epoch"]]["val"]
+        pages.append(text_page("Recon fine-tuned with background", [
+            "Start: the run 19 recon · new checkpoint test_v6_run_03_recentered_deepsets_noise/recon.pt (clean recon untouched)",
+            "Each training row gets a window drawn from {0, 128 ns, 1 µs, 10 µs} and background as on the setup page",
+            f"AdamW lr 3e-5, wd 0.03, 2 M rows per epoch, {FL['best_epoch']} epochs (best mean val at the last: still improving slightly)",
+            "Validation loss (200k held-out rows, fixed noise)   no noise   128 ns    1 µs    10 µs",
+            "     clean recon                                  " + "   ".join(f"{v:.4f}" for v in v0),
+            "     fine-tuned                                   " + "   ".join(f"{v:.4f}" for v in vb),
+            "Fine-tuning recovers most of the loss from background, at ~2.5% higher loss without noise",
+            "But the 1° share drops: 100-det. grid without noise 10.4 → 7.4% (1 µs: 7.2 → 6.1%); it only wins at 10 µs (0.6 → 3.0%)",
+            "     the MSE loss favours fewer large misses over more showers within 1°: the tuned recon is safer, less precise",
+        ]))
+        rows = ["layout                          recon     " + "".join(f"{WL[w]:>15s}" for w in WS)]
+        for k in keys:
+            for lab, src in (("clean", NS[k]), ("tuned", FS[k])):
+                rows.append(f"{k.replace('opt:', 'opt ').replace('twotier_', '2t ')[:31]:<32s}{lab:<10s}" + "".join(
+                    f"{100*src[w]['notrig_1']:.1f} / {100*src[w]['notrig_5']:.1f}".rjust(15) for w in WS))
+        pages.append(table_page("Clean vs fine-tuned recon: within 1° / 5° [%], no trigger", rows, [
+            "All 5,000 held-out showers · same noise draws for both recons"]))
+        pages.append(page([NZ + "noise_ft.png"], ["Key layouts per detector count: clean recon (dashed) vs fine-tuned with background (solid)"]))
 
 # ── Triplets ─────────────────────────────────────────────────────────────────
 TP = R19 + "diagnostics/triplets/"
@@ -495,7 +521,7 @@ if os.path.exists(TP + "triplet_scores.json"):
             "     (the trigger counts the 3 detectors per station) · separate readout 3.0–3.5%, grid of 99: 4.7%",
             "Large triangles (r = 500 m) must NOT be averaged: 1.3% vs 10.8% separate — averaging times 870 m apart wipes the timing",
             "N ≤ 21: everything below ~0.5% within 1°; no difference resolvable",
-            "Noise columns use the window centred on the true front (see the caveat in the noise section)",
+            "Noise columns: one readout window centred on the shower's earliest hit (as in the noise section)",
         ]))
         pages.append(page([TP + "avg_vs_r_notrig.png"], ["Within 1° vs triangle size, no trigger: separate detectors (red), averaged stations (green), one detector per centre (grey)"]))
         pages.append(page([TP + "avg_vs_r.png"], ["Same with the trigger (≥ 3 detectors > 1 particle; untriggered showers count as failures)"]))

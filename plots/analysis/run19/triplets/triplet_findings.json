@@ -1,13 +1,13 @@
 [
- "Small triplets trigger more showers: at N = 99, 48% (r = 10 m) vs 35% grid · N = 48: 30% vs 15% · N = 21: 14% vs 4%",
+ "Small triplets trigger more showers: at N = 99, 48% (r = 10 m) vs 35% grid \u00b7 N = 48: 30% vs 15% \u00b7 N = 21: 14% vs 4%",
  "     one triangle a few tens of metres across can supply all 3 detectors > 1 particle on its own",
- "But they point worse: within 1° with the trigger, N = 99: 3.0–3.9% (r ≤ 200 m) vs grid 4.7%, best disk (4.5 km) 6.1%",
- "     among triggered showers the median error is 4.2° (r = 10 m) vs 2.6° (grid): the short baseline can't fix the direction",
- "At 5° (with trigger) they tie: 27–29% for small triplets, grid and best disk at N = 99 · at N = 48 small triplets 11.5% vs grid 9.3%",
- "Large triplets (r = 500 m) are just a spread-out layout: 5.0% vs grid 4.7% within 1° at N = 99; still below the best disk",
- "No trigger: small triplets lose (N = 99: 4.7–7.6% vs grid 9.7%, best disk 11.6%) — fewer independent sampling points",
- "Triplets beat the 2 / 4 / 5-detector clusters at the same r (more cluster centres for the same N → more area)",
- "Background: no change up to 1 µs; at 10 µs everything collapses (recon trained without noise), triplets included",
- "Caveat: r = 10 / 25 m is below the training zoo's cluster radii (30–600 m), so the recon is extrapolating there",
- "Verdict: triplets help detection (trigger), not 1° pointing · coverage (grid / disk) still wins at 1°"
+ "But they point worse: within 1\u00b0 with the trigger, N = 99: 3.0\u20133.9% (r \u2264 200 m) vs grid 4.7%, best disk (4.5 km) 6.1%",
+ "     among triggered showers the median error is 4.2\u00b0 (r = 10 m) vs 2.6\u00b0 (grid): the short baseline can't fix the direction",
+ "At 5\u00b0 (with trigger) they tie: 27\u201329% for small triplets, grid and best disk at N = 99 \u00b7 at N = 48 small triplets 11.5% vs grid 9.3%",
+ "Large triplets (r = 500 m) are just a spread-out layout: 5.0% vs grid 4.7% within 1\u00b0 at N = 99; still below the best disk",
+ "No trigger: small triplets lose (N = 99: 4.7\u20137.6% vs grid 9.7%, best disk 11.6%) \u2014 fewer independent sampling points",
+ "Triplets beat the 2 / 4 / 5-detector clusters at the same r (more cluster centres for the same N \u2192 more area)",
+ "Background (one readout window at the earliest hit): 128 ns ~no change; 1 \u00b5s costs ~30% of the 1\u00b0 share (N = 99: grid 9.7 \u2192 6.7%, r = 25 m triplets 5.2 \u2192 3.7%); 10 \u00b5s collapses all",
+ "Caveat: r = 10 / 25 m is below the training zoo's cluster radii (30\u2013600 m), so the recon is extrapolating there",
+ "Verdict: triplets help detection (trigger), not 1\u00b0 pointing \u00b7 coverage (grid / disk) still wins at 1\u00b0"
 ]
