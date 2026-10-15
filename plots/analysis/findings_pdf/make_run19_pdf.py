@@ -466,6 +466,39 @@ if os.path.exists(TP + "triplet_scores.json"):
     pages.append(page([TP + "triplets_vs_r_notrig.png"], ["Within 1° vs cluster radius, no trigger · rows N, columns window · lines: grid, best disk"]))
     pages.append(page([TP + "triplets_vs_r.png"], ["Within 1° vs cluster radius, with the trigger (untriggered showers count as failures)"]))
     pages.append(page([TP + "triplets_trig.png"], ["Share of showers passing the trigger (≥ 3 detectors > 1 particle) vs cluster radius"]))
+    if os.path.exists(TP + "triplet_avg_scores.json"):
+        TA = json.load(open(TP + "triplet_avg_scores.json"))["scores"]
+        pages.append(text_page("Triplets as averaged stations: setup", [
+            "Same triplet layouts, but each triangle is read out as ONE station (SWGO-style tank averaging):",
+            "     position = centroid of the 3 detectors · E = mean of the 3 detectors' E (signal + background)",
+            "     T = mean arrival time over the station's timed detectors (signal or background); untimed if none",
+            "The recon (unchanged) gets K = 33 / 16 / 7 / 3 stations instead of 3K detectors",
+            "Trigger: ≥ 3 detectors > 1 particle (the same hardware as the separate-detector test)",
+            "Reference: 'centres' = one detector at each station centroid (K detectors, no averaging)",
+            "Background windows 0 / 128 ns / 1 µs / 10 µs as before; 5,000 held-out showers",
+        ]))
+        TWL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
+        for pre, title in (("notrig", "Averaged stations, no trigger: within 1° / 5° [%]"), ("all", "Averaged stations, with trigger: within 1° / 5° [%]")):
+            rows = ["layout              readout     " + "".join(f"{TWL[w]:>15s}" for w in TWL)]
+            for K in (33, 16, 7, 3):
+                ents = [(f"tri{K}_r{r}_n{3 * K}", lab, src) for r in (25, 500) for lab, src in
+                        (("separate", TS[f"tri{K}_r{r}_n{3 * K}"]), ("averaged", TA[f"tri{K}_r{r}_n{3 * K}"]["avg"]))]
+                ents.append((f"{K} centres", "single", TA[f"tri{K}_r25_n{3 * K}"]["centres"]))
+                for k, lab, src in ents:
+                    rows.append(f"{k:<20s}{lab:<12s}" + "".join(f"{100*src[w][pre + '_1']:.1f} / {100*src[w][pre + '_5']:.1f}".rjust(15) for w in TWL))
+                rows.append("")
+            pages.append(table_page(title, rows[:-1], ["r = 25 and 500 m shown (all r in the plots) · 'single' = one detector at each triangle centre"]))
+        pages.append(text_page("Averaged stations: findings", [
+            "Averaging small triangles (r ≤ 100 m) ≈ one detector per centre at 1° without trigger: N = 99: 4.7–5.1% vs 4.5% (centres)",
+            "     vs 4.7–6.5% read separately · the 3 detectors add little direction information beyond one at the centre",
+            "With the trigger averaged stations keep the triplets' detection: 2.8–3.1% vs 0.6% for one detector per centre",
+            "     (the trigger counts the 3 detectors per station) · separate readout 3.0–3.5%, grid of 99: 4.7%",
+            "Large triangles (r = 500 m) must NOT be averaged: 1.3% vs 10.8% separate — averaging times 870 m apart wipes the timing",
+            "N ≤ 21: everything below ~0.5% within 1°; no difference resolvable",
+            "Noise columns use the window centred on the true front (see the caveat in the noise section)",
+        ]))
+        pages.append(page([TP + "avg_vs_r_notrig.png"], ["Within 1° vs triangle size, no trigger: separate detectors (red), averaged stations (green), one detector per centre (grey)"]))
+        pages.append(page([TP + "avg_vs_r.png"], ["Same with the trigger (≥ 3 detectors > 1 particle; untriggered showers count as failures)"]))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)

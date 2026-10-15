@@ -130,3 +130,29 @@ for ax in axs[:, 0]: ax.set_ylabel("North [km]")
 fig.suptitle("Compared with: the grid and best disk at the triplet N, and the 2 / 4 / 5-detector clusters of the main test (shown at r = 100 m; r = 50-1000 m scored)")
 fig.tight_layout(); fig.savefig(os.path.join(T, "compare_designs.png"), dpi=110); plt.close(fig)
 print("[write]", os.path.join(T, "compare_designs.png"))
+
+# Averaged stations (score_avg.py): separate detectors vs one averaged station per triangle vs one detector per centre.
+AV = os.path.join(T, "triplet_avg_scores.json")
+if os.path.exists(AV):
+    A = json.load(open(AV))["scores"]
+    for key, fn, ylab in (("notrig_1", "avg_vs_r_notrig.png", "within 1° [%] (no trigger)"),
+                          ("all_1", "avg_vs_r.png", "within 1° [%] (trigger)")):
+        fig, axs = plt.subplots(len(ROWS), len(WS), figsize=(17, 13), sharex=True)
+        for i, (n3, _) in enumerate(ROWS):
+            K = n3 // 3
+            ks = sorted((k for k in A if k.startswith(f"tri{K}_")), key=lambda k: int(k.split("_r")[1].split("_")[0]))
+            rs = [int(k.split("_r")[1].split("_")[0]) for k in ks]
+            for j, (w, wl) in enumerate(WS):
+                ax = axs[i, j]
+                ax.plot(rs, [100 * S[k][w][key] for k in ks], "o-", c=COL["tri"], label=f"{K}×3 separate detectors (N = {n3})")
+                ax.plot(rs, [100 * A[k]["avg"][w][key] for k in ks], "D-", c="#16a085", label=f"{K} averaged stations")
+                ax.plot(rs, [100 * A[k]["centres"][w][key] for k in ks], "x:", c="#7f8c8d", label=f"{K} single detectors at the centres")
+                ax.axhline(100 * S[f"grid_n{n3}"][w][key], c=COL["grid"], lw=1.2, label=f"grid N = {n3}")
+                ax.set_xscale("log"); ax.grid(alpha=.3)
+                if j == 0: ax.set_ylabel(ylab)
+                if i == 0: ax.set_title(wl)
+                if i == len(ROWS) - 1: ax.set_xlabel("triangle circumradius r [m]")
+                if j == len(WS) - 1: ax.legend(fontsize=7)
+        fig.suptitle(f"Run 19 triplets read out as averaged stations (E and T averaged per triangle) — {ylab}")
+        fig.tight_layout(); fig.savefig(os.path.join(T, fn), dpi=110); plt.close(fig)
+        print("[write]", os.path.join(T, fn))
