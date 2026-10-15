@@ -17,7 +17,8 @@ from modules.geometry import load_tr_mountain  # noqa: E402
 O = os.path.dirname(os.path.abspath(__file__))
 S = json.load(open(f"{O}/opt_scores.json"))
 COLS = (("start", "start", "#9b9a95"), ("current", "current", "#2a78d6"), ("twotier_l0", "two-tier λ 0", "#1baf7a"),
-        ("twotier_l0p3", "two-tier λ 0.3", "#eb6834"), ("threetier", "three-tier", "#8a5cd1"))
+        ("twotier_l0p3", "two-tier λ 0.3", "#eb6834"), ("threetier", "three-tier", "#8a5cd1"),
+        ("twotier_l0p3_b2048", "λ 0.3, 2,048/step, lr 10→1", "#b0283a"))
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
                      layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
 mesh = np.asarray(m.centroids_ENU)[:, :2] / 1e3
@@ -40,7 +41,7 @@ def layout_fig(N):
                          f"med {r['ang_med']:.2f}°\ndetected (≥ 3 hit) {100*r['detected']:.1f}%", fontsize=10.5)
             for sp in ax.spines.values():
                 sp.set_color(col); sp.set_linewidth(1.5)
-    fig.suptitle(f"Run 19 optimised layouts ({N} detectors, 20,000 Adam steps) and their starts · 5,000 held-out test showers", fontsize=15)
+    fig.suptitle(f"Run 19 optimised layouts ({N} detectors; 20,000 Adam steps, 512 showers/step, lr 10 unless noted) and their starts · 5,000 held-out test showers", fontsize=15)
     fig.subplots_adjust(left=0.03, right=0.99, top=0.88, bottom=0.04, wspace=0.18, hspace=0.42); fig.savefig(f"{O}/opt_layouts{SN}.png", dpi=85, facecolor="white"); plt.close(fig)
 
 

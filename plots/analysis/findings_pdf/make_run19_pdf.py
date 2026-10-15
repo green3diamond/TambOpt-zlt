@@ -257,6 +257,7 @@ pages.append(table_page("Optimisation runs (100 detectors, run 19 recon)", [
     "two-tier, good = 5° and |Δlog E| < 0.2, λ = 0   52546050        52546053",
     "two-tier, same, λ = 0.3                         52546051        52546054",
     "three-tier: 0.9 / 0.3 / 0.1 (1° / 5° / seen)    52546510        52547481",
+    "two-tier λ 0.3, 2,048 / step, lr 10 → 1 (5k)    52933141        52933147",
 ], ["Same settings as run 18's runs: Adam, lr 10 m, 20,000 steps, 512 fresh showers per step from the Stage 0 pool,",
     "     best layout picked on a separate 1,024-shower scoring set every 250 steps; kernel widths cached first (52546048)",
     "Two-tier: U = mean[g + λ (1 − g) q], g = soft 'good', q = 1 / (1 + (a / 20°)² + (e / 0.5)²)",
@@ -273,7 +274,7 @@ pages.append(page([P + "three_tier_sigmoids.png"], [
 OPT = R19 + "diagnostics/opt/"
 OS = json.load(open(OPT + "opt_scores.json"))
 LAB = {"start": "start", "current": "current", "twotier_l0": "two-tier λ 0", "twotier_l0p3": "two-tier λ 0.3",
-       "threetier": "three-tier"}
+       "threetier": "three-tier", "twotier_l0p3_b2048": "λ 0.3 b2048 lr10→1"}
 pages.append(full_page(OPT + "opt_layouts.png"))
 rows = ["layout                       all showers 1° / 2.5° / 5°   median   detected   detected only 1° / 2.5° / 5°   median"]
 for scheme in ("grid", "center"):
@@ -292,11 +293,15 @@ pages.append(table_page("Optimised layouts: reconstruction accuracy", rows[:-1],
     f"Best over all showers: {LAB[bo.rsplit('_', 1)[0]]} from the {bo.rsplit('_', 1)[1]} ({100*OS[bo]['all_1']:.1f} / {100*OS[bo]['all_2.5']:.1f} / "
     f"{100*OS[bo]['all_5']:.1f}%) vs the grid start ({100*g['all_1']:.1f} / {100*g['all_2.5']:.1f} / {100*g['all_5']:.1f}%)",
     "Reference: best test layout (6 km disk) 11.9 / 45.1 / 77.4% · from the centre: 9.2–9.6% at 1° (three-tier: 6.9%)",
+    "λ 0.3 b2048 lr10→1: 2,048 showers per step, step size 10 → 1 m (log-linear), 5,000 steps",
+    "     (the same number of showers processed as 20,000 steps × 512)",
 ]))
 pages.append(page([OPT + "opt_accuracy.png"], [
     "All showers: every optimisation from the grid gains at 2.5° and 5° (+0.7 to +5.6 pts); at 1° only two-tier and three-tier gain",
     "From the centre (4% of showers detected at the start) all utilities spread out: 9.2–9.6% within 1°, three-tier only 6.9%",
-    "No run produced a dense core: the optimiser always spreads the 100 detectors over the 12 km plane"]))
+    "No run produced a dense core: the optimiser always spreads the 100 detectors over the 12 km plane",
+    "2,048 / step with lr 10 → 1: from the grid 12.4 / 46.2 / 79.4% (best of all, +0.5 pts over λ 0.3 at lr 10: within noise);",
+    "     from the centre only 4.1% at 1°: the decaying step stops the detectors before they spread out"]))
 pages.append(page([OPT + "opt_accuracy_detected.png"], [
     "Detected showers only (≥ 3 detectors with > 1 particle): the optimised layouts reconstruct 12.9–17.1% within 1° and 79–85% within 5°",
     "     vs 12.9 / 49.9 / 81.3% for the grid start: they detect fewer showers (27–33% vs 34%) but mostly reconstruct them better",
@@ -345,6 +350,17 @@ for SN in ("_n100", "_n50", "_n20"):
             "Light: training-batch U (512 fresh showers per step, 200-step running mean) · dark: scoring-set U (1,024 fixed showers)",
             "Adam moves each detector ~lr = 10 m per step whatever the gradient size: with noisy gradients a random walk (~10 m × √steps)",
             *UNOTE[SN]]))
+
+if os.path.exists(OPT + "opt_utility_b2048.png"):
+    pages.append(page([OPT + "opt_utility_b2048.png"], [
+        "Two-tier λ 0.3, 100 detectors: 2,048 showers per step with the step size decaying 10 → 1 m over 5,000 steps (red)",
+        "     vs 512 per step at lr 10 over 20,000 steps (grey); x = showers processed, so both use the same compute",
+        f"Grid start: same best U (14.50 vs 14.51) but no drift: the bigger batch and smaller late steps stop the random walk",
+        f"     test showers: {100*OS['twotier_l0p3_b2048_grid']['all_1']:.1f} / {100*OS['twotier_l0p3_b2048_grid']['all_2.5']:.1f} / "
+        f"{100*OS['twotier_l0p3_b2048_grid']['all_5']:.1f}% vs {100*OS['twotier_l0p3_grid']['all_1']:.1f} / {100*OS['twotier_l0p3_grid']['all_2.5']:.1f} / "
+        f"{100*OS['twotier_l0p3_grid']['all_5']:.1f}% (lr 10) and 11.9 / 45.1 / 77.4% (6 km disk) within 1 / 2.5 / 5°",
+        "Centre start: U 8.1 vs 13.2: it needs many large steps to spread out, so a decaying step size (4× fewer steps) cuts it short",
+    ]))
 
 # ── Background noise ─────────────────────────────────────────────────────────
 NZ = R19 + "diagnostics/noise/"

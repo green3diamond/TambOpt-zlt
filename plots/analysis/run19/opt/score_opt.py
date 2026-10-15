@@ -21,8 +21,9 @@ _s = importlib.util.spec_from_file_location("dcs", os.path.join(REPO, "scripts/d
 DCS = importlib.util.module_from_spec(_s); _s.loader.exec_module(DCS)
 O = os.path.dirname(os.path.abspath(__file__))
 R = C.RUN_LOCATION
-RUNS = (("current", "current_lr10"), ("twotier_l0", "twotier_l0_lr10"), ("twotier_l0p3", "twotier_l0p3_lr10"),
-        ("threetier", "threetier_090301_lr10"))
+RUNS = (("current", "current_lr10", "", 20000), ("twotier_l0", "twotier_l0_lr10", "", 20000),
+        ("twotier_l0p3", "twotier_l0p3_lr10", "", 20000), ("threetier", "threetier_090301_lr10", "", 20000),
+        ("twotier_l0p3_b2048", "twotier_l0p3_lr10", "_b2048_lrd1", 5000))           # (key, folder, tail, steps)
 MIN_HIT = 3
 
 dev = DCS.DEVICE
@@ -35,14 +36,14 @@ for N in (100, 50, 20):
         e, n = sample_initial_layout_ne(m, n_units=N, scheme=scheme)
         e, n = project_to_mountain_ne(m, torch.as_tensor(e).float(), torch.as_tensor(n).float())
         p = f"{O}/layouts/start_{scheme}{SN}.pt"; torch.save(dict(x=e.float(), y=n.float()), p); layouts[f"start_{scheme}{SN}"] = p
-    for key, suf in RUNS:
+    for key, suf, tail, steps in RUNS:
         for scheme in ("grid", "center"):
-            d = f"{R}/test_v6_run_04_optimize_lbfgs_kernel_{suf}_{scheme}{SN}"
+            d = f"{R}/test_v6_run_04_optimize_lbfgs_kernel_{suf}_{scheme}{SN}{tail}"
             log = f"{d}/optimize_log.json"
             if os.path.exists(f"{d}/layout_best.pt") and os.path.exists(log):
                 L = json.load(open(log)); h = L if isinstance(L, list) else next(
                     v for v in L.values() if isinstance(v, list) and v and isinstance(v[0], dict) and "U" in v[0])
-                if len(h) >= 20000:
+                if len(h) >= steps:
                     layouts[f"{key}_{scheme}{SN}"] = f"{d}/layout_best.pt"
 print("layouts:", list(layouts))
 
