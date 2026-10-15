@@ -172,6 +172,23 @@ class MultiSpeciesSurrogate(nn.Module):
             return combine_hurdle_outputs(*(m.forward_parts(primary, xy) for m in self.models))
         return combine_species_outputs(*(m(primary, xy) for m in self.models))
 
+    def forward_thresholded(self, primary: torch.Tensor, xy: torch.Tensor, p_min: float = 0.5) -> torch.Tensor:
+        """Hurdle heads only: a detector-like reading instead of the expectation. Per species and channel, the slot is
+        lit iff P(lit) >= p_min and then reads the regressed lit value, else exactly 0; E sums the lit species' counts,
+        T is the earliest lit species' time (0 if none). Exact zeros keep the recon's lit / timed flags meaningful.
+        Gradient flows through the values (not the threshold). Same (B, n_det, 2) log encoding as forward()."""
+        if not all(getattr(m, "hurdle", False) for m in self.models):
+            raise AttributeError("forward_thresholded needs hurdle surrogates")
+        n_tot, t_min = None, None
+        for m in self.models:
+            p, mu = m.forward_parts(primary, xy)
+            n_s = torch.where(p[..., 0] >= p_min, torch.expm1(mu[..., 0]).clamp(min=0.0), torch.zeros_like(mu[..., 0]))
+            n_tot = n_s if n_tot is None else n_tot + n_s
+            t_s = torch.where(p[..., 1] >= p_min, mu[..., 1].clamp(min=0.0), torch.full_like(mu[..., 1], float("inf")))
+            t_min = t_s if t_min is None else torch.minimum(t_min, t_s)
+        t_min = torch.where(torch.isfinite(t_min), t_min, torch.zeros_like(t_min))
+        return torch.stack([torch.log1p(n_tot), t_min], dim=-1)
+
     # `forward_with_var` and `forward_sample` lived here until the surrogate went
     # mean-only. Both read the per-species variance head, which no longer exists:
     # the underlying models emit mu alone (see surrogates/deepsets.py). Their only

@@ -74,6 +74,10 @@ ONECYCLE_PCT_START  = 0.10
 GRAD_CLIP           = 10.0
 VAL_FRAC            = 0.10
 SEED                = 0
+# Seed of the train/val shower split. 1 = Stage 3's (03_train_recon_deepsets.py SEED): within one species block
+# randperm(n_events) with the same seed marks the same events as val, so Stage 2 and Stage 3 hold out the same
+# showers (run 19 on; runs <= 18 split with SEED = 0).
+SPLIT_SEED          = 1
 NUM_WORKERS         = 0
 DEVICE              = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -331,7 +335,7 @@ def train_species(tag:        str,
     print(f"[log1p-T] applied log1p(T*{T_LOG_SCALE:.0e}); "
           f"T mean={norm_stats['out_mean'][_n]:.4f} std={norm_stats['out_std'][_n]:.4f}")
 
-    train_idx, val_idx = shower_level_split(strat_ids, VAL_FRAC, SEED)
+    train_idx, val_idx = shower_level_split(strat_ids, VAL_FRAC, SPLIT_SEED)
     print(f"[split] train pairs={len(train_idx)}  val pairs={len(val_idx)}")
     n_tr0, n_va0 = len(train_idx), len(val_idx)
     train_idx = train_idx[keep[train_idx]]
@@ -538,7 +542,7 @@ def train_species(tag:        str,
                 "best_epoch": best_epoch,
                 "config": dict(
                     batch_size=BATCH_SIZE, n_epochs=n_epochs, lr=LR,lr_max=LR_MAX, lr_min=LR_MIN,
-                    val_frac=VAL_FRAC, seed=SEED, **_ckpt_config(tag)
+                    val_frac=VAL_FRAC, seed=SEED, split_seed=SPLIT_SEED, **_ckpt_config(tag)
                     ),
                     }, f, indent=2)
         _plot_curves(log, os.path.join(OUTPUT_FOLDER, curves_name))
@@ -718,7 +722,7 @@ def train_species(tag:        str,
             "adam_best_epoch": best_epoch,
             "config": dict(
                 batch_size=BATCH_SIZE, n_epochs=n_epochs, lr=LR, lr_min=LR_MIN,
-                grad_clip=GRAD_CLIP, val_frac=VAL_FRAC, seed=SEED,
+                grad_clip=GRAD_CLIP, val_frac=VAL_FRAC, seed=SEED, split_seed=SPLIT_SEED,
                 lbfgs_lr=LBFGS_LR, lbfgs_max_iter=lbfgs_max_iter,
                 lbfgs_history_size=LBFGS_HISTORY_SIZE,
                 **_ckpt_config(tag),

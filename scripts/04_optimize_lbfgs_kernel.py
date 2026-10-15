@@ -83,7 +83,7 @@ from modules.constants import (
 )
 from modules.constants import (
     DUAL_SHOWER_CACHE_PATH, DATASET_FRACTION, NUM_SHOWERS, SPECIES_NAMES,
-    TRAINING_DATASET_FOLDER,
+    TRAINING_DATASET_FOLDER, FNN_FOLDER,
 )
 from modules.data.dataset_builder import (
     compute_labels_batch, place_clouds, _load_corpus_metadata,
@@ -94,6 +94,8 @@ from modules.layouts import LearnableXY
 from modules.geometry import load_tr_mountain, SurfaceUpMap
 from modules.geometry import project_to_mountain_ne, sample_initial_layout_ne
 from modules.optimize import utility_of_xy
+from modules.optimize.background import add_background, window_centres, knn_pairs, knn_gate
+from modules.surrogates import load_dual_surrogate
 from modules.surrogates import build_recon_from_ckpt
 
 # plots/layouts/true_utility.py has no digit prefix, so it imports normally as
@@ -188,6 +190,10 @@ class MainPool:
                           species=s, east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
         return (c, fr) if with_frames else c
 
+    def load_prim(self, a, b):
+        """Events [a, b): primaries only (the surrogate response needs no clouds)."""
+        return [], [], self.meta.primaries[a:b], None
+
     def load(self, a, b):
         """Events [a, b): per-species clouds and widths (CPU), and primaries.
         Events with a non-finite cloud in any species are dropped (as load_events)."""
@@ -229,21 +235,73 @@ class BatchKernel:
         return combine_species_outputs(*outs)
 
 
-def pool_utility(xy_module, batch, surface, recon, chunk, backward):
+class SurrogateResponse:
+    """Stage 2 hurdle surrogate as the detector response, thresholded at P(lit) >= p_min
+    (MultiSpeciesSurrogate.forward_thresholded): same call signature as BatchKernel."""
+
+    def __init__(self, surrogate, p_min):
+        self.surrogate, self.p_min = surrogate, p_min
+
+    def __call__(self, primary_batch, xy_batch):
+        return self.surrogate.forward_thresholded(primary_batch, xy_batch, self.p_min)
+
+
+class NoisyGated:
+    """Wraps a response (BatchKernel / SurrogateResponse): adds cosmic-ray background in one readout window of
+    `window_ns` around the shower's earliest hit (modules/optimize/background.py) and applies the kNN 2-of-3 gate
+    (a detector is read out iff >= 2 of {itself, its 2 nearest neighbours} have E' > 0.001, else E = T = 0).
+    The gate's forward value is always the exact rule; with `straight_through` its gradient is a soft count's.
+    Keeps the read-out fraction and ghosts per event of the last call for logging."""
+
+    def __init__(self, base, window_ns, gate, gen, t_fallback_us, straight_through):
+        self.base, self.window_ns, self.gate, self.gen = base, window_ns, gate, gen
+        self.t_fallback, self.st = t_fallback_us, straight_through
+        self.read, self.ghosts = 1.0, 0.0
+
+    def __call__(self, primary_batch, xy_batch):
+        out = self.base(primary_batch, xy_batch)
+        E = torch.expm1(out[..., 0].clamp(min=0.0))
+        t = torch.expm1(out[..., 1].clamp(min=0.0))                     # us
+        timed = out[..., 1] > 0
+        if self.window_ns > 0:
+            t_c = window_centres(t.detach(), timed, self.t_fallback)
+            E, t, _, has_bg = add_background(E, t, timed, t_c, self.window_ns, self.gen)
+            ghost = has_bg & ~timed
+        else:
+            ghost = torch.zeros_like(timed)
+        if self.gate == "knn23":
+            hard, st = knn_gate(E.detach() if not self.st else E, knn_pairs(xy_batch[0, :, 0], xy_batch[0, :, 1]))
+            E, t = E * (st if self.st else hard), t * hard
+            self.read = float(hard.mean())
+            self.ghosts = float((ghost & (hard > 0)).float().sum(1).mean())
+        else:
+            self.read, self.ghosts = 1.0, float(ghost.float().sum(1).mean())
+        return torch.stack([torch.log1p(E), torch.log1p(t)], dim=-1)
+
+
+def pool_utility(xy_module, batch, surface, recon, chunk, backward, resp=None, gen=None):
     """U over a pool batch, sub-batch by sub-batch. U is a mean of per-event terms,
     so weighting each sub-batch by its share and calling backward per sub-batch
-    gives the full-batch gradient with memory set by `chunk`, not the batch."""
+    gives the full-batch gradient with memory set by `chunk`, not the batch.
+    `resp` (dict: surrogate, p_min, window_ns, gate, t_fallback_us) selects the response
+    and the background / gate; `gen` is the background's random generator."""
     clouds, bws, prim, frames = batch
     N = prim.shape[0]
-    tot = dict(U=0.0, r_mean=0.0, u_theta=0.0, u_phi=0.0, u_e=0.0)
+    tot = dict(U=0.0, r_mean=0.0, u_theta=0.0, u_phi=0.0, u_e=0.0, read=0.0, ghosts=0.0)
     ctx = torch.enable_grad() if backward else torch.no_grad()
     with ctx:
         for lo in range(0, N, chunk):
             hi = min(lo + chunk, N)
-            kern = BatchKernel([c[lo:hi].to(DEVICE, non_blocking=True) for c in clouds],
-                               [w[lo:hi].to(DEVICE) if w is not None else None for w in bws],
-                               surface, differentiable=backward,
-                               frames=None if frames is None else frames[lo:hi].to(DEVICE))
+            if resp is not None and resp["surrogate"] is not None:
+                kern = SurrogateResponse(resp["surrogate"], resp["p_min"])
+            else:
+                kern = BatchKernel([c[lo:hi].to(DEVICE, non_blocking=True) for c in clouds],
+                                   [w[lo:hi].to(DEVICE) if w is not None else None for w in bws],
+                                   surface, differentiable=backward,
+                                   frames=None if frames is None else frames[lo:hi].to(DEVICE))
+            if resp is not None and (resp["window_ns"] > 0 or resp["gate"] != "none"):
+                kern = NoisyGated(kern, resp["window_ns"], resp["gate"], gen, resp["t_fallback_us"],
+                                  straight_through=backward)
             x, y = xy_module()
             U, r, parts = utility_of_xy(x, y, prim[lo:hi].to(DEVICE), kern, recon)
             share = (hi - lo) / N
@@ -253,6 +311,8 @@ def pool_utility(xy_module, batch, surface, recon, chunk, backward):
             tot["r_mean"] += share * float(r.mean())
             for k in ("u_theta", "u_phi", "u_e"):
                 tot[k] += share * float(parts[k])
+            tot["read"] += share * getattr(kern, "read", 1.0)
+            tot["ghosts"] += share * getattr(kern, "ghosts", 0.0)
     return tot
 
 
@@ -305,24 +365,31 @@ def lr_at(args, epoch):
     return args.lr * (args.lr_final / args.lr) ** f
 
 
-def run_main_pool(args, mountain, surface, recon, out_dir):
+def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
     pool = MainPool(mountain)
+    load = pool.load_prim if resp is not None and resp["surrogate"] is not None else pool.load
     n_score = args.n_score
     n_sweep = pool.n - n_score
     B = args.batch_events
     print(f"[pool] {pool.n} Stage-1 events; sweep {n_sweep}, scoring set {n_score} "
           f"(events {n_sweep}..{pool.n}); {B} fresh events per step")
     t0 = time.time()
-    score_set = pool.load(n_sweep, pool.n)
+    score_set = load(n_sweep, pool.n)
     print(f"[pool] scoring set loaded ({score_set[2].shape[0]} events) in {time.time() - t0:.0f}s")
 
     e_init, n_init = init_layout(mountain, args.init, DEVICE, args.n_det)
     xy_module = LearnableXY(e_init, n_init, device=str(DEVICE)).to(DEVICE)
     optimizer = torch.optim.Adam(xy_module.parameters(), lr=args.lr)
 
+    def gen_for(seed):
+        g = torch.Generator(device=DEVICE)
+        g.manual_seed(int(seed))
+        return g
+
     def score():
+        # the same background draws every time, so scores are comparable across steps
         return pool_utility(xy_module, score_set, surface, recon, args.score_chunk,
-                            backward=False)["U"]
+                            backward=False, resp=resp, gen=gen_for(args.seed * 1000003 + 999_999_937))["U"]
 
     log, score_log = [], []
     start = 0
@@ -345,17 +412,18 @@ def run_main_pool(args, mountain, surface, recon, out_dir):
 
     from concurrent.futures import ThreadPoolExecutor
     ex = ThreadPoolExecutor(max_workers=1)
-    nxt = ex.submit(lambda a: pool.load(a, a + B), offset(start)) if start < args.epochs else None
+    nxt = ex.submit(lambda a: load(a, a + B), offset(start)) if start < args.epochs else None
     t_loop = time.time()
     for epoch in range(start, args.epochs):
         batch = nxt.result()
         if epoch + 1 < args.epochs:
-            nxt = ex.submit(lambda a: pool.load(a, a + B), offset(epoch + 1))
+            nxt = ex.submit(lambda a: load(a, a + B), offset(epoch + 1))
 
         for grp in optimizer.param_groups:
             grp["lr"] = lr_at(args, epoch)
         optimizer.zero_grad(set_to_none=True)
-        tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True)
+        tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True,
+                           resp=resp, gen=gen_for(args.seed * 1000003 + epoch))   # per-step draws, resume-safe
         torch.nn.utils.clip_grad_norm_(xy_module.parameters(), max_norm=args.grad_clip)
         optimizer.step()
         with torch.no_grad():
@@ -376,7 +444,7 @@ def run_main_pool(args, mountain, surface, recon, out_dir):
         if epoch == start or (epoch + 1) % args.log_every == 0:
             print(f"  [{epoch+1:5d}/{args.epochs}] U_batch={tot['U']:+.3f}  "
                   f"(u_theta={tot['u_theta']:.3f} u_phi={tot['u_phi']:.3f} "
-                  f"u_e={tot['u_e']:.3f})  r={tot['r_mean']:.3f}  "
+                  f"u_e={tot['u_e']:.3f})  r={tot['r_mean']:.3f}  read={tot['read']:.3f} ghosts={tot['ghosts']:.3f}  "
                   f"lr={lr_at(args, epoch):.3g}  {(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
         if (epoch + 1) % args.ckpt_every == 0:
             os.makedirs(out_dir, exist_ok=True)
@@ -693,6 +761,19 @@ def main():
     ap.add_argument("--precompute-bw", type=int, default=None, metavar="SPECIES_INDEX",
                     help="write the pool's interpolated-kernel widths for one species "
                          "(needed once before --pool main) and exit")
+    ap.add_argument("--bg-window-ns", type=float, default=0.0,
+                    help="cosmic-ray background in one readout window of this length [ns] around the earliest hit "
+                         "(modules/optimize/background.py); 0 = no background (--pool main)")
+    ap.add_argument("--gate", choices=("none", "knn23"), default="none",
+                    help="knn23: a detector is read out only if >= 2 of {itself, its 2 nearest neighbours} have "
+                         "E' > 0.001 (exact in the forward pass, straight-through soft gradient in training)")
+    ap.add_argument("--t-fallback-us", type=float, default=27.7,
+                    help="background window centre for showers with no timed detector (run 19 median timed T)")
+    ap.add_argument("--response", choices=("kernel", "surrogate"), default="kernel",
+                    help="detector response: the kernel, or the Stage 2 hurdle surrogate thresholded at "
+                         "P(lit) >= --p-lit-min (--pool main)")
+    ap.add_argument("--fnn-folder", default=FNN_FOLDER)
+    ap.add_argument("--p-lit-min", type=float, default=0.5)
     ap.add_argument("--skip-analytic-eval", action="store_true",
                     help="skip the analytic (plane-front + LDF) evaluation "
                          "of the init/best layouts -- it never affects the "
@@ -723,7 +804,15 @@ def main():
         if args.utility != "recon":
             raise SystemExit("--pool main supports --utility recon only")
         recon = load_recon(args.recon_folder, DEVICE)
-        run_main_pool(args, mountain, surface, recon, out_dir)
+        resp = None
+        if args.response == "surrogate" or args.bg_window_ns > 0 or args.gate != "none":
+            resp = dict(surrogate=(load_dual_surrogate(args.fnn_folder, DEVICE, n_det=args.n_det)
+                                   if args.response == "surrogate" else None),
+                        p_min=args.p_lit_min, window_ns=args.bg_window_ns, gate=args.gate,
+                        t_fallback_us=args.t_fallback_us)
+            print(f"[response] {args.response}  background window {args.bg_window_ns:g} ns  gate {args.gate}"
+                  + (f"  P(lit) >= {args.p_lit_min}" if args.response == "surrogate" else ""))
+        run_main_pool(args, mountain, surface, recon, out_dir, resp)
         return
 
     # 'analytic' never touches the frozen recon -- that is the whole point of

@@ -7,7 +7,6 @@
 #SBATCH --constraint=a100
 #SBATCH --requeue
 #SBATCH --open-mode=append
-#SBATCH --mail-type=FAIL
 #SBATCH -J kernel_opt_run19
 #SBATCH -o slurm_logs/slurm-%j-%x.out
 #SBATCH --chdir=/n/home05/zdimitrov/tambo/TambOpt
@@ -20,7 +19,11 @@
 #   kernel_1deg_angleonly -> suffix _1deg_angleonly.
 # Env: RECON_DIR=<folder with recon.pt> (default <RECON_FOLDER>_deepsets), RECON_TAG appended to the suffix,
 #      N_DET=<detectors> (default 100; other counts get _n<N> in the suffix).
+#      BG_WINDOW=<ns> cosmic-ray background in one readout window (suffix _bg1us / _bg10us / _bg<ns>ns),
+#      GATE=knn23 kNN 2-of-3 gate (suffix _knn23), RESPONSE=surrogate Stage 2 hurdle surrogate instead of the
+#      kernel (suffix _sur; FNN_DIR overrides the folder). No mail on preemption: one mail at the real end.
 source slurm/env.sh
+source slurm/notify.sh
 source slurm/gpu_gate.sh
 gpu_health_gate
 source slurm/run19_guard.sh
@@ -46,8 +49,17 @@ SUFFIX="${TAG}_lr${LR}_${INIT}${RECON_TAG:+_$RECON_TAG}"
 # Env BATCH (showers per step, default 512) and LR_FINAL (log-linear lr decay to this) add _b<B> / _lrd<F> to the suffix.
 [ -n "$BATCH" ] && [ "$BATCH" != 512 ] && SUFFIX="${SUFFIX}_b${BATCH}"
 [ -n "$LR_FINAL" ] && SUFFIX="${SUFFIX}_lrd${LR_FINAL/./p}"
+if [ -n "$BG_WINDOW" ] && [ "$BG_WINDOW" != 0 ]; then
+    case "$BG_WINDOW" in 1000) SUFFIX="${SUFFIX}_bg1us" ;; 10000) SUFFIX="${SUFFIX}_bg10us" ;; *) SUFFIX="${SUFFIX}_bg${BG_WINDOW}ns" ;; esac
+fi
+[ "${GATE:-none}" != none ] && SUFFIX="${SUFFIX}_${GATE}"
+[ "${RESPONSE:-kernel}" = surrogate ] && SUFFIX="${SUFFIX}_sur"
 
 python -u scripts/04_optimize_lbfgs_kernel.py --utility recon --init "$INIT" \
     --lr "$LR" --epochs "$EPOCHS" --log-every 100 \
     --pool main --batch-events ${BATCH:-512} ${LR_FINAL:+--lr-final $LR_FINAL} --chunk 32 --n-score 1024 --score-every 250 \
-    --recon-folder "$RK" --out-suffix "$SUFFIX" --n-det "$N_DET" --skip-analytic-eval || exit 1
+    --recon-folder "$RK" --out-suffix "$SUFFIX" --n-det "$N_DET" --skip-analytic-eval \
+    --bg-window-ns "${BG_WINDOW:-0}" --gate "${GATE:-none}" --response "${RESPONSE:-kernel}" ${FNN_DIR:+--fnn-folder $FNN_DIR}
+rc=$?
+notify_end $rc
+exit $rc

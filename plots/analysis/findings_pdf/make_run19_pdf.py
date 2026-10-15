@@ -111,6 +111,16 @@ def section_page(title, subtitle):
     return p
 
 
+def pending_page(heading, what):
+    """Placeholder for results that are still being computed."""
+    p = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(p)
+    d.text((200, 160), heading, fill=INK, font=HEAD)
+    d.text((W // 2 - 420, H // 2 - 60), "… in progress …", fill="#9b9a95", font=TITLE)
+    d.text((210, H - 260), what, fill="#52514e", font=FONT)
+    return p
+
+
 def full_page(path):
     img = Image.open(path).convert("RGB")
     k = min((W - 2 * M) / img.width, (H - 2 * M) / img.height)
@@ -625,6 +635,47 @@ if all(os.path.exists(f) for f in TFF) and os.path.exists(TP + "triplet_local_sc
     if os.path.exists(TP + "triplet_ft_findings.json"):
         pages.append(text_page("Triplets with the fine-tuned recon: findings", json.load(open(TP + "triplet_ft_findings.json"))))
     pages.append(page([TP + "ft_vs_clean.png"], ["Within 1° vs triangle size, every readout: clean recon (dashed) vs fine-tuned (solid); grid: grey"]))
+
+# ── Noise-aware optimisation (kernel, then Stage 2 surrogate) ────────────────
+ON = R19 + "diagnostics/opt_noise/"
+if os.path.exists(ON + "runs.json"):
+    RUNS = json.load(open(ON + "runs.json"))
+    pages.append(section_page("Noise-aware optimisation", "Layouts optimised with background and the kNN 2-of-3 gate in the loop · kernel now, Stage 2 surrogate next"))
+    pages.append(text_page("Noise-aware optimisation: setup", [
+        "100 detectors · starts: grid and centre · utility: two-tier (good = 5° and |Δlog E| < 0.2), λ = 0 and λ = 0.3",
+        "Background in the loop: Poisson muons (1,826 /m²/s, 2 m²) in one readout window of 1 µs or 10 µs around the earliest hit",
+        "     fresh draws every step (seeded per step, resume-safe); the scoring set uses one fixed draw",
+        "kNN 2-of-3 gate in the loop: a detector reaches the recon only if ≥ 2 of {itself, its 2 nearest neighbours} have",
+        "     E' > 0.001; neighbours recomputed from the current positions every step",
+        "     forward pass = the exact rule (as in scoring); gradient = a soft count (straight-through), so detectors learn to pair up",
+        "Adam, constant lr 10 m (no decay), 4,096 showers per step, 5,000 steps (~20 M showers), best layout on 1,024 scoring showers",
+        "Clean run 19 recon (reltime1) · response: the kernel",
+        "Then scored on the 5,000 test showers with the exact gate at the run's window, and without noise / gate",
+    ]))
+    rows = ["start   utility          window   kernel job   surrogate job"]
+    for r in RUNS["runs"]:
+        rows.append(f"{r['init']:<8s}{r['tag']:<17s}{r['window']:<9s}{str(r.get('kernel_job', '–')):<13s}{str(r.get('sur_job', 'after Stage 2'))}")
+    pages.append(table_page("Noise-aware optimisation: runs", rows, [
+        f"Stage 2 jobs: {RUNS.get('stage2_jobs', '–')}",
+        f"Surrogate runs start automatically after Stage 2 and a 3-step surrogate smoke run (job {RUNS.get('sur_smoke_job', '–')})",
+        "Output folders: test_v6_run_04_optimize_lbfgs_kernel_<utility>_lr10_<start>_b4096_bg<window>_knn23[_sur]"]))
+    pages.append(text_page("Stage 2 surrogate for the same task", [
+        "Latest Stage 2 = the hurdle head (run 15 on): per detector and species P(lit) (BCE) and the lit value (MSE on lit slots)",
+        "Trained on the run 19 corpus (400,140 showers × 11 layouts × 3 species), one job per species, Adam + early stop, then L-BFGS",
+        "     train / val split = the recon's (seed 1), so Stage 2 and Stage 3 hold out the same 40,014 showers",
+        "As detector response: per species and channel, read the lit value where P(lit) ≥ 0.5, else exactly 0",
+        "     (E = sum over lit species, T = earliest lit species) — exact zeros keep the recon's lit / timed flags meaningful",
+        "Then the same noise, kNN gate and the same 8 runs as with the kernel; scored with the kernel on the test showers",
+        "Caveat: the recon was trained on kernel inputs, not surrogate outputs",
+    ]))
+    if os.path.exists(ON + "opt_noise_scores.json"):
+        pass  # results pages are added when the scores exist
+    else:
+        pages.append(pending_page("Kernel runs: optimised layouts", "Layouts after 5,000 steps, grid and centre starts, 1 µs and 10 µs"))
+        pages.append(pending_page("Kernel runs: accuracy on the test showers", "Within 1 / 2.5 / 5° with the exact gate at the run's window, vs grid and 6 km disk"))
+        pages.append(pending_page("Kernel runs: utility vs step", "Training batch and scoring-set U per run"))
+        pages.append(pending_page("Stage 2 surrogate: training", "Per-species validation loss, P(lit) accuracy vs the kernel"))
+        pages.append(pending_page("Surrogate runs: layouts and accuracy", "The same 8 runs with the surrogate response, scored with the kernel"))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)
