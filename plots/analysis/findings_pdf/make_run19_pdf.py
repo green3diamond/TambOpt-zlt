@@ -478,33 +478,37 @@ if os.path.exists(TP + "triplet_scores.json"):
             "     T = mean arrival time over the station's timed detectors (signal or background); untimed if none",
             "The recon (unchanged) gets K = 33 / 16 / 7 / 3 stations instead of 3K detectors",
             "Reference: 'centres' = one detector at each station centroid (K detectors, no averaging)",
+            "'avg 2/3': a station is read out only if ≥ 2 of its 3 detectors have E' > 0.001; otherwise E = 0 and no time",
             "Background windows 0 / 128 ns / 1 µs / 10 µs as before; 5,000 held-out showers",
         ]))
         TWL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
         for pre, title in (("notrig", "Averaged stations: within 1° / 5° [%]"),):
             rows = ["layout              readout     " + "".join(f"{TWL[w]:>15s}" for w in TWL)]
-            for K in (33, 16, 7, 3):
+            for K in (33, 16, 7):
                 ents = [(f"tri{K}_r{r}_n{3 * K}", lab, src) for r in (25, 500) for lab, src in
-                        (("separate", TS[f"tri{K}_r{r}_n{3 * K}"]), ("averaged", TA[f"tri{K}_r{r}_n{3 * K}"]["avg"]))]
+                        (("separate", TS[f"tri{K}_r{r}_n{3 * K}"]), ("averaged", TA[f"tri{K}_r{r}_n{3 * K}"]["avg"]),
+                         ("avg 2/3", TA[f"tri{K}_r{r}_n{3 * K}"].get("avg_local", TA[f"tri{K}_r{r}_n{3 * K}"]["avg"])))]
                 ents.append((f"{K} centres", "single", TA[f"tri{K}_r25_n{3 * K}"]["centres"]))
                 for k, lab, src in ents:
                     rows.append(f"{k:<20s}{lab:<12s}" + "".join(f"{100*src[w][pre + '_1']:.1f} / {100*src[w][pre + '_5']:.1f}".rjust(15) for w in TWL))
                 rows.append("")
-            pages.append(table_page(title, rows[:-1], ["r = 25 and 500 m shown (all r in the plots) · 'single' = one detector at each triangle centre"]))
+            pages.append(table_page(title, rows[:-1], ["r = 25 and 500 m, N ≥ 21 shown (all in the plots) · avg 2/3 = averaged, 2-of-3 gate at E' > 0.001 · single = one detector per centre"]))
         pages.append(text_page("Averaged stations: findings", [
             "Averaging small triangles (r ≤ 100 m) ≈ one detector per centre at 1°: N = 99: 4.7–5.1% vs 4.5% (centres)",
             "     vs 4.7–6.5% read separately, grid of 99: 9.7% · the 3 detectors add little direction information beyond one",
             "Large triangles (r = 500 m) must NOT be averaged: 1.3% vs 10.8% separate — averaging times 870 m apart wipes the timing",
+            "2-of-3 gate (E' > 0.001): ~4 of 33 stations read out per shower; background-only stations 0.16 per shower at 10 µs",
+            "     N = 99, r = 25 m: 4.8 → 3.6% without noise, even at 1 µs (3.4%), and at 10 µs 0.3 → 2.0% (gate wins)",
+            "     same pattern as the separate detectors with the gate, slightly lower (averaging blurs the timing)",
             "N ≤ 21: everything below ~0.5% within 1°; no difference resolvable",
             "Noise columns: one readout window centred on the shower's earliest hit (as in the noise section)",
         ]))
-        pages.append(page([TP + "avg_vs_r_notrig.png"], ["Within 1° vs triangle size: separate detectors (red), averaged stations (green), one detector per centre (grey)"]))
+        pages.append(page([TP + "avg_vs_r_notrig.png"], ["Within 1° vs triangle size: separate (red), averaged (green), averaged with the 2-of-3 gate (blue), one detector per centre (grey)"]))
     if os.path.exists(TP + "triplet_local_scores.json"):
         TL = json.load(open(TP + "triplet_local_scores.json"))["scores"]
         pages.append(text_page("Triplets with a local 2-of-3 trigger: setup", [
             "Each triangle is read out only if at least 2 of its 3 detectors are hit; otherwise all 3 are zeroed (E = 0, no time)",
             "     hit = E' > 0.001 (the kernel's timing threshold): any deposit, a lone background muon included",
-            "     variants: hit = E' > 1 (a lone background muon, E' = 1, never counts) and E' ≥ 1",
             "The recon (clean, unchanged) gets all 3K detectors, zeros included · same noise draws for every readout",
             "Ghosts = read-out detectors with background only (no shower signal), per shower",
         ]))
@@ -512,16 +516,48 @@ if os.path.exists(TP + "triplet_scores.json"):
         rows = ["layout             readout  " + "".join(f"{TWL[w]:>17s}" for w in TWL)]
         rows.append("                            " + "".join(f"{'1° [%] / ghosts':>17s}" for w in TWL))
         for K in (33, 16, 7):
-            for r in (25, 500):
+            for r in (25, 100, 500):
                 k = f"tri{K}_r{r}_n{3 * K}"
-                for rd in ("none", "e3", "gt1"):
+                for rd in ("none", "e3"):
                     rows.append(f"{k:<19s}{rd:<9s}" + "".join(f"{100*TL[k][rd][w]['notrig_1']:.1f} / {TL[k][rd][w]['ghosts']:.2f}".rjust(17) for w in TWL))
             rows.append("")
         pages.append(table_page("Local 2-of-3 trigger: within 1° and ghosts per shower", rows[:-1], [
-            "none = all detectors read out · e3 = hit E' > 0.001 · gt1 = hit E' > 1 · r = 25 / 500 m shown (all r in the plots)"]))
+            "none = all detectors read out · e3 = 2-of-3 with hit E' > 0.001 · r = 25 / 100 / 500 m shown (all r in the plots)"]))
         if os.path.exists(TP + "triplet_local_findings.json"):
             pages.append(text_page("Local 2-of-3 trigger: findings", json.load(open(TP + "triplet_local_findings.json"))))
-        pages.append(page([TP + "local_vs_r_notrig.png"], ["Within 1° vs triangle size: no local trigger (red), 2-of-3 with hit E' > 0.001 (blue), E' > 1 (green), E' ≥ 1 (purple)"]))
+        pages.append(page([TP + "local_vs_r_notrig.png"], ["Within 1° vs triangle size: no local trigger (red), 2-of-3 with hit E' > 0.001 (blue)"]))
+
+# ── Triplets with the fine-tuned recon ──────────────────────────────────────
+TFF = [TP + f for f in ("triplet_scores_ft.json", "triplet_avg_scores_ft.json", "triplet_local_scores_ft.json")]
+if all(os.path.exists(f) for f in TFF) and os.path.exists(TP + "triplet_local_scores.json"):
+    SF, AF, LF = (json.load(open(f))["scores"] for f in TFF)
+    TS = json.load(open(TP + "triplet_scores.json"))["scores"]; TA = json.load(open(TP + "triplet_avg_scores.json"))["scores"]
+    TL = json.load(open(TP + "triplet_local_scores.json"))["scores"]
+    pages.append(text_page("Triplets with the fine-tuned recon: setup", [
+        "Every triplet readout again, with the recon fine-tuned with background (noise section) instead of the clean one:",
+        "     separate detectors · averaged stations · averaged with the 2-of-3 gate · separate with the 2-of-3 local trigger",
+        "2-of-3: a triangle / station is read out only if ≥ 2 of its 3 detectors have E' > 0.001",
+        "Same layouts, showers and noise draws as the clean-recon pages · within 1°, all 5,000 showers",
+    ]))
+    TWL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
+    RO = (("separate", lambda D, k: D[0][k]), ("averaged", lambda D, k: D[1][k]["avg"]),
+          ("avg 2/3", lambda D, k: D[1][k]["avg_local"]), ("sep 2/3", lambda D, k: D[2][k]["e3"]))
+    rows = ["layout             readout  " + "".join(f"{TWL[w]:>17s}" for w in TWL),
+            "                            " + "".join(f"{'clean / tuned':>17s}" for w in TWL)]
+    for K in (33, 16):
+        for r in (25, 500):
+            k = f"tri{K}_r{r}_n{3 * K}"
+            for lab, get in RO:
+                c, f = get((TS, TA, TL), k), get((SF, AF, LF), k)
+                rows.append(f"{k:<19s}{lab:<9s}" + "".join(f"{100*c[w]['notrig_1']:.1f} / {100*f[w]['notrig_1']:.1f}".rjust(17) for w in TWL))
+        g, gf = TS[f"grid_n{3 * K}"], SF[f"grid_n{3 * K}"]
+        rows.append(f"{'grid_n' + str(3 * K):<19s}{'':<9s}" + "".join(f"{100*g[w]['notrig_1']:.1f} / {100*gf[w]['notrig_1']:.1f}".rjust(17) for w in TWL))
+        rows.append("")
+    pages.append(table_page("Triplets, clean vs fine-tuned recon: within 1° [%]", rows[:-1], [
+        "r = 25 and 500 m, N = 99 / 48 shown (N = 21 and all r in the plot)"]))
+    if os.path.exists(TP + "triplet_ft_findings.json"):
+        pages.append(text_page("Triplets with the fine-tuned recon: findings", json.load(open(TP + "triplet_ft_findings.json"))))
+    pages.append(page([TP + "ft_vs_clean.png"], ["Within 1° vs triangle size, every readout: clean recon (dashed) vs fine-tuned (solid); grid: grey"]))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)

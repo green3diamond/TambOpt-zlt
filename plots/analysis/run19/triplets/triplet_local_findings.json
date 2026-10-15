@@ -1,11 +1,9 @@
 [
- "Hit = E' > 0.001 (the kernel's timing threshold): ~13 of 99 detectors read out per shower (4–5 triangles)",
- "     ghosts cut ~10×: N = 99 at 10 µs, 3.2 → 0.3 per shower (two background muons can still open a triangle)",
- "No noise / 128 ns: costs some pointing (N = 99, r = 25 m: 5.2 → 3.8% within 1°): lone weak hits are thrown away",
- "1 µs: about even with reading everything (3.7 vs 3.6% at r = 25 m; 4.8 vs 4.8% at r = 100 m)",
- "10 µs: the local trigger wins clearly: r = 25 m 0.4 → 2.2%, r = 500 m 0.5 → 4.0% (grid of 99, no local trigger: 0.6%)",
- "Hit = E' > 1: only ~3 detectors read out (one triangle): pointing collapses to ~0.5% at every window",
- "     most shower signal is below one particle per detector (the kernel E is an expectation)",
- "So a 2-of-3 coincidence at a low threshold is the right tool for long windows; at ≤ 1 µs it costs little or nothing",
+ "Hit = E' > 0.001 (the kernel's timing threshold): ~13 of 99 detectors read out per shower (4\u20135 triangles)",
+ "     ghosts cut ~10\u00d7: N = 99 at 10 \u00b5s, 3.2 \u2192 0.3 per shower (two background muons can still open a triangle)",
+ "No noise / 128 ns: costs some pointing (N = 99, r = 25 m: 5.2 \u2192 3.8% within 1\u00b0): lone weak hits are thrown away",
+ "1 \u00b5s: about even with reading everything (3.7 vs 3.6% at r = 25 m; 4.8 vs 4.8% at r = 100 m)",
+ "10 \u00b5s: the local trigger wins clearly: r = 25 m 0.4 \u2192 2.2%, r = 500 m 0.5 \u2192 4.0% (grid of 99, no local trigger: 0.6%)",
+ "So a 2-of-3 coincidence at a low threshold is the right tool for long windows; at \u2264 1 \u00b5s it costs little or nothing",
  "Caveat: the clean recon was never trained on zeroed triangles; fine-tuning on this readout could recover more"
 ]

@@ -5,9 +5,10 @@ modules/optimize/background.py):
     station position = centroid of its 3 detectors
     station E        = mean of the 3 detectors' E' (signal + background)
     station T        = mean of T' over the station's timed detectors (signal or background); untimed if none
+'avg_local': the same, but a station is read out only if >= 2 of its 3 detectors have E' > 0.001 (else E = 0, untimed).
 The recon (run 19, unchanged) gets the K stations. Trigger: >= 3 DETECTORS with E' > 1 (the same hardware as the
 separate-detector test). For reference, 'centres': one detector at each station centroid (K detectors, no averaging).
-Writes triplet_avg_scores.json: {layout: {"avg" | "centres": {W: metrics}}}.
+Writes triplet_avg_scores.json: {layout: {"avg" | "avg_local" | "centres": {W: metrics}}}.
 
     python score_avg.py [--windows 0 128 1000 10000] [--recon-dir ...]
 """
@@ -34,6 +35,7 @@ _s = importlib.util.spec_from_file_location("dcs", os.path.join(REPO, "scripts/d
 DCS = importlib.util.module_from_spec(_s); _s.loader.exec_module(DCS)
 T_DIR = os.path.join(C.RUN_LOCATION, "diagnostics", "triplets")
 MIN_HIT = 3
+HIT_MIN = 1e-3                                                                     # local trigger: a hit is E' > 0.001
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--windows", type=float, nargs="+", default=[0, 128, 1000, 10000])
@@ -92,7 +94,7 @@ for li, (name, path) in enumerate(layouts.items()):
     K = int(re.match(r"tri(\d+)_", name).group(1))
     L = torch.load(path, map_location="cpu")
     e, n = torch.as_tensor(L["x"]).float().to(dev), torch.as_tensor(L["y"]).float().to(dev)
-    res = {"avg": {}, "centres": {}}
+    res = {"avg": {}, "avg_local": {}, "centres": {}}
     with torch.no_grad():
         xy, E, t, timed = labels(e, n)
         t_front = window_centres(t, timed, T_FALLBACK)
@@ -109,6 +111,11 @@ for li, (name, path) in enumerate(layouts.items()):
             a = recon_err(xy_c, torch.log1p(E_st), torch.log1p(T_st))
             res["avg"][f"{W:g}"] = metrics(a, trig, dict(n_det=3 * K, n_st=K, nbg_mean=float(Nb.mean()),
                                                           st_timed=float((tm.sum(-1) > 0).float().sum(1).mean())))
+            act = (En > HIT_MIN).view(B, K, 3).sum(-1) >= 2                        # 2-of-3 local trigger per station
+            ghost = (hasbg & ~timed).view(B, K, 3).any(-1) & ~(timed.view(B, K, 3).any(-1))   # stations with background only
+            a = recon_err(xy_c, torch.log1p(torch.where(act, E_st, 0.0)), torch.log1p(torch.where(act, T_st, 0.0)))
+            res["avg_local"][f"{W:g}"] = metrics(a, trig, dict(n_det=3 * K, n_st=K, read_st=float(act.float().sum(1).mean()),
+                                                                ghost_st=float((act & ghost).float().sum(1).mean())))
             g = torch.Generator(device=dev); g.manual_seed(int(1000003 * li + W) + 7)
             En, Tn, Nb, _ = add_background(E_c, t_c, timed_c, tf_c, W, g)
             trig = ((En > 1).sum(1) >= MIN_HIT).cpu().numpy()

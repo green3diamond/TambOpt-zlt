@@ -142,6 +142,8 @@ if os.path.exists(AV):
                 ax = axs[i, j]
                 ax.plot(rs, [100 * S[k][w][key] for k in ks], "o-", c=COL["tri"], label=f"{K}×3 separate detectors (N = {n3})")
                 ax.plot(rs, [100 * A[k]["avg"][w][key] for k in ks], "D-", c="#16a085", label=f"{K} averaged stations")
+                if "avg_local" in A[ks[0]]:
+                    ax.plot(rs, [100 * A[k]["avg_local"][w][key] for k in ks], "^--", c="#2a78d6", label=f"{K} averaged, 2-of-3 (> 0.001)")
                 ax.plot(rs, [100 * A[k]["centres"][w][key] for k in ks], "x:", c="#7f8c8d", label=f"{K} single detectors at the centres")
                 ax.axhline(100 * S[f"grid_n{n3}"][w][key], c=COL["grid"], lw=1.2, label=f"grid N = {n3}")
                 ax.set_xscale("log"); ax.grid(alpha=.3)
@@ -157,8 +159,7 @@ if os.path.exists(AV):
 LO = os.path.join(T, "triplet_local_scores.json")
 if os.path.exists(LO):
     Lc = json.load(open(LO))["scores"]
-    RD = (("none", "no local trigger", "o-", COL["tri"]), ("e3", "2 of 3 hit, hit = E' > 0.001", "^-", "#2a78d6"),
-          ("gt1", "2 of 3 hit, hit = E' > 1", "D-", "#16a085"), ("ge1", "2 of 3 hit, hit = E' ≥ 1", "s--", "#8e44ad"))
+    RD = (("none", "no local trigger", "o-", COL["tri"]), ("e3", "2 of 3 hit, hit = E' > 0.001", "^-", "#2a78d6"))
     for key, fn, ylab in (("notrig_1", "local_vs_r_notrig.png", "within 1° [%]"),):
         fig, axs = plt.subplots(len(ROWS), len(WS), figsize=(17, 13), sharex=True)
         for i, (n3, _) in enumerate(ROWS):
@@ -180,3 +181,31 @@ if os.path.exists(LO):
         fig.suptitle(f"Run 19 triplets with a local 2-of-3 trigger per triangle (otherwise all 3 zeroed) — {ylab}")
         fig.tight_layout(); fig.savefig(os.path.join(T, fn), dpi=110); plt.close(fig)
         print("[write]", os.path.join(T, fn))
+
+# Clean vs noise-fine-tuned recon on every triplet readout (run_ft.sh): ft_vs_clean.png.
+FTF = [os.path.join(T, f) for f in ("triplet_scores_ft.json", "triplet_avg_scores_ft.json", "triplet_local_scores_ft.json")]
+if all(os.path.exists(f) for f in FTF) and os.path.exists(AV) and os.path.exists(LO):
+    SF, AF, LF = (json.load(open(f))["scores"] for f in FTF)
+    RO = (("separate", lambda D, k, w: D[0][k][w], "#c0392b"), ("averaged", lambda D, k, w: D[1][k]["avg"][w], "#16a085"),
+          ("averaged 2-of-3", lambda D, k, w: D[1][k]["avg_local"][w], "#2a78d6"),
+          ("separate 2-of-3", lambda D, k, w: D[2][k]["e3"][w], "#8e44ad"))
+    fig, axs = plt.subplots(3, len(WS), figsize=(17, 11), sharex=True)
+    for i, (n3, _) in enumerate(ROWS[:3]):
+        K = n3 // 3
+        ks = sorted((k for k in A if k.startswith(f"tri{K}_")), key=lambda k: int(k.split("_r")[1].split("_")[0]))
+        rs = [int(k.split("_r")[1].split("_")[0]) for k in ks]
+        for j, (w, wl) in enumerate(WS):
+            ax = axs[i, j]
+            for lab, get, col in RO:
+                ax.plot(rs, [100 * get((S, A, Lc), k, w)["notrig_1"] for k in ks], "o--", c=col, ms=3, lw=1, alpha=0.6)
+                ax.plot(rs, [100 * get((SF, AF, LF), k, w)["notrig_1"] for k in ks], "o-", c=col, ms=4, lw=2, label=lab)
+            ax.axhline(100 * S[f"grid_n{n3}"][w]["notrig_1"], c=COL["grid"], lw=1, ls="--")
+            ax.axhline(100 * SF[f"grid_n{n3}"][w]["notrig_1"], c=COL["grid"], lw=1.6, label=f"grid N = {n3}")
+            ax.set_xscale("log"); ax.grid(alpha=.3)
+            if j == 0: ax.set_ylabel(f"N = {n3}: within 1° [%]")
+            if i == 0: ax.set_title(wl)
+            if i == 2: ax.set_xlabel("triangle circumradius r [m]")
+            if j == len(WS) - 1: ax.legend(fontsize=7)
+    fig.suptitle("Run 19 triplets: clean recon (dashed) vs recon fine-tuned with background (solid), every readout")
+    fig.tight_layout(); fig.savefig(os.path.join(T, "ft_vs_clean.png"), dpi=110); plt.close(fig)
+    print("[write]", os.path.join(T, "ft_vs_clean.png"))
