@@ -525,6 +525,31 @@ if os.path.exists(TP + "triplet_scores.json"):
         ]))
         pages.append(page([TP + "avg_vs_r_notrig.png"], ["Within 1° vs triangle size, no trigger: separate detectors (red), averaged stations (green), one detector per centre (grey)"]))
         pages.append(page([TP + "avg_vs_r.png"], ["Same with the trigger (≥ 3 detectors > 1 particle; untriggered showers count as failures)"]))
+    if os.path.exists(TP + "triplet_local_scores.json"):
+        TL = json.load(open(TP + "triplet_local_scores.json"))["scores"]
+        pages.append(text_page("Triplets with a local 2-of-3 trigger: setup", [
+            "Each triangle is read out only if at least 2 of its 3 detectors are hit; otherwise all 3 are zeroed (E = 0, no time)",
+            "     hit = E' > 1 (more than one particle, signal + background): a lone background muon (E' = 1) never counts",
+            "     variant hit = E' ≥ 1: a lone background muon counts, so two muons in one triangle can open it",
+            "The recon (clean, unchanged) gets all 3K detectors, zeros included · same noise draws for every readout",
+            "Array trigger for the 'with trigger' shares: ≥ 3 read-out detectors with E' > 1",
+            "Ghosts = read-out detectors with background only (no shower signal), per shower",
+        ]))
+        TWL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
+        rows = ["layout             readout  " + "".join(f"{TWL[w]:>17s}" for w in TWL)]
+        rows.append("                            " + "".join(f"{'1° [%] / ghosts':>17s}" for w in TWL))
+        for K in (33, 16, 7):
+            for r in (25, 500):
+                k = f"tri{K}_r{r}_n{3 * K}"
+                for rd in ("none", "gt1", "ge1"):
+                    rows.append(f"{k:<19s}{rd:<9s}" + "".join(f"{100*TL[k][rd][w]['notrig_1']:.1f} / {TL[k][rd][w]['ghosts']:.2f}".rjust(17) for w in TWL))
+            rows.append("")
+        pages.append(table_page("Local 2-of-3 trigger: within 1° (no array trigger) and ghosts per shower", rows[:-1], [
+            "none = all detectors read out · gt1 = hit E' > 1 · ge1 = hit E' ≥ 1 · r = 25 / 500 m shown (all r in the plots)"]))
+        if os.path.exists(TP + "triplet_local_findings.json"):
+            pages.append(text_page("Local 2-of-3 trigger: findings", json.load(open(TP + "triplet_local_findings.json"))))
+        pages.append(page([TP + "local_vs_r_notrig.png"], ["Within 1° vs triangle size, no array trigger: no local trigger (red), 2-of-3 with E' > 1 (green), with E' ≥ 1 (purple)"]))
+        pages.append(page([TP + "local_vs_r.png"], ["Same with the array trigger (≥ 3 read-out detectors > 1 particle)"]))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)

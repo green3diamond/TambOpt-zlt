@@ -156,3 +156,30 @@ if os.path.exists(AV):
         fig.suptitle(f"Run 19 triplets read out as averaged stations (E and T averaged per triangle) — {ylab}")
         fig.tight_layout(); fig.savefig(os.path.join(T, fn), dpi=110); plt.close(fig)
         print("[write]", os.path.join(T, fn))
+
+# Local 2-of-3 trigger per triangle (score_local.py): none / hit E' > 1 / hit E' >= 1, same noise draws.
+LO = os.path.join(T, "triplet_local_scores.json")
+if os.path.exists(LO):
+    Lc = json.load(open(LO))["scores"]
+    RD = (("none", "no local trigger", "o-", COL["tri"]), ("gt1", "2 of 3 hit, hit = E' > 1", "D-", "#16a085"),
+          ("ge1", "2 of 3 hit, hit = E' ≥ 1", "s--", "#8e44ad"))
+    for key, fn, ylab in (("notrig_1", "local_vs_r_notrig.png", "within 1° [%] (no array trigger)"),
+                          ("all_1", "local_vs_r.png", "within 1° [%] (array trigger)")):
+        fig, axs = plt.subplots(len(ROWS), len(WS), figsize=(17, 13), sharex=True)
+        for i, (n3, _) in enumerate(ROWS):
+            K = n3 // 3
+            ks = sorted((k for k in Lc if k.startswith(f"tri{K}_")), key=lambda k: int(k.split("_r")[1].split("_")[0]))
+            rs = [int(k.split("_r")[1].split("_")[0]) for k in ks]
+            for j, (w, wl) in enumerate(WS):
+                ax = axs[i, j]
+                for rd, lab, mk, col in RD:
+                    ax.plot(rs, [100 * Lc[k][rd][w][key] for k in ks], mk, c=col, ms=4, label=lab)
+                ax.axhline(100 * S[f"grid_n{n3}"][w][key], c=COL["grid"], lw=1.2, label=f"grid N = {n3}")
+                ax.set_xscale("log"); ax.grid(alpha=.3)
+                if j == 0: ax.set_ylabel(f"N = {n3}: " + ylab, fontsize=8)
+                if i == 0: ax.set_title(wl)
+                if i == len(ROWS) - 1: ax.set_xlabel("triangle circumradius r [m]")
+                if j == len(WS) - 1: ax.legend(fontsize=7)
+        fig.suptitle(f"Run 19 triplets with a local 2-of-3 trigger per triangle (otherwise all 3 zeroed) — {ylab}")
+        fig.tight_layout(); fig.savefig(os.path.join(T, fn), dpi=110); plt.close(fig)
+        print("[write]", os.path.join(T, fn))

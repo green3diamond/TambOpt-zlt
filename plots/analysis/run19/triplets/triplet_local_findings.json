@@ -1,0 +1,11 @@
+[
+ "The local trigger removes almost all ghosts: N = 99 at 10 µs, 3.2 → 0.02 per shower (hit E' > 1) or 0.22 (E' ≥ 1)",
+ "But it also removes almost all signal: on average only ~3 of 99 detectors are read out (one triangle per shower)",
+ "     most shower signal is below one particle per detector (the kernel E is an expectation), so few triangles have 2 hits",
+ "Pointing collapses: N = 99, r = 25 m, within 1° (no array trigger) 5.2% → 0.5% without noise, 3.7% → 0.5% at 1 µs",
+ "     only at 10 µs is it better than reading everything (0.4% vs 0.2%), and both are useless there",
+ "E' > 1 vs E' ≥ 1: no difference in pointing; E' ≥ 1 lets ~10× more ghosts through at 10 µs (two muons in one triangle)",
+ "The weak (< 1 particle) detectors carry most of the timing the recon uses; a hard local trigger throws them away",
+ "Caveat: with real Poisson counts many of those weak detectors would see nothing anyway, so the no-local-trigger numbers",
+ "     are optimistic too; the realistic answer lies between, and needs Poisson-sampled signal to settle"
+]
