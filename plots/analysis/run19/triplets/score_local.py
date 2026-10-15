@@ -6,6 +6,7 @@ modules/optimize/background.py), with the SAME noise draws for every readout:
     none  separate detectors, no local trigger (as triplet_scores.json)
     gt1   local trigger, hit = E' > 1  (a lone background muon, E' = 1, is never a hit)
     ge1   local trigger, hit = E' >= 1 (a lone background muon is a hit)
+    e3    local trigger, hit = E' > 0.001 (any deposit at the kernel's timing threshold; a background muon is a hit)
 Array trigger for the 'with trigger' shares: >= 3 detectors with E' > 1 among the detectors read out.
 The recon (run 19, clean) gets all 3K detectors. Writes triplet_local_scores.json: {layout: {readout: {W: metrics}}}.
 
@@ -34,7 +35,8 @@ _s = importlib.util.spec_from_file_location("dcs", os.path.join(REPO, "scripts/d
 DCS = importlib.util.module_from_spec(_s); _s.loader.exec_module(DCS)
 T_DIR = os.path.join(C.RUN_LOCATION, "diagnostics", "triplets")
 MIN_HIT = 3
-READOUTS = (("none", None), ("gt1", lambda E: E > 1), ("ge1", lambda E: E >= 1))
+HIT_MIN = 1e-3                                                                     # the kernel's timing threshold (HIT_DEPOSIT_MIN)
+READOUTS = (("none", None), ("gt1", lambda E: E > 1), ("ge1", lambda E: E >= 1), ("e3", lambda E: E > HIT_MIN))
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--windows", type=float, nargs="+", default=[0, 128, 1000, 10000])

@@ -276,20 +276,19 @@ OS = json.load(open(OPT + "opt_scores.json"))
 LAB = {"start": "start", "current": "current", "twotier_l0": "two-tier λ 0", "twotier_l0p3": "two-tier λ 0.3",
        "threetier": "three-tier", "twotier_l0p3_b2048": "λ 0.3 b2048 lr10→1"}
 pages.append(full_page(OPT + "opt_layouts.png"))
-rows = ["layout                       all showers 1° / 2.5° / 5°   median   detected   detected only 1° / 2.5° / 5°   median"]
+rows = ["layout                       all showers 1° / 2.5° / 5°   median"]
 for scheme in ("grid", "center"):
     for k, lab in LAB.items():
         r = OS.get(f"{k}_{scheme}")
         if r is None:
             rows.append(f"{lab + ' · ' + scheme:<29s}(still running)"); continue
         rows.append(f"{lab + ' · ' + scheme:<29s}" + f"{100*r['all_1']:.1f} / {100*r['all_2.5']:.1f} / {100*r['all_5']:.1f}".ljust(29)
-                    + f"{r['ang_med']:.2f}°".ljust(9) + f"{100*r['detected']:.1f}%".ljust(11)
-                    + f"{100*r['det_1']:.1f} / {100*r['det_2.5']:.1f} / {100*r['det_5']:.1f}".ljust(31) + f"{r['ang_med_det']:.2f}°")
+                    + f"{r['ang_med']:.2f}°")
     rows.append("")
 done = [k for k in OS if not k.startswith("start")]
 bo = max(done, key=lambda k: OS[k]["all_1"]); g = OS["start_grid"]
 pages.append(table_page("Optimised layouts: reconstruction accuracy", rows[:-1], [
-    "Detected = ≥ 3 detectors with > 1 particle (as in three-tier) · 5,000 held-out showers: ±0.45 pts at 10% (all showers)",
+    "5,000 held-out showers: ±0.45 pts at 10%",
     f"Best over all showers: {LAB[bo.rsplit('_', 1)[0]]} from the {bo.rsplit('_', 1)[1]} ({100*OS[bo]['all_1']:.1f} / {100*OS[bo]['all_2.5']:.1f} / "
     f"{100*OS[bo]['all_5']:.1f}%) vs the grid start ({100*g['all_1']:.1f} / {100*g['all_2.5']:.1f} / {100*g['all_5']:.1f}%)",
     "Reference: best test layout (6 km disk) 11.9 / 45.1 / 77.4% · from the centre: 9.2–9.6% at 1° (three-tier: 6.9%)",
@@ -298,29 +297,24 @@ pages.append(table_page("Optimised layouts: reconstruction accuracy", rows[:-1],
 ]))
 pages.append(page([OPT + "opt_accuracy.png"], [
     "All showers: every optimisation from the grid gains at 2.5° and 5° (+0.7 to +5.6 pts); at 1° only two-tier and three-tier gain",
-    "From the centre (4% of showers detected at the start) all utilities spread out: 9.2–9.6% within 1°, three-tier only 6.9%",
+    "From the centre all utilities spread out: 9.2–9.6% within 1°, three-tier only 6.9%",
     "No run produced a dense core: the optimiser always spreads the 100 detectors over the 12 km plane",
     "2,048 / step with lr 10 → 1: from the grid 12.4 / 46.2 / 79.4% (best of all, +0.5 pts over λ 0.3 at lr 10: within noise);",
     "     from the centre only 4.1% at 1°: the decaying step stops the detectors before they spread out"]))
-pages.append(page([OPT + "opt_accuracy_detected.png"], [
-    "Detected showers only (≥ 3 detectors with > 1 particle): the optimised layouts reconstruct 12.9–17.1% within 1° and 79–85% within 5°",
-    "     vs 12.9 / 49.9 / 81.3% for the grid start: they detect fewer showers (27–33% vs 34%) but mostly reconstruct them better",
-    "Each bar uses that layout's own detected showers (~1,500–1,700 of 5,000), so differences of ~1 pt are within noise"]))
 
 for N in (50, 20):
     SN = f"_n{N}"
     if not os.path.exists(OPT + f"opt_layouts{SN}.png"):
         continue
     pages.append(full_page(OPT + f"opt_layouts{SN}.png"))
-    rows = ["layout                       all showers 1° / 2.5° / 5°   median   detected   detected only 1° / 2.5° / 5°   median"]
+    rows = ["layout                       all showers 1° / 2.5° / 5°   median"]
     for scheme in ("grid", "center"):
         for k in ("start", "twotier_l0", "twotier_l0p3"):
             r = OS.get(f"{k}_{scheme}{SN}"); lab = LAB[k] + " · " + scheme
             if r is None:
                 rows.append(f"{lab:<29s}(still running)"); continue
             rows.append(f"{lab:<29s}" + f"{100*r['all_1']:.1f} / {100*r['all_2.5']:.1f} / {100*r['all_5']:.1f}".ljust(29)
-                        + f"{r['ang_med']:.2f}°".ljust(9) + f"{100*r['detected']:.1f}%".ljust(11)
-                        + f"{100*r['det_1']:.1f} / {100*r['det_2.5']:.1f} / {100*r['det_5']:.1f}".ljust(31) + f"{r['ang_med_det']:.2f}°")
+                        + f"{r['ang_med']:.2f}°")
         rows.append("")
     bt = best(N); tb = S[bt]
     rows.append(f"{'best test layout: ' + bt.replace(SN, ''):<29s}" + f"{100*tb['within1']:.1f} / {100*tb['within2p5']:.1f} / {100*tb['within5']:.1f}".ljust(29)
@@ -331,10 +325,8 @@ for N in (50, 20):
         "Two-tier (good = 5° and |Δlog E| < 0.2), λ = 0 and 0.3 · same settings as the 100-detector runs · 5,000 held-out showers",
         f"Best optimised at 1°: {LAB[bo.rsplit('_', 2)[0]]} from the {bo.rsplit('_', 2)[1]} ({100*OS[bo]['all_1']:.1f}%) vs grid start "
         f"{100*OS['start_grid' + SN]['all_1']:.1f}% and best test layout {100*tb['within1']:.1f}%",
-        "Detected-only shares rest on few showers here (detected 3–15% of 5,000), so they are noisy (±1.5–3 pts)",
     ]))
     pages.append(page([OPT + f"opt_accuracy{SN}.png"], [f"{N} detectors, all 5,000 held-out showers: optimised layouts vs their grid and centre starts"]))
-    pages.append(page([OPT + f"opt_accuracy_detected{SN}.png"], [f"{N} detectors, detected showers only (≥ 3 detectors with > 1 particle)"]))
 
 UNOTE = {
     "_n100": ["From the centre, U rises over all 20,000 steps (two-tier and three-tier still rising at the end: not converged)",
@@ -373,7 +365,6 @@ if os.path.exists(NZ + "noise_scores.json"):
         "One readout window W shared by all detectors, centred on the shower's earliest timed detector t_ref (observed, no truth)",
         "     (a per-detector window centred on the TRUE front leaked the direction: background times carried the front's tilt)",
         "Signal: E' = E + N_bg (1 particle per muon) · T' = min(T, earliest background time), background times uniform in W",
-        "Trigger (as SWGO's multiplicity Ntrigger): ≥ 3 detectors with E' > 1; untriggered showers count as failures",
         "Recon: the run 19 recon (trained without noise), and the recon fine-tuned with background (end of section)",
         "     5,000 held-out showers · all test layouts and optimised designs",
         "SWGO (swgolo148.cpp): each tank's expected count is signal + TankArea × 1.826e-6 × 128 ns, Poisson; the tank",
@@ -392,23 +383,17 @@ if os.path.exists(NZ + "noise_scores.json"):
     WL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
     g0 = NS["grid_n100"]
     def ntable(pre, title, notes):
-        rows = ["layout                          " + "".join(f"{WL[w]:>17s}" for w in WS) + "   triggered",
-                "                                " + "".join(f"{'1° / 5° [%]':>17s}" for w in WS) + "   (no noise → 10 µs)"]
+        rows = ["layout                          " + "".join(f"{WL[w]:>17s}" for w in WS),
+                "                                " + "".join(f"{'1° / 5° [%]':>17s}" for w in WS)]
         for k in keys:
             r = NS[k]
             rows.append(f"{k.replace('opt:', 'opt ').replace('twotier_', '2t ')[:31]:<32s}" + "".join(
-                f"{100*r[w][pre + '_1']:.1f} / {100*r[w][pre + '_5']:.1f}".rjust(17) for w in WS)
-                + f"   {100*r[WS[0]]['triggered']:.1f} → {100*r[WS[-1]]['triggered']:.1f}%")
+                f"{100*r[w][pre + '_1']:.1f} / {100*r[w][pre + '_5']:.1f}".rjust(17) for w in WS))
         pages.append(table_page(title, rows, notes))
-    ntable("notrig", "Background noise, no trigger: share of all showers within 1° / 5°", [
-        "Recon as trained (no noise) · window centred on the true front arrival · 5,000 held-out showers",
+    ntable("notrig", "Background noise: share of all showers within 1° / 5°", [
+        "Recon as trained (no noise) · one readout window at the earliest hit · 5,000 held-out showers",
         f"100-det. grid at 1°: {100*g0['0']['notrig_1']:.1f}% → {100*g0['128']['notrig_1']:.1f} (128 ns) → "
         f"{100*g0['1000']['notrig_1']:.1f} (1 µs) → {100*g0['10000']['notrig_1']:.1f}% (10 µs)",
-    ])
-    ntable("all", "Background noise, with trigger: within 1° / 5° and triggered share", [
-        "Trigger: ≥ 3 detectors > 1 particle; untriggered showers count as failures · noise raises the triggered share",
-        f"100-det. grid: background-only detectors per shower {g0['128']['bg_only']:.3f} (128 ns), {g0['1000']['bg_only']:.2f} (1 µs), "
-        f"{g0['10000']['bg_only']:.2f} (10 µs)",
     ])
     o1 = max((x for x in NS if x.startswith("opt:") and "_n" not in x and not x.startswith("opt:start")), key=lambda x: NS[x]["1000"]["notrig_1"])
     d1 = max((x for x in NS if re.fullmatch(r"disk_r\d+_n100", x)), key=lambda x: NS[x]["1000"]["notrig_1"])
@@ -422,14 +407,11 @@ if os.path.exists(NZ + "noise_scores.json"):
         "     background in the shared window often arrives before a late detector's signal and replaces its time",
         f"Best at 1 µs (100 det., within 1°): {o1.replace('opt:', 'optimised ')} {100*NS[o1]['1000']['notrig_1']:.1f}%, "
         f"{d1.split('_')[1][1:]} m disk {100*NS[d1]['1000']['notrig_1']:.1f}%, grid {100*g0['1000']['notrig_1']:.1f}%",
-        f"The trigger alone (no noise) cuts the grid from {100*g0['0']['notrig_1']:.1f}% to {100*g0['0']['all_1']:.1f}% within 1°",
-        f"     only {100*g0['0']['triggered']:.0f}% of showers have ≥ 3 detectors > 1 particle; the kernel's E is an expectation",
-        "     (fractional particles still carry times), not a Poisson count, so the no-trigger numbers are optimistic",
+        "The kernel's E is an expectation (fractional particles still carry times), not a Poisson count: optimistic numbers",
     ]))
-    pages.append(page([NZ + "noise_disks_notrig.png"], ["Disks vs radius per window, no trigger (solid: no noise; dashed 128 ns, dotted 1 µs, dash-dot 10 µs)"]))
-    pages.append(page([NZ + "noise_disks.png"], ["Same with the trigger (≥ 3 detectors > 1 particle); untriggered showers count as failures"]))
+    pages.append(page([NZ + "noise_disks_notrig.png"], ["Disks vs radius per window (solid: no noise; dashed 128 ns, dotted 1 µs, dash-dot 10 µs)"]))
     pages.append(page([NZ + "noise_best.png"], ["Grid, best disk and best optimised design per detector count, per window"]))
-    pages.append(page([NZ + "noise_bgonly.png"], ["Left: detectors that fire on background alone · right: share of showers passing the trigger"]))
+    pages.append(page([NZ + "noise_bgonly.png"], ["Detectors that fire on background alone (ghosts) per shower, grid layouts"]))
     FTD = R19 + "test_v6_run_03_recentered_deepsets_noise/"
     if os.path.exists(NZ + "noise_scores_ft.json") and os.path.exists(FTD + "finetune_log.json"):
         FS = json.load(open(NZ + "noise_scores_ft.json"))["scores"]; FL = json.load(open(FTD + "finetune_log.json"))
@@ -450,7 +432,7 @@ if os.path.exists(NZ + "noise_scores.json"):
             for lab, src in (("clean", NS[k]), ("tuned", FS[k])):
                 rows.append(f"{k.replace('opt:', 'opt ').replace('twotier_', '2t ')[:31]:<32s}{lab:<10s}" + "".join(
                     f"{100*src[w]['notrig_1']:.1f} / {100*src[w]['notrig_5']:.1f}".rjust(15) for w in WS))
-        pages.append(table_page("Clean vs fine-tuned recon: within 1° / 5° [%], no trigger", rows, [
+        pages.append(table_page("Clean vs fine-tuned recon: within 1° / 5° [%]", rows, [
             "All 5,000 held-out showers · same noise draws for both recons"]))
         pages.append(page([NZ + "noise_ft.png"], ["Key layouts per detector count: clean recon (dashed) vs fine-tuned with background (solid)"]))
 
@@ -464,15 +446,14 @@ if os.path.exists(TP + "triplet_scores.json"):
         "     K = 33 / 16 / 7 / 3 → N = 99 / 48 / 21 / 9 · r = 10, 25, 50, 100, 200, 500 m (side = r√3) · random rotation per triangle",
         "Compared with: the grid and centred disks (r 0.1–12 km) rebuilt at the same N, and the main test's K × M clusters",
         "     (M = 2 / 4 / 5, r = 50–1000 m) at N = 100 / 50 / 20",
-        "Idea: one triangle can satisfy the ≥ 3-detector trigger alone, and gives a short-baseline plane-front fit",
-        "Scored as the background test: run 19 recon (no retraining), 5,000 held-out showers, windows 0 / 128 ns / 1 µs / 10 µs,",
-        "     with and without the trigger (≥ 3 detectors > 1 particle; untriggered showers count as failures)",
+        "Idea: one triangle gives a short-baseline local front and a local coincidence",
+        "Scored as the background test: run 19 recon (no retraining), 5,000 held-out showers, windows 0 / 128 ns / 1 µs / 10 µs",
     ]))
     pages.append(page([TP + "triplets_designs.png"], ["Triplet designs: full plane at r = 25 / 100 / 500 m; right: the central cluster for every r"]))
     pages.append(page([TP + "compare_designs.png"], ["Comparison designs: grid, best disk (no noise, 1°), and the 2 / 4 / 5-detector clusters (r = 100 m shown)"]))
     TWL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
-    for pre, title in (("notrig", "Triplets, no trigger: within 1° / 5° [%]"), ("all", "Triplets, with trigger: within 1° / 5° [%] and triggered share")):
-        rows = ["layout                    " + "".join(f"{TWL[w]:>15s}" for w in TWL) + "   triggered (no noise)"]
+    for pre, title in (("notrig", "Triplets: within 1° / 5° [%]"),):
+        rows = ["layout                    " + "".join(f"{TWL[w]:>15s}" for w in TWL)]
         for n3, n0 in ((99, 100), (48, 50), (21, 20), (9, 10)):
             K = n3 // 3
             dk = max((x for x in TS if re.fullmatch(rf"disk_r\d+_n{n3}", x)), key=lambda x: TS[x]["0"][pre + "_1"])
@@ -483,15 +464,12 @@ if os.path.exists(TP + "triplet_scores.json"):
                 ks.append((max(ck, key=lambda x: NS[x]["0"][pre + "_1"]), NS))
             for k, src in ks:
                 r = src[k]
-                rows.append(f"{k[:25]:<26s}" + "".join(f"{100*r[w][pre + '_1']:.1f} / {100*r[w][pre + '_5']:.1f}".rjust(15) for w in TWL)
-                            + f"   {100*r['0']['triggered']:.1f}%")
+                rows.append(f"{k[:25]:<26s}" + "".join(f"{100*r[w][pre + '_1']:.1f} / {100*r[w][pre + '_5']:.1f}".rjust(15) for w in TWL))
             rows.append("")
         pages.append(table_page(title, rows[:-1], ["Per N: grid, best disk, best triplet, triplet r = 50 m, best K × M cluster of the main test (N = 100 / 50 / 20)"]))
     if os.path.exists(TP + "triplet_findings.json"):
         pages.append(text_page("Triplets: findings", json.load(open(TP + "triplet_findings.json"))))
-    pages.append(page([TP + "triplets_vs_r_notrig.png"], ["Within 1° vs cluster radius, no trigger · rows N, columns window · lines: grid, best disk"]))
-    pages.append(page([TP + "triplets_vs_r.png"], ["Within 1° vs cluster radius, with the trigger (untriggered showers count as failures)"]))
-    pages.append(page([TP + "triplets_trig.png"], ["Share of showers passing the trigger (≥ 3 detectors > 1 particle) vs cluster radius"]))
+    pages.append(page([TP + "triplets_vs_r_notrig.png"], ["Within 1° vs cluster radius · rows N, columns window · lines: grid, best disk"]))
     if os.path.exists(TP + "triplet_avg_scores.json"):
         TA = json.load(open(TP + "triplet_avg_scores.json"))["scores"]
         pages.append(text_page("Triplets as averaged stations: setup", [
@@ -499,12 +477,11 @@ if os.path.exists(TP + "triplet_scores.json"):
             "     position = centroid of the 3 detectors · E = mean of the 3 detectors' E (signal + background)",
             "     T = mean arrival time over the station's timed detectors (signal or background); untimed if none",
             "The recon (unchanged) gets K = 33 / 16 / 7 / 3 stations instead of 3K detectors",
-            "Trigger: ≥ 3 detectors > 1 particle (the same hardware as the separate-detector test)",
             "Reference: 'centres' = one detector at each station centroid (K detectors, no averaging)",
             "Background windows 0 / 128 ns / 1 µs / 10 µs as before; 5,000 held-out showers",
         ]))
         TWL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
-        for pre, title in (("notrig", "Averaged stations, no trigger: within 1° / 5° [%]"), ("all", "Averaged stations, with trigger: within 1° / 5° [%]")):
+        for pre, title in (("notrig", "Averaged stations: within 1° / 5° [%]"),):
             rows = ["layout              readout     " + "".join(f"{TWL[w]:>15s}" for w in TWL)]
             for K in (33, 16, 7, 3):
                 ents = [(f"tri{K}_r{r}_n{3 * K}", lab, src) for r in (25, 500) for lab, src in
@@ -515,24 +492,20 @@ if os.path.exists(TP + "triplet_scores.json"):
                 rows.append("")
             pages.append(table_page(title, rows[:-1], ["r = 25 and 500 m shown (all r in the plots) · 'single' = one detector at each triangle centre"]))
         pages.append(text_page("Averaged stations: findings", [
-            "Averaging small triangles (r ≤ 100 m) ≈ one detector per centre at 1° without trigger: N = 99: 4.7–5.1% vs 4.5% (centres)",
-            "     vs 4.7–6.5% read separately · the 3 detectors add little direction information beyond one at the centre",
-            "With the trigger averaged stations keep the triplets' detection: 2.8–3.1% vs 0.6% for one detector per centre",
-            "     (the trigger counts the 3 detectors per station) · separate readout 3.0–3.5%, grid of 99: 4.7%",
+            "Averaging small triangles (r ≤ 100 m) ≈ one detector per centre at 1°: N = 99: 4.7–5.1% vs 4.5% (centres)",
+            "     vs 4.7–6.5% read separately, grid of 99: 9.7% · the 3 detectors add little direction information beyond one",
             "Large triangles (r = 500 m) must NOT be averaged: 1.3% vs 10.8% separate — averaging times 870 m apart wipes the timing",
             "N ≤ 21: everything below ~0.5% within 1°; no difference resolvable",
             "Noise columns: one readout window centred on the shower's earliest hit (as in the noise section)",
         ]))
-        pages.append(page([TP + "avg_vs_r_notrig.png"], ["Within 1° vs triangle size, no trigger: separate detectors (red), averaged stations (green), one detector per centre (grey)"]))
-        pages.append(page([TP + "avg_vs_r.png"], ["Same with the trigger (≥ 3 detectors > 1 particle; untriggered showers count as failures)"]))
+        pages.append(page([TP + "avg_vs_r_notrig.png"], ["Within 1° vs triangle size: separate detectors (red), averaged stations (green), one detector per centre (grey)"]))
     if os.path.exists(TP + "triplet_local_scores.json"):
         TL = json.load(open(TP + "triplet_local_scores.json"))["scores"]
         pages.append(text_page("Triplets with a local 2-of-3 trigger: setup", [
             "Each triangle is read out only if at least 2 of its 3 detectors are hit; otherwise all 3 are zeroed (E = 0, no time)",
-            "     hit = E' > 1 (more than one particle, signal + background): a lone background muon (E' = 1) never counts",
-            "     variant hit = E' ≥ 1: a lone background muon counts, so two muons in one triangle can open it",
+            "     hit = E' > 0.001 (the kernel's timing threshold): any deposit, a lone background muon included",
+            "     variants: hit = E' > 1 (a lone background muon, E' = 1, never counts) and E' ≥ 1",
             "The recon (clean, unchanged) gets all 3K detectors, zeros included · same noise draws for every readout",
-            "Array trigger for the 'with trigger' shares: ≥ 3 read-out detectors with E' > 1",
             "Ghosts = read-out detectors with background only (no shower signal), per shower",
         ]))
         TWL = {"0": "no noise", "128": "128 ns", "1000": "1 µs", "10000": "10 µs"}
@@ -541,15 +514,14 @@ if os.path.exists(TP + "triplet_scores.json"):
         for K in (33, 16, 7):
             for r in (25, 500):
                 k = f"tri{K}_r{r}_n{3 * K}"
-                for rd in ("none", "gt1", "ge1"):
+                for rd in ("none", "e3", "gt1"):
                     rows.append(f"{k:<19s}{rd:<9s}" + "".join(f"{100*TL[k][rd][w]['notrig_1']:.1f} / {TL[k][rd][w]['ghosts']:.2f}".rjust(17) for w in TWL))
             rows.append("")
-        pages.append(table_page("Local 2-of-3 trigger: within 1° (no array trigger) and ghosts per shower", rows[:-1], [
-            "none = all detectors read out · gt1 = hit E' > 1 · ge1 = hit E' ≥ 1 · r = 25 / 500 m shown (all r in the plots)"]))
+        pages.append(table_page("Local 2-of-3 trigger: within 1° and ghosts per shower", rows[:-1], [
+            "none = all detectors read out · e3 = hit E' > 0.001 · gt1 = hit E' > 1 · r = 25 / 500 m shown (all r in the plots)"]))
         if os.path.exists(TP + "triplet_local_findings.json"):
             pages.append(text_page("Local 2-of-3 trigger: findings", json.load(open(TP + "triplet_local_findings.json"))))
-        pages.append(page([TP + "local_vs_r_notrig.png"], ["Within 1° vs triangle size, no array trigger: no local trigger (red), 2-of-3 with E' > 1 (green), with E' ≥ 1 (purple)"]))
-        pages.append(page([TP + "local_vs_r.png"], ["Same with the array trigger (≥ 3 read-out detectors > 1 particle)"]))
+        pages.append(page([TP + "local_vs_r_notrig.png"], ["Within 1° vs triangle size: no local trigger (red), 2-of-3 with hit E' > 0.001 (blue), E' > 1 (green), E' ≥ 1 (purple)"]))
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 pages[0].save(OUT, save_all=True, append_images=pages[1:], resolution=200)

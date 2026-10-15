@@ -1,8 +1,7 @@
 """Run 19 triplet test plots, from triplet_scores.json (+ the K x M clusters in ../noise/noise_scores.json):
-    triplets_vs_r.png    share within 1 deg (all showers) vs cluster radius, triplets vs 2/4/5-detector clusters,
-                         grid and best disk as horizontal lines; rows = N, columns = no noise / 128 ns / 1 us / 10 us,
-                         each with (solid) and without (dotted) the >= 3-detector trigger
-    triplets_trig.png    triggered share vs cluster radius at W = 0 and 1 us
+    triplets_vs_r_notrig.png  share within 1 deg (all showers) vs cluster radius, triplets vs 2/4/5-detector clusters,
+                         grid and best disk as horizontal lines; rows = N, columns = no noise / 128 ns / 1 us / 10 us
+    avg_vs_r_notrig.png  averaged stations (score_avg.py) · local_vs_r_notrig.png  local 2-of-3 trigger (score_local.py)
     triplets_designs.png the triplet layouts (full plane at r = 25 / 100 / 500 m, plus one cluster zoomed for every r)
     compare_designs.png  what they are compared with: grid, best disk (no noise, within 1 deg), 2 / 4 / 5-detector clusters at r = 100 m
 """
@@ -54,9 +53,7 @@ def panel(ax, n3, n0, w, key, ylab):
     ax.set_xscale("log"); ax.set_ylabel(ylab); ax.grid(alpha=.3)
 
 
-for key, fn, ylab in (("all_1", "triplets_vs_r.png", "within 1° [%] (trigger)"),
-                      ("notrig_1", "triplets_vs_r_notrig.png", "within 1° [%] (no trigger)"),
-                      ("triggered", "triplets_trig.png", "triggered [%]")):
+for key, fn, ylab in (("notrig_1", "triplets_vs_r_notrig.png", "within 1° [%]"),):
     fig, axs = plt.subplots(len(ROWS), len(WS), figsize=(17, 13), sharex=True)
     for i, (n3, n0) in enumerate(ROWS):
         for j, (w, wl) in enumerate(WS):
@@ -135,8 +132,7 @@ print("[write]", os.path.join(T, "compare_designs.png"))
 AV = os.path.join(T, "triplet_avg_scores.json")
 if os.path.exists(AV):
     A = json.load(open(AV))["scores"]
-    for key, fn, ylab in (("notrig_1", "avg_vs_r_notrig.png", "within 1° [%] (no trigger)"),
-                          ("all_1", "avg_vs_r.png", "within 1° [%] (trigger)")):
+    for key, fn, ylab in (("notrig_1", "avg_vs_r_notrig.png", "within 1° [%]"),):
         fig, axs = plt.subplots(len(ROWS), len(WS), figsize=(17, 13), sharex=True)
         for i, (n3, _) in enumerate(ROWS):
             K = n3 // 3
@@ -157,14 +153,13 @@ if os.path.exists(AV):
         fig.tight_layout(); fig.savefig(os.path.join(T, fn), dpi=110); plt.close(fig)
         print("[write]", os.path.join(T, fn))
 
-# Local 2-of-3 trigger per triangle (score_local.py): none / hit E' > 1 / hit E' >= 1, same noise draws.
+# Local 2-of-3 trigger per triangle (score_local.py): none / hit E' > 0.001 / > 1 / >= 1, same noise draws.
 LO = os.path.join(T, "triplet_local_scores.json")
 if os.path.exists(LO):
     Lc = json.load(open(LO))["scores"]
-    RD = (("none", "no local trigger", "o-", COL["tri"]), ("gt1", "2 of 3 hit, hit = E' > 1", "D-", "#16a085"),
-          ("ge1", "2 of 3 hit, hit = E' ≥ 1", "s--", "#8e44ad"))
-    for key, fn, ylab in (("notrig_1", "local_vs_r_notrig.png", "within 1° [%] (no array trigger)"),
-                          ("all_1", "local_vs_r.png", "within 1° [%] (array trigger)")):
+    RD = (("none", "no local trigger", "o-", COL["tri"]), ("e3", "2 of 3 hit, hit = E' > 0.001", "^-", "#2a78d6"),
+          ("gt1", "2 of 3 hit, hit = E' > 1", "D-", "#16a085"), ("ge1", "2 of 3 hit, hit = E' ≥ 1", "s--", "#8e44ad"))
+    for key, fn, ylab in (("notrig_1", "local_vs_r_notrig.png", "within 1° [%]"),):
         fig, axs = plt.subplots(len(ROWS), len(WS), figsize=(17, 13), sharex=True)
         for i, (n3, _) in enumerate(ROWS):
             K = n3 // 3
@@ -173,6 +168,8 @@ if os.path.exists(LO):
             for j, (w, wl) in enumerate(WS):
                 ax = axs[i, j]
                 for rd, lab, mk, col in RD:
+                    if rd not in Lc[ks[0]]:
+                        continue
                     ax.plot(rs, [100 * Lc[k][rd][w][key] for k in ks], mk, c=col, ms=4, label=lab)
                 ax.axhline(100 * S[f"grid_n{n3}"][w][key], c=COL["grid"], lw=1.2, label=f"grid N = {n3}")
                 ax.set_xscale("log"); ax.grid(alpha=.3)

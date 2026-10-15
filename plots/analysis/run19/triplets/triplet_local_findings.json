@@ -1,11 +1,11 @@
 [
- "The local trigger removes almost all ghosts: N = 99 at 10 µs, 3.2 → 0.02 per shower (hit E' > 1) or 0.22 (E' ≥ 1)",
- "But it also removes almost all signal: on average only ~3 of 99 detectors are read out (one triangle per shower)",
- "     most shower signal is below one particle per detector (the kernel E is an expectation), so few triangles have 2 hits",
- "Pointing collapses: N = 99, r = 25 m, within 1° (no array trigger) 5.2% → 0.5% without noise, 3.7% → 0.5% at 1 µs",
- "     only at 10 µs is it better than reading everything (0.4% vs 0.2%), and both are useless there",
- "E' > 1 vs E' ≥ 1: no difference in pointing; E' ≥ 1 lets ~10× more ghosts through at 10 µs (two muons in one triangle)",
- "The weak (< 1 particle) detectors carry most of the timing the recon uses; a hard local trigger throws them away",
- "Caveat: with real Poisson counts many of those weak detectors would see nothing anyway, so the no-local-trigger numbers",
- "     are optimistic too; the realistic answer lies between, and needs Poisson-sampled signal to settle"
+ "Hit = E' > 0.001 (the kernel's timing threshold): ~13 of 99 detectors read out per shower (4–5 triangles)",
+ "     ghosts cut ~10×: N = 99 at 10 µs, 3.2 → 0.3 per shower (two background muons can still open a triangle)",
+ "No noise / 128 ns: costs some pointing (N = 99, r = 25 m: 5.2 → 3.8% within 1°): lone weak hits are thrown away",
+ "1 µs: about even with reading everything (3.7 vs 3.6% at r = 25 m; 4.8 vs 4.8% at r = 100 m)",
+ "10 µs: the local trigger wins clearly: r = 25 m 0.4 → 2.2%, r = 500 m 0.5 → 4.0% (grid of 99, no local trigger: 0.6%)",
+ "Hit = E' > 1: only ~3 detectors read out (one triangle): pointing collapses to ~0.5% at every window",
+ "     most shower signal is below one particle per detector (the kernel E is an expectation)",
+ "So a 2-of-3 coincidence at a low threshold is the right tool for long windows; at ≤ 1 µs it costs little or nothing",
+ "Caveat: the clean recon was never trained on zeroed triangles; fine-tuning on this readout could recover more"
 ]

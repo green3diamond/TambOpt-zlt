@@ -37,38 +37,35 @@ def disks_fig(pre, fname, ylab, extra):
 
 
 
-disks_fig("all", "noise_disks.png", " and triggered", "trigger ≥ 3 detectors > 1 particle")
-disks_fig("notrig", "noise_disks_notrig.png", "", "no trigger")
+disks_fig("notrig", "noise_disks_notrig.png", "", "all showers")
 
 # key layouts per N: grid, best disk (no noise), best optimised (no noise)
 keys = []
 for n in (100, 50, 20):
     disks = [x for x in S if re.fullmatch(rf"disk_r\d+_n{n}", x)]
     opts = [x for x in S if x.startswith("opt:") and not x.startswith("opt:start") and (x.endswith(f"_n{n}") if n != 100 else "_n" not in x)]
-    keys += [(n, f"grid_n{n}", "grid"), (n, max(disks, key=lambda x: S[x]["0"]["all_1"]), "best disk")]
+    keys += [(n, f"grid_n{n}", "grid"), (n, max(disks, key=lambda x: S[x]["0"]["notrig_1"]), "best disk")]
     if opts:
-        keys.append((n, max(opts, key=lambda x: S[x]["0"]["all_1"]), "best optimised"))
+        keys.append((n, max(opts, key=lambda x: S[x]["0"]["notrig_1"]), "best optimised"))
 WC = {"0": "#2a78d6", "128": "#1baf7a", "1000": "#eb6834", "10000": "#c23b6b"}
 fig, axs = plt.subplots(1, 3, figsize=(22, 6.6), sharey=False)
 for ax, (k, lab) in zip(axs, TH):
     x = np.arange(len(keys)); w_ = 0.8 / len(WS)
     for j, w in enumerate(WS):
-        ax.bar(x + (j - (len(WS) - 1) / 2) * w_, [100 * S[nm][w][f"all_{k}"] for _, nm, _ in keys], w_ * 0.92, color=WC[w], label=WLAB[w])
+        ax.bar(x + (j - (len(WS) - 1) / 2) * w_, [100 * S[nm][w][f"notrig_{k}"] for _, nm, _ in keys], w_ * 0.92, color=WC[w], label=WLAB[w])
     ax.set_xticks(x); ax.set_xticklabels([f"{n} det.\n{t}\n{nm.replace('opt:', '').replace(f'_n{n}', '')}" for n, nm, t in keys], fontsize=8)
-    ax.set(ylabel=f"within {lab} and triggered [%]", title=f"Within {lab}"); ax.grid(axis="y", alpha=0.25); ax.legend(frameon=False, fontsize=9)
+    ax.set(ylabel=f"within {lab} [%]", title=f"Within {lab}"); ax.grid(axis="y", alpha=0.25); ax.legend(frameon=False, fontsize=9)
 fig.suptitle("Key layouts with background, per window (best disk / optimised chosen without noise)", fontsize=13)
 fig.tight_layout(); fig.savefig(f"{H}/noise_best.png", dpi=105, facecolor="white"); plt.close(fig)
 
-fig, axs = plt.subplots(1, 2, figsize=(15, 5.4))
+fig, axs = plt.subplots(1, 1, figsize=(8, 5.4), squeeze=False); axs = axs[0]
 wx = [float(w) for w in WS if w != "0"]
 for n, col in NC.items():
     g = S.get(f"grid_n{n}")
     if g is None:
         continue
     axs[0].plot(wx, [g[f"{w:g}"]["bg_only"] for w in wx], "o-", color=col, lw=2, label=f"grid, {n} det.")
-    axs[1].plot([1] + wx, [100 * g[w]["triggered"] for w in WS], "o-", color=col, lw=2, label=f"grid, {n} det.")
 axs[0].set(xscale="log", yscale="log", xlabel="window [ns]", ylabel="background-only detectors per shower", title="Detectors firing on background alone")
-axs[1].set(xscale="log", xlabel="window [ns] (1 = no noise)", ylabel="triggered showers [%]", title="Trigger ≥ 3 detectors with > 1 particle")
 for ax in axs:
     ax.grid(alpha=0.25, lw=0.5); ax.legend(frameon=False, fontsize=9)
 fig.tight_layout(); fig.savefig(f"{H}/noise_bgonly.png", dpi=110, facecolor="white"); plt.close(fig)

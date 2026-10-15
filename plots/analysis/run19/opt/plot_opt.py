@@ -1,5 +1,5 @@
-"""Plots for opt_scores.json: the optimised layouts and their starts (opt_layouts.png), the share of all showers
-within 1 / 2.5 / 5 deg (opt_accuracy.png) and the share of detected showers only (opt_accuracy_detected.png)."""
+"""Plots for opt_scores.json: the optimised layouts and their starts (opt_layouts.png) and the share of all showers
+within 1 / 2.5 / 5 deg (opt_accuracy.png)."""
 import json
 import os
 import sys
@@ -38,7 +38,7 @@ def layout_fig(N):
             r = S[name]; L = torch.load(r["path"], map_location="cpu")
             ax.scatter(np.asarray(L["x"]) / 1e3, np.asarray(L["y"]) / 1e3, s=9, color=col, lw=0)
             ax.set_title(f"{lab} · {scheme} start\n1°: {100*r['all_1']:.1f}%  2.5°: {100*r['all_2.5']:.1f}%  5°: {100*r['all_5']:.1f}%  "
-                         f"med {r['ang_med']:.2f}°\ndetected (≥ 3 hit) {100*r['detected']:.1f}%", fontsize=10.5)
+                         f"med {r['ang_med']:.2f}°", fontsize=10.5)
             for sp in ax.spines.values():
                 sp.set_color(col); sp.set_linewidth(1.5)
     fig.suptitle(f"Run 19 optimised layouts ({N} detectors; 20,000 Adam steps, 512 showers/step, lr 10 unless noted) and their starts · 5,000 held-out test showers", fontsize=15)
@@ -74,6 +74,4 @@ for N in (100, 50, 20):
     layout_fig(N)
     bars("all", f"opt_accuracy{SN}.png", "share of all showers [%]",
          f"Run 19 optimisations, {N} detectors: share of all 5,000 held-out showers within 1 / 2.5 / 5°", N)
-    bars("det", f"opt_accuracy_detected{SN}.png", "share of detected showers [%]",
-         f"Run 19 optimisations, {N} detectors: share of DETECTED showers only (≥ 3 detectors with > 1 particle)", N)
-print("[write] opt_layouts*.png opt_accuracy*.png opt_accuracy_detected*.png")
+print("[write] opt_layouts*.png opt_accuracy*.png")
