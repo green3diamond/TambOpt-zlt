@@ -356,6 +356,9 @@ def precompute_bandwidths(mountain, species_index, block=512):
     print(f"[bw] wrote {final}")
 
 
+NAN_MAX_SKIPS = 50     # consecutive non-finite steps before run_main_pool gives up
+
+
 def lr_at(args, epoch):
     """--lr, or with --lr-final a log-linear decay from --lr (first step) to --lr-final (last step).
     A pure function of the step, so a requeued run resumes on the same schedule."""
@@ -414,6 +417,7 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
     ex = ThreadPoolExecutor(max_workers=1)
     nxt = ex.submit(lambda a: load(a, a + B), offset(start)) if start < args.epochs else None
     t_loop = time.time()
+    n_skip = 0
     for epoch in range(start, args.epochs):
         batch = nxt.result()
         if epoch + 1 < args.epochs:
@@ -424,8 +428,25 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
         optimizer.zero_grad(set_to_none=True)
         tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True,
                            resp=resp, gen=gen_for(args.seed * 1000003 + epoch))   # per-step draws, resume-safe
-        torch.nn.utils.clip_grad_norm_(xy_module.parameters(), max_norm=args.grad_clip)
-        optimizer.step()
+        # NaN guard: a non-finite utility or gradient skips the step (no Adam update, so neither the positions nor
+        # Adam's moments are poisoned); the first offending layout is saved; NAN_MAX_SKIPS in a row stop the run.
+        n_bad = sum(int((~torch.isfinite(p.grad)).sum()) for p in xy_module.parameters() if p.grad is not None)
+        if n_bad or not np.isfinite(tot["U"]):
+            n_skip += 1
+            tot["skipped"] = True
+            print(f"  [nan-guard {epoch+1}] U={tot['U']} non-finite gradient entries={n_bad}: step skipped "
+                  f"({n_skip} in a row)", flush=True)
+            if not os.path.exists(os.path.join(out_dir, "nan_guard_layout.pt")):
+                os.makedirs(out_dir, exist_ok=True)
+                torch.save(dict(x=xy_module.x.detach().cpu(), y=xy_module.y.detach().cpu(), epoch=epoch, offset=offset(epoch)),
+                           os.path.join(out_dir, "nan_guard_layout.pt"))
+            optimizer.zero_grad(set_to_none=True)
+            if n_skip >= NAN_MAX_SKIPS:
+                raise SystemExit(f"[nan-guard] {n_skip} non-finite steps in a row at step {epoch+1}: stopping")
+        else:
+            n_skip = 0
+            torch.nn.utils.clip_grad_norm_(xy_module.parameters(), max_norm=args.grad_clip)
+            optimizer.step()
         with torch.no_grad():
             e_new, n_new = project_to_mountain_ne(mountain, xy_module.x.detach().cpu(),
                                                   xy_module.y.detach().cpu())
