@@ -356,7 +356,7 @@ def precompute_bandwidths(mountain, species_index, block=512):
     print(f"[bw] wrote {final}")
 
 
-NAN_MAX_SKIPS = 10     # consecutive non-finite steps (each a fresh batch, same layout) before run_main_pool gives up
+NAN_MAX_SKIPS = 30     # consecutive non-finite steps (each a fresh batch, same layout) before run_main_pool gives up
 
 
 def lr_at(args, epoch):
