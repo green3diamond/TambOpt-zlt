@@ -22,6 +22,9 @@
 #      BG_WINDOW=<ns> cosmic-ray background in one readout window (suffix _bg1us / _bg10us / _bg<ns>ns),
 #      GATE=knn23 kNN 2-of-3 gate (suffix _knn23), RESPONSE=surrogate Stage 2 hurdle surrogate instead of the
 #      kernel (suffix _sur; FNN_DIR overrides the folder). No mail on preemption: one mail at the real end.
+#      FREEZE_UNSEEN=1 detectors with no signal in a batch keep their position; LBFGS_CHUNKS=<n> chunked L-BFGS after
+#      Adam (LBFGS_EVENTS showers per chunk, default 4096; LBFGS_MAXITER, default 40). Neither changes the suffix:
+#      they continue the same run (resume from opt_state.pt / lbfgs_state.pt).
 source slurm/env.sh
 source slurm/notify.sh
 source slurm/gpu_gate.sh
@@ -59,7 +62,9 @@ python -u scripts/04_optimize_lbfgs_kernel.py --utility recon --init "$INIT" \
     --lr "$LR" --epochs "$EPOCHS" --log-every 100 \
     --pool main --batch-events ${BATCH:-512} ${LR_FINAL:+--lr-final $LR_FINAL} --chunk 32 --n-score 1024 --score-every 250 \
     --recon-folder "$RK" --out-suffix "$SUFFIX" --n-det "$N_DET" --skip-analytic-eval \
-    --bg-window-ns "${BG_WINDOW:-0}" --gate "${GATE:-none}" --response "${RESPONSE:-kernel}" ${FNN_DIR:+--fnn-folder $FNN_DIR}
+    --bg-window-ns "${BG_WINDOW:-0}" --gate "${GATE:-none}" --response "${RESPONSE:-kernel}" ${FNN_DIR:+--fnn-folder $FNN_DIR} \
+    ${FREEZE_UNSEEN:+--freeze-unseen} --lbfgs-chunks "${LBFGS_CHUNKS:-0}" --lbfgs-chunk-events "${LBFGS_EVENTS:-4096}" \
+    --lbfgs-max-iter "${LBFGS_MAXITER:-40}"
 rc=$?
 notify_end $rc
 exit $rc

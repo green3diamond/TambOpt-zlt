@@ -256,7 +256,7 @@ class NoisyGated:
     def __init__(self, base, window_ns, gate, gen, t_fallback_us, straight_through):
         self.base, self.window_ns, self.gate, self.gen = base, window_ns, gate, gen
         self.t_fallback, self.st = t_fallback_us, straight_through
-        self.read, self.ghosts = 1.0, 0.0
+        self.read, self.ghosts, self.seen = 1.0, 0.0, None
 
     def __call__(self, primary_batch, xy_batch):
         out = self.base(primary_batch, xy_batch)
@@ -276,6 +276,7 @@ class NoisyGated:
             self.ghosts = float((ghost & (hard > 0)).float().sum(1).mean())
         else:
             self.read, self.ghosts = 1.0, float(ghost.float().sum(1).mean())
+        self.seen = (E.detach() > 1e-3).any(0)                            # (nd,) read out with signal in some shower
         return torch.stack([torch.log1p(E), torch.log1p(t)], dim=-1)
 
 
@@ -287,7 +288,7 @@ def pool_utility(xy_module, batch, surface, recon, chunk, backward, resp=None, g
     and the background / gate; `gen` is the background's random generator."""
     clouds, bws, prim, frames = batch
     N = prim.shape[0]
-    tot = dict(U=0.0, r_mean=0.0, u_theta=0.0, u_phi=0.0, u_e=0.0, read=0.0, ghosts=0.0)
+    tot = dict(U=0.0, r_mean=0.0, u_theta=0.0, u_phi=0.0, u_e=0.0, read=0.0, ghosts=0.0, seen=None)
     ctx = torch.enable_grad() if backward else torch.no_grad()
     with ctx:
         for lo in range(0, N, chunk):
@@ -299,7 +300,7 @@ def pool_utility(xy_module, batch, surface, recon, chunk, backward, resp=None, g
                                    [w[lo:hi].to(DEVICE) if w is not None else None for w in bws],
                                    surface, differentiable=backward,
                                    frames=None if frames is None else frames[lo:hi].to(DEVICE))
-            if resp is not None and (resp["window_ns"] > 0 or resp["gate"] != "none"):
+            if resp is not None and (resp["window_ns"] > 0 or resp["gate"] != "none" or resp.get("track_seen")):
                 kern = NoisyGated(kern, resp["window_ns"], resp["gate"], gen, resp["t_fallback_us"],
                                   straight_through=backward)
             x, y = xy_module()
@@ -313,6 +314,9 @@ def pool_utility(xy_module, batch, surface, recon, chunk, backward, resp=None, g
                 tot[k] += share * float(parts[k])
             tot["read"] += share * getattr(kern, "read", 1.0)
             tot["ghosts"] += share * getattr(kern, "ghosts", 0.0)
+            sn = getattr(kern, "seen", None)
+            if sn is not None:
+                tot["seen"] = sn if tot["seen"] is None else (tot["seen"] | sn)
     return tot
 
 
@@ -446,7 +450,18 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
         else:
             n_skip = 0
             torch.nn.utils.clip_grad_norm_(xy_module.parameters(), max_norm=args.grad_clip)
+            # --freeze-unseen: a detector with no signal in any shower of the batch keeps its position. Zeroing its
+            # gradient is not enough (Adam's momentum would still move it), so its position is restored after the step.
+            unseen = (~seen) if (args.freeze_unseen and (seen := tot["seen"]) is not None) else None
+            if unseen is not None:
+                x_old, y_old = xy_module.x.detach().clone(), xy_module.y.detach().clone()
             optimizer.step()
+            if unseen is not None:
+                with torch.no_grad():
+                    xy_module.x.data[unseen] = x_old[unseen]
+                    xy_module.y.data[unseen] = y_old[unseen]
+                tot["frozen"] = int(unseen.sum())
+        tot.pop("seen", None)
         with torch.no_grad():
             e_new, n_new = project_to_mountain_ne(mountain, xy_module.x.detach().cpu(),
                                                   xy_module.y.detach().cpu())
@@ -466,7 +481,8 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
             print(f"  [{epoch+1:5d}/{args.epochs}] U_batch={tot['U']:+.3f}  "
                   f"(u_theta={tot['u_theta']:.3f} u_phi={tot['u_phi']:.3f} "
                   f"u_e={tot['u_e']:.3f})  r={tot['r_mean']:.3f}  read={tot['read']:.3f} ghosts={tot['ghosts']:.3f}  "
-                  f"lr={lr_at(args, epoch):.3g}  {(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
+                  f"lr={lr_at(args, epoch):.3g}  frozen={tot.get('frozen', 0)}  "
+                  f"{(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
         if (epoch + 1) % args.ckpt_every == 0:
             os.makedirs(out_dir, exist_ok=True)
             torch.save(dict(xy=xy_module.state_dict(), optimizer=optimizer.state_dict(),
@@ -474,12 +490,18 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
                             best_x=best_x, best_y=best_y), state_path + ".tmp")
             os.replace(state_path + ".tmp", state_path)
     ex.shutdown()
+    print(f"[adam done] best scoring-set U={best_u:+.3f}")
+
+    lbfgs_log = []
+    if args.lbfgs_chunks > 0:
+        best_u, best_x, best_y, lbfgs_log = run_lbfgs(args, mountain, surface, recon, out_dir, resp, load, n_sweep,
+                                                      xy_module, score, gen_for, best_u, best_x, best_y)
 
     print(f"[done] best scoring-set U={best_u:+.3f}")
     os.makedirs(out_dir, exist_ok=True)
     torch.save(dict(x=best_x, y=best_y), os.path.join(out_dir, "layout_best.pt"))
     with open(os.path.join(out_dir, "optimize_log.json"), "w") as f:
-        json.dump(dict(config=vars(args), log=log, score_log=score_log, best_u=best_u),
+        json.dump(dict(config=vars(args), log=log, score_log=score_log, lbfgs_log=lbfgs_log, best_u=best_u),
                   f, indent=2)
     print(f"[write] {out_dir}/layout_best.pt, optimize_log.json")
     try:
@@ -487,6 +509,80 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
         print(f"[write] {out_dir}/layout_density.png")
     except Exception as exc:
         print(f"[plot] layout_density skipped ({exc!r})")
+
+
+def run_lbfgs(args, mountain, surface, recon, out_dir, resp, load, n_sweep, xy_module, score, gen_for,
+              best_u, best_x, best_y):
+    """Chunked L-BFGS polish after Adam, as 04_optimize_lbfgs_ensemble.py (e44cdd0): starting from the Adam best, one
+    torch.optim.LBFGS step (strong-Wolfe line search, up to --lbfgs-max-iter iterations) per FIXED chunk of
+    --lbfgs-chunk-events pool showers with ONE frozen background draw (the generator is re-seeded at every closure, so
+    the objective is deterministic within a chunk); the closure is pool_utility over sub-batches of --chunk showers
+    (share-weighted backward = the full-chunk gradient). After each chunk: project onto the mountain and score on the
+    fixed scoring set (its own fixed draw): better -> new best; within --lbfgs-tol (relative) of the best -> carry on;
+    else revert to the best. --freeze-unseen zeroes the gradient of detectors with no signal in the chunk.
+    Resumes per chunk (lbfgs_state.pt). Log: chunk, closures, U_chunk, U_score, best, kept, epoch (continuing after the
+    Adam end, one per closure)."""
+    state_path = os.path.join(out_dir, "lbfgs_state.pt")
+    rng = np.random.default_rng([args.seed, 31337])
+    offsets = [int(o) for o in rng.integers(0, n_sweep - args.lbfgs_chunk_events + 1, args.lbfgs_chunks)]
+    log, c0 = [], 0
+    if os.path.exists(state_path):
+        st = torch.load(state_path, map_location="cpu", weights_only=False)
+        log, c0, best_u, best_x, best_y = st["log"], st["chunk"], st["best_u"], st["best_x"], st["best_y"]
+        xy = st["xy"]
+        print(f"[lbfgs resume] chunk {c0}/{args.lbfgs_chunks}, best U={best_u:+.3f}", flush=True)
+    else:
+        xy = (best_x, best_y)
+    with torch.no_grad():
+        xy_module.x.data.copy_(xy[0].to(DEVICE)); xy_module.y.data.copy_(xy[1].to(DEVICE))
+    for c in range(c0, args.lbfgs_chunks):
+        batch = load(offsets[c], offsets[c] + args.lbfgs_chunk_events)
+        seed_c = args.seed * 1000003 + 500_000_000 + c
+        opt = torch.optim.LBFGS(xy_module.parameters(), lr=1.0, max_iter=args.lbfgs_max_iter, history_size=20,
+                                line_search_fn="strong_wolfe", tolerance_grad=1e-11, tolerance_change=1e-13)
+        calls = dict(n=0, U=float("nan"), frozen=0)
+
+        def closure():
+            opt.zero_grad(set_to_none=False)
+            tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True, resp=resp, gen=gen_for(seed_c))
+            calls["n"] += 1; calls["U"] = tot["U"]
+            for prm in xy_module.parameters():
+                if prm.grad is not None:
+                    bad = ~torch.isfinite(prm.grad)
+                    if bad.any():
+                        prm.grad[bad] = 0.0
+                    if args.freeze_unseen and tot["seen"] is not None:
+                        prm.grad[~tot["seen"]] = 0.0
+                        calls["frozen"] = int((~tot["seen"]).sum())
+            return torch.tensor(-tot["U"] if np.isfinite(tot["U"]) else 1e9, device=DEVICE)
+
+        t0 = time.time()
+        opt.step(closure)
+        with torch.no_grad():
+            e_new, n_new = project_to_mountain_ne(mountain, xy_module.x.detach().cpu(), xy_module.y.detach().cpu())
+            xy_module.x.data.copy_(e_new.to(DEVICE).to(xy_module.x.dtype))
+            xy_module.y.data.copy_(n_new.to(DEVICE).to(xy_module.y.dtype))
+        s = score()
+        if np.isfinite(s) and s > best_u:
+            kept, best_u = "new best", s
+            best_x, best_y = xy_module.x.detach().cpu().clone(), xy_module.y.detach().cpu().clone()
+        elif np.isfinite(s) and s >= best_u - args.lbfgs_tol * abs(best_u):
+            kept = "carry"
+        else:
+            kept = "revert"
+            with torch.no_grad():
+                xy_module.x.data.copy_(best_x.to(DEVICE)); xy_module.y.data.copy_(best_y.to(DEVICE))
+        tot_closures = (log[-1]["closures_total"] if log else 0) + calls["n"]
+        log.append(dict(chunk=c, offset=offsets[c], closures=calls["n"], closures_total=tot_closures,
+                        epoch=args.epochs + tot_closures, U_chunk=calls["U"], U_score=s, best=best_u, kept=kept,
+                        frozen=calls["frozen"]))
+        print(f"  [lbfgs chunk {c + 1}/{args.lbfgs_chunks}] {calls['n']} closures  U_chunk={calls['U']:+.3f}  "
+              f"U_score={s:+.3f}  best={best_u:+.3f}  {kept}  frozen={calls['frozen']}  {time.time() - t0:.0f}s", flush=True)
+        os.makedirs(out_dir, exist_ok=True)
+        torch.save(dict(log=log, chunk=c + 1, best_u=best_u, best_x=best_x, best_y=best_y,
+                        xy=(xy_module.x.detach().cpu().clone(), xy_module.y.detach().cpu().clone())), state_path + ".tmp")
+        os.replace(state_path + ".tmp", state_path)
+    return best_u, best_x, best_y, log
 
 
 def plot_layout_density(best_x, best_y, mountain, out_dir):
@@ -795,6 +891,15 @@ def main():
                          "P(lit) >= --p-lit-min (--pool main)")
     ap.add_argument("--fnn-folder", default=FNN_FOLDER)
     ap.add_argument("--p-lit-min", type=float, default=0.5)
+    ap.add_argument("--freeze-unseen", action="store_true",
+                    help="a detector with no signal (E' > 0.001, read out) in any shower of the step's batch / L-BFGS "
+                         "chunk keeps its position (main pool)")
+    ap.add_argument("--lbfgs-chunks", type=int, default=0,
+                    help="after Adam: L-BFGS on this many fixed pool chunks, validated on the scoring set (main pool)")
+    ap.add_argument("--lbfgs-chunk-events", type=int, default=4096)
+    ap.add_argument("--lbfgs-max-iter", type=int, default=40)
+    ap.add_argument("--lbfgs-tol", type=float, default=0.05,
+                    help="carry on from a chunk whose scoring-set U is within this relative tolerance of the best")
     ap.add_argument("--skip-analytic-eval", action="store_true",
                     help="skip the analytic (plane-front + LDF) evaluation "
                          "of the init/best layouts -- it never affects the "
@@ -826,8 +931,8 @@ def main():
             raise SystemExit("--pool main supports --utility recon only")
         recon = load_recon(args.recon_folder, DEVICE)
         resp = None
-        if args.response == "surrogate" or args.bg_window_ns > 0 or args.gate != "none":
-            resp = dict(surrogate=(load_dual_surrogate(args.fnn_folder, DEVICE, n_det=args.n_det)
+        if args.response == "surrogate" or args.bg_window_ns > 0 or args.gate != "none" or args.freeze_unseen:
+            resp = dict(track_seen=args.freeze_unseen, surrogate=(load_dual_surrogate(args.fnn_folder, DEVICE, n_det=args.n_det)
                                    if args.response == "surrogate" else None),
                         p_min=args.p_lit_min, window_ns=args.bg_window_ns, gate=args.gate,
                         t_fallback_us=args.t_fallback_us)

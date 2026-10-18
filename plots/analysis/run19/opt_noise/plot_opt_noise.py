@@ -2,7 +2,7 @@
     opt_noise_layouts_kernel.png / _surrogate.png   detector layouts (finished runs + starts), titles: test shares
     opt_noise_radial.png      distribution of detector distance from the plane centre, per run vs its start
     opt_noise_cdf.png         angular-error CDFs on the test showers at 1 us and 10 us with the kNN gate
-    opt_noise_utility.png     utility vs step (training batch, 200-step mean; scoring set)
+    opt_noise_utility.png     utility vs step (training batch, 200-step mean; scoring set; L-BFGS best after Adam, dashed)
 """
 import json
 import os
@@ -124,7 +124,13 @@ for ax, kind in zip(axs, ("kernel", "surrogate")):
         line, = ax.plot(np.arange(kk, len(u) + 1), np.convolve(u, np.ones(kk) / kk, "valid"), lw=1, alpha=.5)
         se = [r["epoch"] for r in L["score_log"]]; su = [r["U_score"] for r in L["score_log"]]
         ax.plot(se, su, "o-", ms=2.5, lw=1.6, color=line.get_color(), label=label(k).replace(f"{kind} · ", ""))
+        lb = L.get("lbfgs_log") or []
+        if lb:                                                  # L-BFGS after Adam: one x unit per closure call
+            ax.axvline(L["config"]["epochs"], color="#999", ls=":", lw=1)
+            ax.plot([L["config"]["epochs"]] + [r["epoch"] for r in lb], [su[-1]] + [r["best"] for r in lb], "s--",
+                    ms=3, lw=1.4, color=line.get_color())
     ax.set(xlabel="step", ylabel="utility U (its own response)", title=f"{kind} response"); ax.grid(alpha=.25); ax.legend(fontsize=7.5, frameon=False)
-fig.suptitle("Utility vs step (light: training batch, 200-step mean; dots: scoring set). λ 0 and λ 0.3 have different scales", fontsize=12)
+fig.suptitle("Utility vs step (light: training batch, 200-step mean; dots: scoring set; dashed after the dotted line: L-BFGS best, "
+             "one unit per closure). λ 0 and λ 0.3 have different scales", fontsize=11)
 fig.tight_layout(); fig.savefig(os.path.join(O, "opt_noise_utility.png"), dpi=100, facecolor="white"); plt.close(fig)
 print("[write] opt_noise_layouts_*.png opt_noise_radial.png opt_noise_cdf.png opt_noise_utility.png")
