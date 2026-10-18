@@ -149,6 +149,10 @@ def primary_to_physical_labels(primary: torch.Tensor):
     dir_z = d[:, 2].clamp(-1.0, 1.0)
     log_e_norm = primary[:, 3]
     log_e = log_e_norm * (LOG_E_MAX - LOG_E_MIN) + LOG_E_MIN
+    # Cap far outside the trained range (log10 E = 5-7) so 10^x stays finite: a recon fed an unusual layout once
+    # predicted log_e_norm = 30 (E = 1e65 -> inf in float32), and inf * 0 in the backward pass turned every
+    # gradient NaN (run 19 noise-aware Stage 4, centre starts). No effect on any finite, sane prediction.
+    log_e = log_e.clamp(min=0.0, max=20.0)
     E_gev = torch.pow(10.0, log_e)
     theta = torch.arccos(dir_z)
     phi   = torch.atan2(dir_y, dir_x)
