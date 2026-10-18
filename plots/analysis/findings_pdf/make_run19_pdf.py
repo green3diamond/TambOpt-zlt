@@ -661,13 +661,46 @@ if os.path.exists(ON + "runs.json"):
         "Output folders: test_v6_run_04_optimize_lbfgs_kernel_<utility>_lr10_<start>_b4096_bg<window>_knn23[_sur]"]))
     pages.append(text_page("Stage 2 surrogate for the same task", [
         "Latest Stage 2 = the hurdle head (run 15 on): per detector and species P(lit) (BCE) and the lit value (MSE on lit slots)",
-        "Trained on the run 19 corpus (400,140 showers × 11 layouts × 3 species), one job per species, Adam + early stop, then L-BFGS",
+        "Trained on the run 19 corpus (400,140 showers × 11 layouts × 3 species), one job per species",
+        "     Adam + early stop, then L-BFGS (best val: electron 0.146, muon 0.290, photon 0.134)",
         "     train / val split = the recon's (seed 1), so Stage 2 and Stage 3 hold out the same 40,014 showers",
         "As detector response: per species and channel, read the lit value where P(lit) ≥ 0.5, else exactly 0",
         "     (E = sum over lit species, T = earliest lit species) — exact zeros keep the recon's lit / timed flags meaningful",
         "Then the same noise, kNN gate and the same 8 runs as with the kernel; scored with the kernel on the test showers",
         "Caveat: the recon was trained on kernel inputs, not surrogate outputs",
     ]))
+    if os.path.exists(ON + "stage2_diag.json"):
+        SD = json.load(open(ON + "stage2_diag.json"))
+        rows = ["species    channel   samples     lit share   lit found   dark found   false lit"]
+        for sub, lab in (("all", "all validation showers"), ("hit6", "showers with ≥ 6 detectors E > 1")):
+            rows.append(f"— {lab}")
+            for sp in ("electron", "muon", "photon", "event"):
+                for ch, chl in (("log1p(E)", "E"), ("log1p(T·1e6)", "T")):
+                    d = SD[sub][sp][ch]
+                    fl = f"{100*d['false_lit']:.1f}%" if "false_lit" in d else "–"
+                    rows.append(f"{sp:<11s}{chl:<10s}{d['n_samples']:<12d}{100*d['lit_frac']:>8.1f}%   {100*d['recall_lit']:>8.1f}%   "
+                                f"{100*d['recall_dark']:>9.1f}%   {fl:>8s}")
+        pages.append(table_page("Stage 2 readout (P(lit) ≥ 0.5): lit / dark on validation", rows, [
+            "lit found = lit slots read out as lit · dark found = dark slots read out as dark · false lit = read-out slots that are dark",
+            "event = species combined (what the recon gets) · 148,371 validation (shower, layout) samples, 16,246 with ≥ 6 hits"]))
+        for sp in ("event", "electron", "muon", "photon"):
+            pages.append(page([ON + f"stage2_conditional_{sp}.png", ON + f"stage2_conditional_{sp}_hit6.png"], [
+                f"Stage 2 {sp}: all validation showers (left) vs showers hitting ≥ 6 detectors with E > 1 (right)"
+                + (" · rows: value head μ | lit, readout | lit, P(lit) calibration" if sp != "event" else
+                   " · surrogate readout vs the combined kernel label the recon was trained on")]))
+        pages.append(text_page("Stage 2: findings", [
+            "Even given a lit slot the value head under-predicts E: median ≈ half the target in log1p, worst for muons",
+            "     (combined event, ≥ 6 hits: target log1p E = 6 → median prediction ≈ 4)",
+            "Arrival times: early (target < ~2.8 in log1p µs) times are predicted ≈ flat at ~3.1, i.e. the surrogate cannot",
+            "     resolve the front's early edge; late times sit on the diagonal",
+            f"Lit/dark: event-level {100*SD['all']['event']['log1p(E)']['recall_lit']:.0f}% of lit slots found, "
+            f"{100*SD['all']['event']['log1p(E)']['recall_dark']:.0f}% of dark slots; on ≥ 6-hit showers "
+            f"{100*SD['hit6']['event']['log1p(E)']['recall_lit']:.0f}% / {100*SD['hit6']['event']['log1p(E)']['recall_dark']:.0f}%",
+            "P(lit) is under-confident: the actual lit fraction is above the predicted P(lit) at every level",
+            "     (P = 0.5 → ~60% lit), so the 0.5 threshold drops real hits",
+            "Consequence: surrogate-run layouts are optimised on a blurred, low-E, late-time version of the kernel response;",
+            "     their test scores (kernel) are the ground truth for whether that mattered",
+        ]))
     if os.path.exists(ON + "opt_noise_scores.json"):
         NO = json.load(open(ON + "opt_noise_scores.json"))["scores"]
         def _lab(k):
