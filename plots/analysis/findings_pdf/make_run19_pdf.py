@@ -669,7 +669,38 @@ if os.path.exists(ON + "runs.json"):
         "Caveat: the recon was trained on kernel inputs, not surrogate outputs",
     ]))
     if os.path.exists(ON + "opt_noise_scores.json"):
-        pass  # results pages are added when the scores exist
+        NO = json.load(open(ON + "opt_noise_scores.json"))["scores"]
+        def _lab(k):
+            return (("sur " if k.endswith("_sur") else "kern ") + ("grid " if "_grid_" in k else "centre ")
+                    + ("λ0.3 " if "_l0p3_" in k else "λ0 ") + ("1µs" if "_bg1us" in k else "10µs"))
+        done = sorted((k for k in NO if k.startswith("twotier_")), key=lambda k: (k.endswith("_sur"), "_bg10us" in k, "_center" in k, "_l0p3" in k))
+        rows = ["layout                    trained at   test at its window, kNN gate     no noise",
+                "                                       1° / 2.5° / 5° [%]      median    1° / 5° [%]"]
+        def _row(lab, r, rc, w):
+            return (f"{lab:<26s}{w:<13s}" + f"{100*r['w1']:.1f} / {100*r['w2.5']:.1f} / {100*r['w5']:.1f}".ljust(24)
+                    + f"{r['ang_med']:.2f}°".ljust(10) + f"{100*rc['w1']:.1f} / {100*rc['w5']:.1f}")
+        for wk, wl in (("1us_knn", "1 µs"), ("10us_knn", "10 µs")):
+            for k in [k for k in done if ("_bg1us" in k) == (wk == "1us_knn")]:
+                rows.append(_row(_lab(k), NO[k][wk], NO[k]["clean"], wl))
+            for ref in ("start_grid", "start_center", "grid_n100", "disk_r6000_n100"):
+                rows.append(_row(ref.replace("_n100", "").replace("disk_r6000", "disk 6 km").replace("start_", "start "),
+                                 NO[ref][wk], NO[ref]["clean"], wl))
+            rows.append("")
+        missing = [r for r in RUNS["runs"] if not any(f"_{r['init']}_" in k and (("_l0p3_" in k) == (r["tag"].endswith("0.3")))
+                                                       and (("_bg1us" in k) == (r["window"] == "1 µs")) and not k.endswith("_sur") for k in done)]
+        pages.append(table_page("Noise-aware optimisation: test showers", rows[:-1], [
+            "Scored with the kernel and the clean recon, 5,000 test showers, same noise draws · kern / sur = kernel / surrogate run",
+            f"Kernel runs still running / to rerun: {len(missing)} of 8 (centre λ 0 runs hit a NaN, fix pending)"]))
+        for kind in ("kernel", "surrogate"):
+            if os.path.exists(ON + f"opt_noise_layouts_{kind}.png"):
+                pages.append(full_page(ON + f"opt_noise_layouts_{kind}.png"))
+        pages.append(page([ON + "opt_noise_radial.png"], ["Distance of each detector from the plane centre: the best layouts (lines) vs their start (grey)"]))
+        pages.append(page([ON + "opt_noise_cdf.png"], ["Share of test showers within a given error, at the run's window with the exact kNN gate; references in grey / orange"]))
+        pages.append(page([ON + "opt_noise_utility.png"], ["Each run's own utility (kernel or surrogate response) on its scoring set; not comparable across responses"]))
+        if os.path.exists(ON + "opt_noise_findings.json"):
+            pages.append(text_page("Noise-aware optimisation: findings so far", json.load(open(ON + "opt_noise_findings.json"))))
+        if missing:
+            pages.append(pending_page("Remaining kernel runs", "Grid λ 0 1 µs / 10 µs, grid λ 0.3 1 µs, centre λ 0.3 1 µs running or queued; centre λ 0 to rerun"))
     else:
         pages.append(pending_page("Kernel runs: optimised layouts", "Layouts after 5,000 steps, grid and centre starts, 1 µs and 10 µs"))
         pages.append(pending_page("Kernel runs: accuracy on the test showers", "Within 1 / 2.5 / 5° with the exact gate at the run's window, vs grid and 6 km disk"))

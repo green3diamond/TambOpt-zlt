@@ -1,0 +1,12 @@
+[
+ "Finished: 8 surrogate runs, 2 kernel runs (λ 0.3, 10 µs, grid and centre) · scored with the kernel on 5,000 test showers",
+ "With the kNN gate, nothing beats the grid start by more than the noise (±0.4 pts at 1°): 1 µs grid 7.2%, disk 7.7%,",
+ "     best run 7.7% (surrogate, grid, λ 0, 10 µs); 10 µs grid 3.8%, runs 3.7–3.9%",
+ "Grid starts barely move: the grid is already near a local optimum of the gated, noisy utility",
+ "Surrogate runs from the grid end slightly better without noise (11.1–11.7% vs grid 10.4%, disk 11.9%)",
+ "Centre starts spread out but stay far below the grid: 1 µs gated 4.7–5.7% (start 0.2%), 10 µs 0.5–2.9%",
+ "     10 µs runs from the centre barely leave it (kernel λ 0.3: 0.8%): too few showers survive the gate to give a gradient",
+ "Kernel vs surrogate: similar layouts and test scores where both finished (grid λ 0.3 10 µs: 3.8 vs 3.9% at 10 µs)",
+ "Centre λ 0 kernel runs hit a NaN: the recon predicted log E far out of range (one shower with 2 hits) → E = inf → NaN gradient",
+ "     fix: cap the predicted log E before 10^x; the two runs will be rerun"
+]
