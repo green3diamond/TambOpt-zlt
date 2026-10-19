@@ -4,7 +4,7 @@
 #SBATCH --time=3-00:00:00
 #SBATCH -c 8
 #SBATCH --gres=gpu:1
-#SBATCH --constraint=a100
+#SBATCH --constraint="a100|h100|h200"
 #SBATCH --requeue
 #SBATCH --open-mode=append
 #SBATCH -J kernel_opt_run19
