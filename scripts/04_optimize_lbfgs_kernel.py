@@ -524,7 +524,10 @@ def run_lbfgs(args, mountain, surface, recon, out_dir, resp, load, n_sweep, xy_m
     Adam end, one per closure)."""
     state_path = os.path.join(out_dir, "lbfgs_state.pt")
     rng = np.random.default_rng([args.seed, 31337])
-    offsets = [int(o) for o in rng.integers(0, n_sweep - args.lbfgs_chunk_events + 1, args.lbfgs_chunks)]
+    n_slots = n_sweep // args.lbfgs_chunk_events                    # disjoint chunks: every shower used at most once
+    if args.lbfgs_chunks > n_slots:
+        raise ValueError(f"--lbfgs-chunks {args.lbfgs_chunks} x {args.lbfgs_chunk_events} exceeds the {n_sweep}-event sweep pool")
+    offsets = [int(s) * args.lbfgs_chunk_events for s in rng.permutation(n_slots)[:args.lbfgs_chunks]]
     log, c0 = [], 0
     if os.path.exists(state_path):
         st = torch.load(state_path, map_location="cpu", weights_only=False)
