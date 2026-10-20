@@ -6,6 +6,12 @@ layout, accepting an update only when its validation error improves.
 `run.py` drives the optimisation; `refresh.py` handles data and network training.
 Existing pipeline files are unchanged.
 
+## Pull request base
+
+This code uses the kernel-pool APIs on the `run18-agnostic-recon` branch.
+Open a pull request against that branch. Its parent changes are not part of
+this feature, and `master` does not yet contain the APIs this driver uses.
+
 ## Inputs
 
 Use the repository's Python environment with PyTorch and `showerdata`. The shower
