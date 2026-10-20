@@ -26,6 +26,15 @@
 #      FREEZE_UNSEEN=1 detectors with no signal in a batch keep their position; LBFGS_CHUNKS=<n> chunked L-BFGS after
 #      Adam (LBFGS_EVENTS showers per chunk, default 4096; LBFGS_MAXITER, default 40). Neither changes the suffix:
 #      they continue the same run (resume from opt_state.pt / lbfgs_state.pt).
+#      PREV_JOB=<id> for a continuation job (sbatch -d afternotok:<id>): runs only if <id> ended at its time limit
+#      (or on a node failure); after a real error it exits at once rather than hit the same error again.
+if [ -n "$PREV_JOB" ]; then
+    PREV_STATE=$(sacct -j "$PREV_JOB" -X -n -o State | awk 'NR==1 {print $1}')
+    case "$PREV_STATE" in
+        TIMEOUT|NODE_FAIL) echo "[continue] job $PREV_JOB ended $PREV_STATE -> resuming" ;;
+        *) echo "[continue] job $PREV_JOB ended ${PREV_STATE:-?}, not a time limit -> nothing to do"; exit 0 ;;
+    esac
+fi
 source slurm/env.sh
 source slurm/notify.sh
 source slurm/gpu_gate.sh
