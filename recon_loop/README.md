@@ -53,7 +53,7 @@ for start in grid center; do
 done
 ```
 
-The launcher inherits the active environment and requests one A100, eight CPUs,
+The launcher inherits the active environment and requests one GPU, eight CPUs,
 96 GB host RAM and six hours. Override these settings for your cluster.
 `RECON_LOOP_PYTHON` can select an interpreter. `--refresh-every 0` is the default
 and does not require a bank. Run either Python file with `--help` for options.
