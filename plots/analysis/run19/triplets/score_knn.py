@@ -3,9 +3,11 @@ neighbours (in the layout, East-North)} are hit (hit = E' > 0.001); otherwise E 
 Same noise draws for every readout ('none' = all read out, 'knn' = gated; tri* also 'group' = 2-of-3 within its own
 triangle). Clean run 19 recon.
 Layouts: grid_n99, disk_r6000_n99, all tri33_* (triplets/layouts.txt) and clu20x5_r1000_n100 (tests/layouts.txt).
-Writes knn_scores.json: {layout: {readout: {W: metrics}}}.
+Writes knn_scores.json: {layout: {readout: {W: metrics}}}. A background muon's E uses the detector's distance from
+the shower axis. --counting poisson draws particle counts per species before the species combination
+(modules/optimize/counting.py; hit = any counted particle) and writes knn_scores_poisson.json unless --out is given.
 
-    python score_knn.py [--windows 0 128 1000 10000]
+    python score_knn.py [--windows 0 128 1000 10000] [--counting poisson --eps-gamma 0.02]
 """
 import argparse
 import importlib.util
@@ -17,13 +19,14 @@ import sys
 import numpy as np
 import torch
 
-REPO = "/n/home05/zdimitrov/tambo/TambOpt"
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 sys.path.insert(0, REPO)
 import modules.constants as C  # noqa: E402
 from modules.geometry import load_tr_mountain, SurfaceUpMap  # noqa: E402
 from modules.optimize import load_models  # noqa: E402
 from modules.optimize.objective import primary_to_physical_labels  # noqa: E402
-from modules.optimize.background import window_centres, add_background  # noqa: E402
+from modules.optimize.background import window_centres, add_background, axis_distance  # noqa: E402
+from modules.optimize.counting import CountingTransform, EPS_GAMMA  # noqa: E402
 from plots.layouts.true_utility import load_events  # noqa: E402
 
 _s = importlib.util.spec_from_file_location("dcs", os.path.join(REPO, "scripts/diagnostics/detector_count_scan.py"))
@@ -37,8 +40,13 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--windows", type=float, nargs="+", default=[0, 128, 1000, 10000])
 ap.add_argument("--n-events", type=int, default=5000)
 ap.add_argument("--recon-dir", default=C.RECON_FOLDER + "_deepsets")
-ap.add_argument("--out", default=os.path.join(T_DIR, "knn_scores.json"))
+ap.add_argument("--out", default=None, help="default knn_scores.json, or knn_scores_poisson.json with --counting poisson")
+ap.add_argument("--counting", choices=("none", "poisson"), default="none")
+ap.add_argument("--eps-gamma", type=float, default=EPS_GAMMA, help="photon detection probability (counting only)")
+ap.add_argument("--count-seed", type=int, default=7)
 args = ap.parse_args()
+if args.out is None:
+    args.out = os.path.join(T_DIR, "knn_scores.json" if args.counting == "none" else "knn_scores_poisson.json")
 
 dev = DCS.DEVICE
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
@@ -46,7 +54,8 @@ m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east
 surface = SurfaceUpMap.from_mountain(m, grid_h=256, grid_w=256).to(dev)
 _, recon = load_models(dev, recon_dir=args.recon_dir, with_fnn=False)
 clouds, B, _, prim = load_events(args.n_events, dev, m)
-kern = DCS.GS.CachedKernel(clouds, surface, dev, chunk=64, expected_primary=prim)
+ct = CountingTransform(surface, None, eps_gamma=args.eps_gamma) if args.counting == "poisson" else None
+kern = DCS.GS.CachedKernel(clouds, surface, dev, chunk=64, expected_primary=prim, species_transform=ct)
 E_true, th_t, ph_t = primary_to_physical_labels(prim)
 T_FALLBACK = None
 
@@ -75,15 +84,19 @@ for li, (name, path) in enumerate(layouts.items()):
         same = float((torch.sort(nn, 1).values == torch.sort(mates[mates != torch.arange(nd, device=dev)[:, None]]
                                                               .view(nd, 2), 1).values).all(1).float().mean())
         res["knn_is_triangle"] = same                                              # share of detectors whose kNN = mates
+    r_axis = axis_distance(e, n, surface, kern.frames)                           # (B, nd) m, background muon scaling
+    if ct is not None:
+        ct.gen = torch.Generator(device=dev); ct.gen.manual_seed(1000003 * args.count_seed + li); ct.n_detected = []
     with torch.no_grad():
         lab = kern(prim, xy)
+        n_counted = float(torch.cat(ct.n_detected).mean()) if ct is not None else float("nan")
         E = torch.expm1(lab[..., 0].clamp(min=0)); t = torch.expm1(lab[..., 1].clamp(min=0)); timed = lab[..., 1] > 0
         if T_FALLBACK is None:
             T_FALLBACK = float(t[timed].median()) if timed.any() else 10.0
         t_c = window_centres(t, timed, T_FALLBACK)
         for W in args.windows:
             g = torch.Generator(device=dev); g.manual_seed(int(1000003 * li + W))
-            En, Tn, Nb, hasbg = add_background(E, t, timed, t_c, W, g)
+            En, Tn, Nb, hasbg = add_background(E, t, timed, t_c, W, g, r_axis=r_axis)
             ghost = hasbg & ~timed                                                 # background-only detectors
             for rd in rds:
                 h = (En > HIT_MIN).float()
@@ -98,7 +111,7 @@ for li, (name, path) in enumerate(layouts.items()):
                                                                              torch.log1p(Tk)[..., None]], -1)))
                 a = DCS.ang_err((E_p.clamp(min=1.0), th_p, ph_p, E_true, th_t, ph_t))[0].cpu().numpy()
                 trig = ((Ek > 1).sum(1) >= MIN_HIT).cpu().numpy()
-                r = dict(n_det=nd, triggered=float(trig.mean()), ang_med=float(np.median(a)),
+                r = dict(n_det=nd, n_counted=n_counted, triggered=float(trig.mean()), ang_med=float(np.median(a)),
                          read_det=float(keep.float().sum(1).mean()), ghosts=float((ghost & keep).float().sum(1).mean()),
                          lit_det=float(((Ek > 0) | (Tk > 0)).float().sum(1).mean()))
                 for th, kk in ((1, "1"), (2.5, "2.5"), (5, "5")):
@@ -109,6 +122,8 @@ for li, (name, path) in enumerate(layouts.items()):
     s = "  ".join(f"W={w}: " + " ".join(f"{rd} {100*res[rd][w]['notrig_1']:.1f}/{100*res[rd][w]['all_1']:.1f} g{res[rd][w]['ghosts']:.2f}"
                                        for rd in rds) for w in res["none"])
     print(f"[{name:16s}] (1 deg no trig / trig, ghosts) {s}", flush=True)
-json.dump(dict(recon_dir=args.recon_dir, windows_ns=args.windows, min_hit=MIN_HIT, n_events=B, scores=out),
+json.dump(dict(recon_dir=args.recon_dir, windows_ns=args.windows, min_hit=MIN_HIT, n_events=B, counting=args.counting,
+               eps_gamma=args.eps_gamma if args.counting == "poisson" else None, count_seed=args.count_seed,
+               bg_muon_scaling="per detector, distance from the axis", scores=out),
           open(args.out, "w"), indent=1)
 print("[write]", args.out)

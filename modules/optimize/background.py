@@ -109,6 +109,18 @@ def axis_distance(e_det, n_det, surface, frames):
         return detectors_in_frames(e_det, n_det, surface, frames, ring=True)[0].float()
 
 
+def axis_distance_rows(xy, surface, frames):
+    """Per-row version of axis_distance for rows with their own layouts (training rows): xy (B, nd, 2) East, North;
+    frames (B, 12) [p, d, e1, e2] (dataset_builder.shower_frames). Returns (B, nd) distance [m] from each row's axis:
+    |(det - p) - ((det - p) . d) d|, det = (E, N, surface(N, E))."""
+    with torch.no_grad():
+        e, n = xy[..., 0], xy[..., 1]
+        det = torch.stack([e, n, surface(n.reshape(-1), e.reshape(-1)).view_as(e)], -1)
+        v = det - frames[:, None, 0:3].to(det)
+        d = frames[:, None, 3:6].to(det)
+        return (v - (v * d).sum(-1, keepdim=True) * d).norm(dim=-1).float()
+
+
 def window_centres(t, timed, t_fallback):
     """Readout-window centre per detector [us], (B, nd): the shower's earliest timed detector, the same for every
     detector; showers with no timed detector use t_fallback. t, timed: (B, nd)."""

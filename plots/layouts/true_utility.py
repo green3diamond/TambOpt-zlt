@@ -112,7 +112,7 @@ class KernelDualLabels:
     all B events -- unlike lowering --n-events, which shrinks the sample."""
 
     def __init__(self, species_clouds, surface, device, chunk=0, differentiable=False,
-                expected_primary=None):
+                expected_primary=None, species_transform=None):
         """`species_clouds`: one placed (B, P, 5) tensor per species, in
         constants.SPECIES_NAMES order — the components of the SAME B events.
 
@@ -121,6 +121,11 @@ class KernelDualLabels:
         what `scripts/04_optimize_lbfgs_kernel.py` needs and this class's
         default scoring use (`true_utility.py`'s surrogate-vs-kernel table)
         does not. Default False keeps every existing caller unchanged.
+
+        `species_transform`: optional callable (per-species list, e_det, n_det,
+        frames) -> per-species list, applied to each chunk BEFORE the species
+        combination (e.g. modules/optimize/counting.CountingTransform for
+        counting noise). None (default) keeps every existing caller unchanged.
 
         `expected_primary`: the `primary_batch` `load_events()` returned
         ALONGSIDE `species_clouds` (same call, same events). When given,
@@ -136,6 +141,7 @@ class KernelDualLabels:
         self.differentiable = differentiable
         self.expected_primary = (expected_primary.detach().to(device)
                                  if expected_primary is not None else None)
+        self.species_transform = species_transform
 
     def _labels(self, clouds, e_det, n_det, frames=None):
         E, T = compute_labels_batch(clouds, e_det, n_det, self.surface,
@@ -170,8 +176,10 @@ class KernelDualLabels:
         for lo in range(0, B, self.chunk):
             hi = min(lo + self.chunk, B)
             fr = None if self.frames is None else self.frames[lo:hi]
-            out.append(combine_species_outputs(
-                *(self._labels(c[lo:hi], e_det, n_det, fr) for c in self.clouds)))
+            preds = [self._labels(c[lo:hi], e_det, n_det, fr) for c in self.clouds]
+            if self.species_transform is not None:
+                preds = self.species_transform(preds, e_det, n_det, fr)
+            out.append(combine_species_outputs(*preds))
         return out[0] if len(out) == 1 else torch.cat(out, dim=0)
 
 
