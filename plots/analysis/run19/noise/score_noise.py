@@ -3,7 +3,7 @@
 Background (SWGO / SWGOLO swgolo148.cpp, HAP-2024-004): 1,826 muons / m^2 / s; detectors of 2 m^2, so per detector and
 shower lambda = 2 * 1.826e-6 * W[ns] in one readout window W, shared by all detectors and centred on the shower's
 earliest timed detector t_ref. Per window:
-    E' = E + N_bg,  N_bg ~ Poisson(lambda)  (one particle per background muon)
+    E' = E + N_bg * E_PER_BG_MUON,  N_bg ~ Poisson(lambda)  (a muon in kernel units, ~899; modules/optimize/background.py)
     T' = min(T, earliest background time),  background times ~ U(t_ref - W/2, t_ref + W/2)
 Trigger: >= 3 detectors with E' > 1. Recon: the clean run 19 recon, or --recon-dir (e.g. the noise fine-tune).
 Writes noise_scores.json: {layout: {W: metrics}}; W = 0 is the no-noise baseline through the same code path.
@@ -27,7 +27,7 @@ import modules.constants as C  # noqa: E402
 from modules.geometry import load_tr_mountain, SurfaceUpMap  # noqa: E402
 from modules.optimize import load_models  # noqa: E402
 from modules.optimize.objective import primary_to_physical_labels  # noqa: E402
-from modules.optimize.background import RATE_PER_M2_NS, AREA_M2, window_centres, add_background  # noqa: E402
+from modules.optimize.background import RATE_PER_M2_NS, AREA_M2, E_PER_BG_MUON, BG_UNITS, window_centres, add_background  # noqa: E402
 from plots.layouts.true_utility import load_events  # noqa: E402
 
 _s = importlib.util.spec_from_file_location("dcs", os.path.join(REPO, "scripts/diagnostics/detector_count_scan.py"))
@@ -99,6 +99,6 @@ for li, (name, path) in enumerate(layouts.items()):
     out[name] = res
     s = "  ".join(f"W={w}: {100*v['all_1']:.1f}/{100*v['all_5']:.1f} trig {100*v['triggered']:.0f}%" for w, v in res.items())
     print(f"[{name:30s}] n={nd:3d}  {s}", flush=True)
-json.dump(dict(recon_dir=args.recon_dir, rate_per_m2_ns=RATE_PER_M2_NS, area_m2=AREA_M2, min_hit=MIN_HIT, n_events=B, t_fallback_us=T_FALLBACK,
+json.dump(dict(recon_dir=args.recon_dir, rate_per_m2_ns=RATE_PER_M2_NS, area_m2=AREA_M2, bg_units=BG_UNITS, e_per_bg_muon=E_PER_BG_MUON, min_hit=MIN_HIT, n_events=B, t_fallback_us=T_FALLBACK,
                windows_ns=args.windows, scores=out), open(args.out, "w"), indent=1)
 print("[write]", args.out)

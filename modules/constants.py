@@ -50,6 +50,10 @@ LAYER_EAST_DX  = 500.0
 #   - REBUILD REQUIRED: this enters the labels at Stage 1, so E.pt/T.pt and every
 #     Stage 2/3 checkpoint trained on them are stale until Stage 1 is rerun.
 SIGMA_SPATIAL  = 10.0
+# Units: a point's energy is the summed kinetic energy [GeV] of a CORSIKA 8 cell; the
+# kernel weight has peak 1 and total 2 pi SIGMA_SPATIAL^2 (~628 m^2), so E is GeV over an
+# effective ~628 m^2, not particles (modules/showers/kernel.py docstring). Thresholds on
+# E (HIT_DEPOSIT_MIN, E > 1, E > 0.001) are therefore in GeV-within-~10-m, not in MIPs.
 
 # A shower point counts as DETECTED at a detector when its deposit there —
 # energy * kernel acceptance — clears this. It defines the T label: T is the
@@ -65,7 +69,7 @@ SIGMA_SPATIAL  = 10.0
 # E > 0 is a WEAKER condition than T > 0 and always will be: E sums many
 # sub-threshold deposits, so ~40% of detectors have E > 0 with no single
 # detected point and therefore T == 0. Do not treat T == 0 as "E == 0".
-HIT_DEPOSIT_MIN = 1e-3
+HIT_DEPOSIT_MIN = 1e-3     # GeV of one cell x kernel weight (not a particle count; see SIGMA_SPATIAL)
 
 # Interpolated kernel (showers/kernel.py `adaptive_bandwidths`): each point's
 # Gaussian widens to its k-th nearest in-plane neighbour distance, floored at

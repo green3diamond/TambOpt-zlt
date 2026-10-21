@@ -10,7 +10,27 @@ The plane weight is triangular — 1 on an exact layer match, falling linearly t
     kernel  = spatial_gaussian * plane_w      (B, max_points, n_det)
 
 E is the deposit sum over that kernel and stays differentiable in the detector
-positions and in z_cont. **T is the time of the EARLIEST DETECTED point** — a
+positions and in z_cont.
+
+Units and normalisation of E (2026-10-21). Each AllShowers point is a CELL of the
+CORSIKA 8 output (5 x 5 m for e/gamma, 10 x 10 m for mu; 10 / 20 m beyond 10 km),
+and its "energy" is the SUMMED KINETIC ENERGY [GeV] of the particles in that cell
+(TAMBO-opt postprocess_showers.py). No particle count is stored, and nothing on the
+way divides by an area. The spatial weight has PEAK 1 (exp(-d^2 / 2 sigma^2)); its
+total over the plane is 2 pi sigma^2 ~ 628 m^2 per point (sigma = 10 m). The
+interpolated kernel's (sigma/h)^2 factor keeps that total at 2 pi sigma^2 for any
+width h: a relative normalisation, not one to 1. So
+
+    E ~ (kinetic-energy density [GeV / m^2]) x 2 pi sigma^2   [GeV]
+
+i.e. a detector reads as if its area were ~628 m^2 (about 300x a 2 m^2 detector),
+and E is energy, not particles. The recon and the surrogate learn on
+z-scored log1p(E), so the scale mostly washes out for them; it matters wherever
+E's absolute value is used: hit thresholds (E > 1, E > 0.001), HIT_DEPOSIT_MIN
+(the leading-edge time), the background (modules/optimize/background.py) and any
+Poisson / MIP probability. Expected charged particles in a detector of area A:
+mu = E x (n_ch / eps) x A / (2 pi sigma^2), with n_ch / eps the charged particles
+per GeV of kinetic energy (scripts/diagnostics/c8_charged_ke.py). **T is the time of the EARLIEST DETECTED point** — a
 leading edge, so it is a selection, piecewise constant in the detector position
 and carrying no useful gradient. Nothing backprops through this kernel:
 `compute_labels_batch` is `@torch.no_grad()` and every call site is label
@@ -226,6 +246,8 @@ def GetCounts_planeaware(
     delta_l = point_l.unsqueeze(2) - z_cont
     plane_w = torch.relu(1.0 - delta_l.abs())
 
+    # Peak weight 1, total 2 pi sigma^2 (~628 m^2) per point: E is GeV over an
+    # effective ~628 m^2, not a density and not a particle count (module docstring).
     kernel        = spatial * plane_w                              # (B, P, n_det)
     energy_kernel = point_e.unsqueeze(2) * kernel                 # (B, P, n_det)
 
