@@ -83,7 +83,7 @@ allc = dict(mean_ke_charged_GeV=float((ke["e"].sum() + ke["mu"].sum()) / n_ch.su
             **{f"mean_ke_{s}_GeV": float(ke[s].sum() / cnt[s].sum()) for s in SPECIES})
 res["all_r"] = allc
 # The band most detectors sit in (100 m - 3 km from the axis): per-species mean kinetic energy, i.e. the per-species
-# scaling between the kernel's E (GeV) and a particle count. Read by modules/optimize/background.py (KE_PER_PARTICLE_GEV).
+# scaling between the kernel's E (GeV) and a particle count. The table the code uses (c8_scaling.json) comes from c8_ring_radius_check.py.
 band = (R_E[:-1] >= 100) & (R_E[1:] <= 3000)
 res["band_100m_3km"] = dict(**{f"mean_ke_{s}_GeV": float(ke[s][band].sum() / cnt[s][band].sum()) for s in SPECIES},
                             charged_per_GeV_all=float(n_ch[band].sum() / tot_ke[band].sum()))

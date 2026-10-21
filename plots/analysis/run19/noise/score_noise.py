@@ -3,7 +3,7 @@
 Background (SWGO / SWGOLO swgolo148.cpp, HAP-2024-004): 1,826 muons / m^2 / s; detectors of 2 m^2, so per detector and
 shower lambda = 2 * 1.826e-6 * W[ns] in one readout window W, shared by all detectors and centred on the shower's
 earliest timed detector t_ref. Per window:
-    E' = E + N_bg * E_PER_BG_MUON,  N_bg ~ Poisson(lambda)  (a muon in kernel units, ~899; modules/optimize/background.py)
+    E' = E + N_bg * E_PER_BG_MUON,  N_bg ~ Poisson(lambda)  (a muon in kernel units, ~650 band value; modules/optimize/background.py)
     T' = min(T, earliest background time),  background times ~ U(t_ref - W/2, t_ref + W/2)
 Trigger: >= 3 detectors with E' > 1. Recon: the clean run 19 recon, or --recon-dir (e.g. the noise fine-tune).
 Writes noise_scores.json: {layout: {W: metrics}}; W = 0 is the no-noise baseline through the same code path.
