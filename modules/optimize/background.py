@@ -2,7 +2,7 @@
 
 1,826 muons / m^2 / s on detectors of 2 m^2: per detector and shower lambda = 2 * 1.826e-6 * W[ns] in ONE readout
 window W shared by all detectors, centred on the shower's earliest timed detector t_ref (observed, no truth). Per window:
-    E' = E + N_bg * E_PER_BG_MUON,  N_bg ~ Poisson(lambda)
+    E' = E + N_bg * e_per_bg_muon(r),  N_bg ~ Poisson(lambda),  r = the detector's distance from the shower axis
     T' = min(T, earliest background time),  background times ~ U(t_ref - W/2, t_ref + W/2)
 (Until 2026-10-15 the window was centred on each detector's TRUE front arrival, t_ref + (r_i - r_ref) . n_true / c:
 background times then carried the true direction, and a recon fine-tuned on them learned to read it.)
@@ -14,16 +14,21 @@ t in us, positions in m.
 
 Units (2026-10-21). The kernel's E is NOT a particle count: it is summed kinetic energy [GeV] of CORSIKA 8 cells,
 weighted by a 10 m Gaussian with peak 1 and total 2 pi sigma^2 ~ 628 m^2 (modules/showers/kernel.py docstring), i.e.
-GeV collected over an effective ~628 m^2. A background muon is a real particle in a 2 m^2 detector, so it is put into
-the same units per species: a particle of species s with mean kinetic energy KE_s in a detector of area A reads as
-    E = KE_s * 2 pi sigma^2 / A
-and, the other way, a kernel E of species s means E * A / (2 pi sigma^2 KE_s) particles (particles_per_E()).
-KE_s = mean kinetic energy per particle at 100 m - 3 km from the axis, from 16 CORSIKA 8 pi- showers
-(scripts/diagnostics/c8_charged_ke.py -> detector_optimization_v6/c8_calibration/c8_charged_ke.json):
-e 0.081, mu 2.86, gamma 0.042 GeV. The muon value falls with distance (3.5 GeV at 100-300 m, 1.2 GeV at 1-3 km), e and
-gamma are flat; shower muons stand in for cosmic-ray muons. Until 2026-10-21 a background muon added 1 to E (count
-units mixed with GeV-over-628-m^2 units, ~900x too faint); TAMBOPT_BG_UNITS=count restores that.
+GeV collected over an effective ~628 m^2. On top, the ring kernel places each super-particle on a ring of radius |t1|
+(horizontal transverse offset only, place_clouds_shower) instead of its true distance r = sqrt(t1^2 + t2^2), which
+lowers the energy density away from the core: ring / true = ratio_s(r), ~1.0 at the core, 0.6 at 300 m, 0.45 at 1 km.
+Per species s, a kernel E at a detector a distance r from the axis therefore means
+    particles_s = E * A / (2 pi sigma^2 * KE_s(r)) / ratio_s(r)                         (particles_per_E)
+with KE_s(r) the mean kinetic energy per particle at true distance r. Both are VECTORS over r per species, measured on
+16 CORSIKA 8 pi- showers (scripts/diagnostics/c8_ring_radius_check.py -> c8_scaling.json next to this file; 28 log
+bins 1 m - 10 km, interpolated in log r, clamped at the measured ends). r=None uses the 100 m - 3 km band values.
+A background muon is the inverse: one real muon in the 2 m^2 detector reads as E = 1 / particles_per_E('mu', r) in
+the same (ring-kernel) units as the signal: ~650 for the band value, ~1,500 at 100 m, ~210 at 1 km
+(a MIP view: the background muon counts as one particle, read like a shower muon at that r). axis_distance() gives r per detector and
+shower from the kernel's shower frames. Shower muons stand in for cosmic-ray muons. Until 2026-10-21 a background
+muon added 1 to E (count units mixed with kernel units); TAMBOPT_BG_UNITS=count restores that.
 """
+import json
 import math
 import os
 
@@ -34,15 +39,74 @@ from ..constants import SIGMA_SPATIAL
 RATE_PER_M2_NS = 1.826e-6
 AREA_M2 = 2.0
 KERNEL_AREA_M2 = 2.0 * math.pi * SIGMA_SPATIAL ** 2                            # total kernel weight per point, ~628 m^2
-KE_PER_PARTICLE_GEV = {"e": 0.0813, "mu": 2.861, "gamma": 0.0421}              # c8_charged_ke.json, band_100m_3km
 BG_UNITS = os.environ.get("TAMBOPT_BG_UNITS", "kernel")                        # "kernel" (default) or "count" (pre 2026-10-21)
-E_PER_BG_MUON = KE_PER_PARTICLE_GEV["mu"] * KERNEL_AREA_M2 / AREA_M2 if BG_UNITS == "kernel" else 1.0   # ~899
+SPECIES = ("e", "mu", "gamma")
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "c8_scaling.json")) as _f:
+    _TAB = json.load(_f)
+_R = [r for r in _TAB["r_m"]]
 
 
-def particles_per_E(species, area_m2=AREA_M2):
-    """Expected particles of `species` ('e', 'mu', 'gamma') in a detector of area_m2 per unit of that species' kernel E:
-    A / (2 pi sigma^2 KE_s). e 0.039, mu 0.0011, gamma 0.076 per unit E for 2 m^2."""
-    return area_m2 / (KERNEL_AREA_M2 * KE_PER_PARTICLE_GEV[species])
+def _table(species, key):
+    """(log r, values) of one per-species vector, NaN bins (< 200 particles) dropped."""
+    v = _TAB["species"][species][key]
+    keep = [i for i, x in enumerate(v) if x == x]
+    return [math.log(_R[i]) for i in keep], [v[i] for i in keep]
+
+
+def _interp(species, key, r, log_values):
+    lr, v = _table(species, key)
+    lr = torch.as_tensor(lr, dtype=r.dtype, device=r.device)
+    v = torch.as_tensor(v, dtype=r.dtype, device=r.device)
+    if log_values:
+        v = torch.log(v)
+    x = torch.log(r.clamp(min=float(lr[0].exp()), max=float(lr[-1].exp())))
+    i = torch.searchsorted(lr, x.contiguous(), right=True).clamp(1, len(lr) - 1)
+    w = (x - lr[i - 1]) / (lr[i] - lr[i - 1])
+    y = v[i - 1] + w * (v[i] - v[i - 1])
+    return torch.exp(y) if log_values else y
+
+
+def ke_per_particle(species, r=None):
+    """Mean kinetic energy [GeV] per particle of `species` ('e', 'mu', 'gamma') at true distance r [m] from the axis
+    (any tensor shape; log-log interpolation of c8_scaling.json). r=None: 100 m - 3 km band value (e 0.081, mu 3.23,
+    gamma 0.043 GeV)."""
+    if r is None:
+        return _TAB["band_100m_3km"][species]["ke_gev"]
+    return _interp(species, "ke_gev", r, log_values=True)
+
+
+def ring_ratio(species, r=None, ring="t1"):
+    """Ring-kernel energy density / true energy density for `species` at distance r: ring="t1" for the current kernel
+    (rings at |t1|), "t1x2" for rings at sqrt(2) |t1|. r=None: band value (e 0.59, mu 0.64, gamma 0.60 for t1)."""
+    key = f"ring_ratio_{ring}"
+    if r is None:
+        return _TAB["band_100m_3km"][species][key]
+    return _interp(species, key, r, log_values=False)
+
+
+def particles_per_E(species, r=None, area_m2=AREA_M2, ring="t1"):
+    """Expected particles of `species` in a detector of area_m2 per unit of that species' kernel E, at distance r from
+    the axis: A / (2 pi sigma^2 KE_s(r)) / ratio_s(r). The per-species scaling for the per-species surrogates."""
+    return area_m2 / (KERNEL_AREA_M2 * ke_per_particle(species, r)) / ring_ratio(species, r, ring)
+
+
+def e_per_bg_muon(r=None):
+    """Kernel E of one background muon in a 2 m^2 detector at distance r from the axis: 1 / particles_per_E('mu', r)
+    (~650 for the band value; 1 with TAMBOPT_BG_UNITS=count)."""
+    if BG_UNITS != "kernel":
+        return 1.0
+    return 1.0 / particles_per_E("mu", r)
+
+
+E_PER_BG_MUON = e_per_bg_muon()                                                 # band value, for logs
+
+
+def axis_distance(e_det, n_det, surface, frames):
+    """Distance [m] of every detector from every shower's axis, (B, nd), from the kernel's shower frames
+    (KernelDualLabels.frames, (B, 12)) and the surface; the kernel's own ring coordinate (detectors_in_frames)."""
+    from ..data.dataset_builder import detectors_in_frames
+    with torch.no_grad():
+        return detectors_in_frames(e_det, n_det, surface, frames, ring=True)[0].float()
 
 
 def window_centres(t, timed, t_fallback):
@@ -54,10 +118,11 @@ def window_centres(t, timed, t_fallback):
     return t_ref[:, None].expand_as(t)
 
 
-def add_background(E, t, timed, t_front, W, gen):
+def add_background(E, t, timed, t_front, W, gen, r_axis=None):
     """E, t, timed, t_front (window centres, window_centres()): (B, nd); W: window [ns], a float or a (B,) tensor
-    (one window per shower).
-    Returns (E', T', N_bg, has_bg); N_bg in muons, E' in kernel units (E_PER_BG_MUON per muon, module docstring)."""
+    (one window per shower); r_axis: (B, nd) distance from the shower axis [m] (axis_distance()) for the muon
+    scaling KE_mu(r), or None for the band value.
+    Returns (E', T', N_bg, has_bg); N_bg in muons, E' in kernel units (e_per_bg_muon(r_axis) per muon, module docstring)."""
     if torch.is_tensor(W):
         W = W.to(E)[:, None]
         lam = AREA_M2 * RATE_PER_M2_NS * W
@@ -70,7 +135,8 @@ def add_background(E, t, timed, t_front, W, gen):
     t_bg = (t_front - W / 2000.0 + (W / 1000.0) * frac).clamp(min=1e-6)
     has_bg = Nb > 0
     Tn = torch.where(has_bg, torch.where(timed, torch.minimum(t, t_bg), t_bg), t)
-    return E + Nb * E_PER_BG_MUON, Tn, Nb, has_bg
+    e_mu = e_per_bg_muon(r_axis)
+    return E + Nb * (e_mu.to(E) if torch.is_tensor(e_mu) else e_mu), Tn, Nb, has_bg
 
 
 def knn_pairs(x, y, k=2):

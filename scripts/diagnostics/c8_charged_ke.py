@@ -41,18 +41,20 @@ ke = {s: np.zeros(nb) for s in SPECIES}                  # kinetic energy [GeV]
 per_shower, ke_samples = [], {s: [] for s in SPECIES}
 rng = np.random.default_rng(0)
 for f in files:
-    t = pq.read_table(f, columns=["x", "y", "pdg", "kinetic_energy", "plane_index"])
-    x, y = t.column("x").to_numpy().astype(np.float64), t.column("y").to_numpy().astype(np.float64)
+    t = pq.read_table(f, columns=["x", "y", "z", "pdg", "kinetic_energy", "plane_index"])
+    x, y, z = (t.column(c).to_numpy().astype(np.float64) for c in ("x", "y", "z"))
     pdg, k = np.abs(t.column("pdg").to_numpy()), t.column("kinetic_energy").to_numpy().astype(np.float64)
     pl = t.column("plane_index").to_numpy()
-    # distance from the axis: x, y relative to each plane's energy-weighted centre (also report the raw origin offset)
+    # distance from the axis: 3-D distance from each plane's energy-weighted centre. The planes are perpendicular to
+    # the axis, so this is the full transverse distance (x, y AND z: for these near-horizontal showers the planes are
+    # ~vertical and z is the second transverse direction, as large as the horizontal one). Also report the origin offset.
     r = np.empty_like(x); off = []
     for p in np.unique(pl):
         m = pl == p
         w = np.maximum(k[m], 0)
-        cx, cy = np.average(x[m], weights=w), np.average(y[m], weights=w)
+        cx, cy, cz = (np.average(v[m], weights=w) for v in (x, y, z))
         off.append(np.hypot(cx, cy))
-        r[m] = np.hypot(x[m] - cx, y[m] - cy)
+        r[m] = np.sqrt((x[m] - cx) ** 2 + (y[m] - cy) ** 2 + (z[m] - cz) ** 2)
     rb = np.clip(np.digitize(r, R_E) - 1, 0, nb - 1)
     row = dict(file=os.path.basename(f), n=int(len(k)), centre_offset_m_median=float(np.median(off)))
     for s, ids in SPECIES.items():
