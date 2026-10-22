@@ -123,10 +123,31 @@ kNN 2-of-3 gate with Poisson counting in the Malata-like region (current recon, 
 - Within 1° ≤ 2 % everywhere with counting (recon not trained on counted inputs). Without counting the gate keeps
   88–98 % of detectors and matters only at 10 µs. For r ≤ 50 m the in-triangle 2-of-3 equals the kNN gate.
 
-## 5. Open
-- Counted fine-tune (54580014), rescore (54580015), counted scoring of all layouts (54580013).
-- Stage 4 with counting + gate + r_b (k = 3).
-- √2·|t1| ring radius (branch `ring-sqrt2`): needs a new run folder, Stage 1 relabel and recon retrain.
+## 5. Status and open (2026-10-22)
+
+**Jobs** (all pending on gpu_requeue, none started):
+
+| Jobs | What | When done |
+|---|---|---|
+| 54580013 | Counting scoring of all run 19 layouts (background test + kNN gate), current recon | rescore and plot |
+| 54580014 → 54580015 | Fine-tune the recon on counted inputs (2 days, 200 GB), then rescore | the real counted results |
+| 16 + 4 `ko19x_*` | Noise-aware layout optimisations: extended Adam + L-BFGS; old background, main checkout | rescore, update `opt_noise_findings`, rebuild `run19_12km.pdf` |
+
+**Open:**
+- Stage 4 with counting, the kNN gate and the event trigger r_b (k = 3): do clusters form?
+- Counted results vs shower energy.
+- Gradient direction check on the kernel grid runs.
+- √2·|t1| ring radius (branch `ring-sqrt2`): new run folder, Stage 1 relabel, recon retrain.
 - Calibration from π⁻ showers only.
 
-Decided (2026-10-22): detector model 2 m² scintillator, photon efficiency ε_γ = 0.02.
+**Done:** kNN gate with counting in the Malata-like region (§ 4); `--counting notebook` mode dropped; detector model
+2 m² scintillator, ε_γ = 0.02 (decided); ring-radius fix implemented on `ring-sqrt2`; memory notes updated.
+
+**Code state:**
+- `bg-kernel-units`: not pushed, not merged; merge into the main checkout only after the 20 `ko19x` jobs have started
+  (they import the main checkout's background code).
+- `ring-sqrt2`: 1 commit on top of `bg-kernel-units`, not pushed.
+- Main checkout, uncommitted: lit-threshold option (`score_all.py`, `analyze.py`, `detector_count_grid.py`),
+  best-per-family and triplet-split figures, `e_distribution.py`, two slurm scripts. The summary deck builder lives in
+  `detector_optimization_v6/figures/` (outside the repo).
+- Housekeeping: old worktree `.claude/worktrees/r19-nandebug`.
