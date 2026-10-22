@@ -75,6 +75,23 @@ Triangles (33 × 3) vs an even disk of 99 detectors, showers landing inside, wit
 No trigger rule, counted or not: triangles do not beat even coverage (no counting, R = 1 km: disk 11.3 %, triangles
 9.2–11.5 % within 1°).
 
+With a Poisson event trigger, ≥ 3 detectors with ≥ 1 particle (with counting, one particle already gives E′ > 1;
+no background; showers whose axis lands inside):
+
+| 99–100 detectors | Showers | Triggered | Within 5°, triggered | Within 5°, all |
+|---|---|---|---|---|
+| Grid, 12 km | 2,453 | 4.9 % | 16.0 % | 3.8 % |
+| Disk 1.5 km | 2,155 | 38.5 % | 18.6 % | 9.0 % |
+| Disk 1 km | 1,031–1,035 | 60–61 % | 16.4 % | 10.6–11.0 % |
+| Triangles in R = 1 km (r = 10–100 m) | 1,031–1,172 | 58–63 % | 14–16 % | 9.5–10.2 % |
+| Disk 750 m | 576–579 | 74–75 % | 16–17 % | 13.1–13.2 % |
+| Triangles in R = 750 m | 579–689 | 71–73 % | 14–17 % | 10.4–12.9 % |
+| Disk 500 m (Malata-like) | 256–257 | 88–90 % | 14–17 % | 12.9–16.0 % |
+| Triangles in R = 500 m | 257–326 | 84–88 % | 15–19 % | 12.6–17.0 % |
+
+The trigger rate rises from 5 % to ~90 % with density; triangles trigger no more often than the even disk (usually
+1–3 points less) and are as accurate within noise. Within 1° stays ≤ 1.3 % (recon not trained on counted inputs).
+
 | | kNN 2-of-3 gate (per detector) | ≥ k detectors with ≥ 1 particle (per event) |
 |---|---|---|
 | Rule | Read out iff ≥ 2 of {itself, 2 nearest} hit | r_b = P(≥ k) ≈ 1 − Σ_{j<k} e^(−λ) λ^j/j!, λ = Σ_i (1 − e^(−μ_i)) |
