@@ -42,6 +42,19 @@ def p_hit(preds, r, eps_gamma=EPS_GAMMA, species=SPECIES_NAMES):
     return 1.0 - torch.exp(-sum(expected_counts(preds, r, eps_gamma, species)))
 
 
+def trigger_prob(mu, k=3):
+    """P(>= k detectors with >= 1 particle) per shower, from mu (B, nd) expected detected particles: each detector
+    fires with p = 1 - exp(-mu), independently (Poisson-binomial, exact; DP over detectors, truncated at k-1 hits).
+    The Poisson-sampled trigger rate in expectation, smooth in mu (as SWGOLO's PActive, with k = 50 tanks there)."""
+    p = (1.0 - torch.exp(-mu.double())).clamp(0.0, 1.0)
+    q = torch.zeros(p.shape[0], k, dtype=p.dtype, device=p.device)    # q[:, j] = P(exactly j hits so far), j < k
+    q[:, 0] = 1.0
+    for i in range(p.shape[1]):
+        pi = p[:, i:i + 1]
+        q = torch.cat([q[:, :1] * (1 - pi), q[:, 1:] * (1 - pi) + q[:, :-1] * pi], 1)
+    return (1.0 - q.sum(1)).clamp(0.0, 1.0).to(mu.dtype)
+
+
 def count_species(preds, r, gen, mode="poisson", eps_gamma=EPS_GAMMA, species=SPECIES_NAMES, straight_through=False):
     """Per-species labels -> the same labels with counted E and T zeroed where nothing arrived (module docstring).
     Returns (preds', n_detected (B, nd) total counted particles, or None for mode="expected")."""

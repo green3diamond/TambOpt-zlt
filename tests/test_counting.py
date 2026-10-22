@@ -115,3 +115,23 @@ if __name__ == "__main__":
         t()
         print(f"ok  {t.__name__}")
     print(f"\nall {len(tests)} passed")
+
+
+def test_trigger_prob_matches_sampling():
+    """trigger_prob (exact Poisson-binomial) = the rate of >= k detectors with a Poisson-drawn particle."""
+    from modules.optimize.counting import trigger_prob
+    g = torch.Generator().manual_seed(0)
+    mu = torch.rand(64, 40, generator=g) ** 3 * 2.0                      # mostly small, some > 1
+    for k in (1, 3, 5):
+        exact = trigger_prob(mu, k)
+        draws = torch.poisson(mu.expand(4000, -1, -1), generator=g)        # (draws, B, nd)
+        mc = ((draws > 0).sum(-1) >= k).float().mean(0)
+        assert torch.allclose(exact, mc, atol=0.03), (k, (exact - mc).abs().max())
+    assert torch.allclose(trigger_prob(torch.zeros(2, 10)), torch.zeros(2))
+
+
+def test_trigger_prob_gradient():
+    from modules.optimize.counting import trigger_prob
+    mu = torch.full((1, 10), 0.3, requires_grad=True)
+    trigger_prob(mu, 3).sum().backward()
+    assert (mu.grad > 0).all()

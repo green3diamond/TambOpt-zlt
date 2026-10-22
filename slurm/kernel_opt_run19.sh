@@ -13,7 +13,7 @@
 # Kernel-in-the-loop Stage 4 on run 19 (as kernel_opt_run18.sh): the Stage-1 event pool, 512 fresh events
 # per step, best layout on a separate 1,024-event scoring set; the run's recon (trained on the
 # shower-frame kernel, default *_deepsets folder). Needs kernel_bw_run19.sh and the recon first.
-# Usage: sbatch slurm/kernel_opt_run19.sh <grid|center> <current|twotier|threetier> [lambda] [lr] [epochs] [calib]
+# Usage: sbatch slurm/kernel_opt_run19.sh <grid|center> <current|twotier|threetier|swgotrig> [lambda] [lr] [epochs] [calib]
 #   calib (two-tier only): two_tier_calibration_<calib>.json in the run folder, default kernel_5deg;
 #   e.g. kernel_5deg_angleonly ("good" = angle within 5 deg, no energy condition) -> suffix _angleonly;
 #   kernel_1deg_angleonly -> suffix _1deg_angleonly.
@@ -46,6 +46,13 @@ RK=${RECON_DIR:-$(python -c 'import sys; sys.path.insert(0, "."); import modules
 [ -f "$RK/recon.pt" ] || { echo "recon missing: $RK/recon.pt (run run18_pipeline.sh recon)"; exit 1; }
 if [ "$UTIL" = current ]; then
     TAG=current
+elif [ "$UTIL" = swgotrig ]; then
+    # branch swgo-trigger: two-tier reward x P(>= TRIG_K detectors with >= 1 particle), Poisson-binomial on the
+    # expected counts of a TRIG_AREA m^2 detector (default 2); TRIG_ENERGY=1 adds the energy condition
+    export TAMBOPT_UTILITY=swgo_trigger TAMBOPT_TWO_TIER_LAMBDA="$LAM" TAMBOPT_TRIG_K="${TRIG_K:-3}" \
+           TAMBOPT_TRIG_AREA="${TRIG_AREA:-2}" TAMBOPT_TRIG_ENERGY="${TRIG_ENERGY:-0}"
+    TAG="swgotrig_l${LAM/./p}_k${TAMBOPT_TRIG_K}_a${TAMBOPT_TRIG_AREA}"
+    [ "$TAMBOPT_TRIG_ENERGY" = 1 ] && TAG="${TAG}_E"
 elif [ "$UTIL" = threetier ]; then
     # exclusive levels: 0.9 within 1 deg, 0.3 within 5 deg, 0.1 detected (>= 3 detectors > 1 particle); angle only
     export TAMBOPT_UTILITY=three_tier TAMBOPT_THREE_TIER="${THREE_TIER_W:-0.9,0.3,0.1}"

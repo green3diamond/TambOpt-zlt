@@ -94,7 +94,9 @@ from modules.layouts import LearnableXY
 from modules.geometry import load_tr_mountain, SurfaceUpMap
 from modules.geometry import project_to_mountain_ne, sample_initial_layout_ne
 from modules.optimize import utility_of_xy
-from modules.optimize.background import add_background, window_centres, knn_pairs, knn_gate
+from modules.optimize.background import add_background, window_centres, knn_pairs, knn_gate, axis_distance
+from modules.optimize.counting import expected_counts
+from modules.optimize.objective import UTILITY_MODE
 from modules.surrogates import load_dual_surrogate
 from modules.surrogates import build_recon_from_ckpt
 
@@ -233,6 +235,9 @@ class BatchKernel:
                                         differentiable=self.differentiable, bandwidth=w,
                                         frames=self.frames)
             outs.append(torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1))
+        if UTILITY_MODE == "swgo_trigger":                # expected detected particles (2 m^2), with gradients
+            r = axis_distance(e_det, n_det, self.surface, self.frames) if self.frames is not None else None
+            self.mu = sum(expected_counts(outs, r))
         if self.species_transform is not None:
             outs = self.species_transform(outs, e_det, n_det, self.frames)
         return combine_species_outputs(*outs)
@@ -263,6 +268,7 @@ class NoisyGated:
 
     def __call__(self, primary_batch, xy_batch):
         out = self.base(primary_batch, xy_batch)
+        self.mu = getattr(self.base, "mu", None)                          # swgo_trigger: expected counts, ungated
         E = torch.expm1(out[..., 0].clamp(min=0.0))
         t = torch.expm1(out[..., 1].clamp(min=0.0))                     # us
         timed = out[..., 1] > 0
