@@ -44,6 +44,8 @@ ap.add_argument("--out", default=None, help="default knn_scores.json, or knn_sco
 ap.add_argument("--counting", choices=("none", "poisson"), default="none")
 ap.add_argument("--eps-gamma", type=float, default=EPS_GAMMA, help="photon detection probability (counting only)")
 ap.add_argument("--count-seed", type=int, default=7)
+ap.add_argument("--mu-min", type=float, default=1.0, help="expected-count trigger: a detector counts if mu >= this")
+ap.add_argument("--k-min", type=int, default=3, help="expected-count trigger: >= this many such read-out detectors")
 ap.add_argument("--layouts", default=None, help="name=path.pt lines instead of the default triplet / grid / disk set")
 ap.add_argument("--axis-within", type=float, default=0.0,
                 help="keep only showers whose axis passes within this distance [m] of the plane centre (0 = all)")
@@ -67,7 +69,7 @@ def near_centre(pos, dirs):
 
 
 clouds, B, _, prim = load_events(args.n_events, dev, m, select=near_centre if args.axis_within > 0 else None)
-ct = CountingTransform(surface, None, eps_gamma=args.eps_gamma) if args.counting == "poisson" else None
+ct = CountingTransform(surface, None, mode="poisson" if args.counting == "poisson" else "expected", eps_gamma=args.eps_gamma)
 kern = DCS.GS.CachedKernel(clouds, surface, dev, chunk=64, expected_primary=prim, species_transform=ct)
 E_true, th_t, ph_t = primary_to_physical_labels(prim)
 T_FALLBACK = None
@@ -103,11 +105,11 @@ for li, (name, path) in enumerate(layouts.items()):
         sub = axis_distance(ce, cn, surface, kern.frames)[:, 0] < float(torch.hypot(e - ce, n - cn).max())
     else:
         sub = torch.ones(B, dtype=torch.bool, device=dev)
-    if ct is not None:
-        ct.gen = torch.Generator(device=dev); ct.gen.manual_seed(1000003 * args.count_seed + li); ct.n_detected = []
+    ct.gen = torch.Generator(device=dev); ct.gen.manual_seed(1000003 * args.count_seed + li); ct.n_detected, ct.mu = [], []
     with torch.no_grad():
         lab = kern(prim, xy)
-        n_counted = float(torch.cat(ct.n_detected)[sub].mean()) if ct is not None else float("nan")
+        n_counted = float(torch.cat(ct.n_detected)[sub].mean()) if ct.n_detected else float("nan")
+        mu = torch.cat(ct.mu)                                                      # (B, nd) expected detected particles
         E = torch.expm1(lab[..., 0].clamp(min=0)); t = torch.expm1(lab[..., 1].clamp(min=0)); timed = lab[..., 1] > 0
         if T_FALLBACK is None:
             T_FALLBACK = float(t[timed].median()) if timed.any() else 10.0
@@ -133,15 +135,25 @@ for li, (name, path) in enumerate(layouts.items()):
                          ang_med=float(np.median(a)),
                          read_det=float(keep[sub].float().sum(1).mean()), ghosts=float((ghost & keep)[sub].float().sum(1).mean()),
                          lit_det=float(((Ek > 0) | (Tk > 0))[sub].float().sum(1).mean()))
+                # notebook-style trigger on EXPECTED counts: >= k_min read-out detectors with mu >= mu_min (hard),
+                # and the smooth r_b = sigmoid(5 (sum_i sigmoid(5 (mu_i - mu_min)) - k_min)) as a weight
+                mk = (mu * keep)[sub]
+                trig_mu = ((mk >= args.mu_min).sum(1) >= args.k_min).cpu().numpy()
+                rb = torch.sigmoid(5 * (torch.sigmoid(5 * (mk - args.mu_min)).mul(keep[sub]).sum(1) - args.k_min)).cpu().numpy()
+                r.update(mu_det=float((mk >= args.mu_min).float().sum(1).mean()), trig_mu=float(trig_mu.mean()),
+                         r_soft=float(rb.mean()))
                 for th, kk in ((1, "1"), (2.5, "2.5"), (5, "5")):
                     r[f"notrig_{kk}"] = float(np.mean(a < th))
                     r[f"all_{kk}"] = float(np.mean((a < th) & trig))
+                    r[f"allmu_{kk}"] = float(np.mean((a < th) & trig_mu))
+                    r[f"rw_{kk}"] = float(np.sum(rb * (a < th)) / max(rb.sum(), 1e-9))
                 res[rd][f"{W:g}"] = r
     out[name] = res
     s = "  ".join(f"W={w}: " + " ".join(f"{rd} {100*res[rd][w]['notrig_1']:.1f}/{100*res[rd][w]['all_1']:.1f} g{res[rd][w]['ghosts']:.2f}"
                                        for rd in rds) for w in res["none"])
     print(f"[{name:16s}] (1 deg no trig / trig, ghosts) {s}", flush=True)
 json.dump(dict(recon_dir=args.recon_dir, windows_ns=args.windows, min_hit=MIN_HIT, n_events=B, counting=args.counting,
+               mu_min=args.mu_min, k_min=args.k_min,
                eps_gamma=args.eps_gamma if args.counting == "poisson" else None, count_seed=args.count_seed,
                bg_muon_scaling="per detector, distance from the axis", scores=out),
           open(args.out, "w"), indent=1)

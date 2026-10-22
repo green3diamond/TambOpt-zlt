@@ -65,16 +65,18 @@ def count_species(preds, r, gen, mode="poisson", eps_gamma=EPS_GAMMA, species=SP
 
 class CountingTransform:
     """species_transform for KernelDualLabels / BatchKernel: applies count_species before the species combination,
-    with r from the kernel's shower frames. `gen` is reset by the caller for reproducible draws; `n_detected` keeps
-    the last call's mean detectors with >= 1 counted particle per shower."""
+    with r from the kernel's shower frames. `gen` is reset by the caller for reproducible draws. Per call it appends
+    `n_detected` (detectors with >= 1 counted particle per shower, (B,); poisson only) and `mu` (expected detected
+    particles per detector, all species, (B, nd); also for mode="expected", which leaves the inputs unchanged)."""
 
     def __init__(self, surface, gen, mode="poisson", eps_gamma=EPS_GAMMA, straight_through=False):
         self.surface, self.gen, self.mode = surface, gen, mode
         self.eps_gamma, self.st = eps_gamma, straight_through
-        self.n_detected = []
+        self.n_detected, self.mu = [], []
 
     def __call__(self, preds, e_det, n_det, frames):
         r = axis_distance(e_det, n_det, self.surface, frames) if frames is not None else None
+        self.mu.append(sum(expected_counts(preds, r, self.eps_gamma)).detach())
         out, n = count_species(preds, r, self.gen, self.mode, self.eps_gamma, straight_through=self.st)
         if n is not None:
             self.n_detected.append((n > 0).float().sum(1))
