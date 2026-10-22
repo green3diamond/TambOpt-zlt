@@ -44,6 +44,11 @@ ap.add_argument("--out", default=None, help="default knn_scores.json, or knn_sco
 ap.add_argument("--counting", choices=("none", "poisson"), default="none")
 ap.add_argument("--eps-gamma", type=float, default=EPS_GAMMA, help="photon detection probability (counting only)")
 ap.add_argument("--count-seed", type=int, default=7)
+ap.add_argument("--layouts", default=None, help="name=path.pt lines instead of the default triplet / grid / disk set")
+ap.add_argument("--axis-within", type=float, default=0.0,
+                help="keep only showers whose axis passes within this distance [m] of the plane centre (0 = all)")
+ap.add_argument("--core-in-layout", action="store_true",
+                help="score each layout only on showers whose axis passes within the layout's radius of its centroid")
 args = ap.parse_args()
 if args.out is None:
     args.out = os.path.join(T_DIR, "knn_scores.json" if args.counting == "none" else "knn_scores_poisson.json")
@@ -53,14 +58,22 @@ m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east
                      layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
 surface = SurfaceUpMap.from_mountain(m, grid_h=256, grid_w=256).to(dev)
 _, recon = load_models(dev, recon_dir=args.recon_dir, with_fnn=False)
-clouds, B, _, prim = load_events(args.n_events, dev, m)
+CENTRE = torch.as_tensor(m.centroids_ENU, dtype=torch.float32).mean(0)            # plane centre (E, N, U)
+
+
+def near_centre(pos, dirs):
+    v = CENTRE - pos
+    return (v - (v * dirs).sum(1, keepdim=True) * dirs).norm(dim=1) < args.axis_within
+
+
+clouds, B, _, prim = load_events(args.n_events, dev, m, select=near_centre if args.axis_within > 0 else None)
 ct = CountingTransform(surface, None, eps_gamma=args.eps_gamma) if args.counting == "poisson" else None
 kern = DCS.GS.CachedKernel(clouds, surface, dev, chunk=64, expected_primary=prim, species_transform=ct)
 E_true, th_t, ph_t = primary_to_physical_labels(prim)
 T_FALLBACK = None
 
 layouts = {}
-for f, pat in ((os.path.join(T_DIR, "layouts.txt"), r"grid_n99|disk_r6000_n99|tri33_r\d+_n99"),
+for f, pat in ([(args.layouts, r".+")] if args.layouts else []) or ((os.path.join(T_DIR, "layouts.txt"), r"grid_n99|disk_r6000_n99|tri33_r\d+_n99"),
                (os.path.join(C.RUN_LOCATION, "diagnostics", "tests", "layouts.txt"), r"clu20x5_r1000_n100")):
     for line in open(f):
         k, p = line.strip().split("=", 1)
@@ -85,11 +98,16 @@ for li, (name, path) in enumerate(layouts.items()):
                                                               .view(nd, 2), 1).values).all(1).float().mean())
         res["knn_is_triangle"] = same                                              # share of detectors whose kNN = mates
     r_axis = axis_distance(e, n, surface, kern.frames)                           # (B, nd) m, background muon scaling
+    if args.core_in_layout:                                                      # axis passes inside the layout
+        ce, cn = e.mean().view(1), n.mean().view(1)
+        sub = axis_distance(ce, cn, surface, kern.frames)[:, 0] < float(torch.hypot(e - ce, n - cn).max())
+    else:
+        sub = torch.ones(B, dtype=torch.bool, device=dev)
     if ct is not None:
         ct.gen = torch.Generator(device=dev); ct.gen.manual_seed(1000003 * args.count_seed + li); ct.n_detected = []
     with torch.no_grad():
         lab = kern(prim, xy)
-        n_counted = float(torch.cat(ct.n_detected).mean()) if ct is not None else float("nan")
+        n_counted = float(torch.cat(ct.n_detected)[sub].mean()) if ct is not None else float("nan")
         E = torch.expm1(lab[..., 0].clamp(min=0)); t = torch.expm1(lab[..., 1].clamp(min=0)); timed = lab[..., 1] > 0
         if T_FALLBACK is None:
             T_FALLBACK = float(t[timed].median()) if timed.any() else 10.0
@@ -109,11 +127,12 @@ for li, (name, path) in enumerate(layouts.items()):
                 Ek, Tk = torch.where(keep, En, 0.0), torch.where(keep, Tn, 0.0)
                 E_p, th_p, ph_p = primary_to_physical_labels(recon(torch.cat([xy, torch.log1p(Ek)[..., None],
                                                                              torch.log1p(Tk)[..., None]], -1)))
-                a = DCS.ang_err((E_p.clamp(min=1.0), th_p, ph_p, E_true, th_t, ph_t))[0].cpu().numpy()
-                trig = ((Ek > 1).sum(1) >= MIN_HIT).cpu().numpy()
-                r = dict(n_det=nd, n_counted=n_counted, triggered=float(trig.mean()), ang_med=float(np.median(a)),
-                         read_det=float(keep.float().sum(1).mean()), ghosts=float((ghost & keep).float().sum(1).mean()),
-                         lit_det=float(((Ek > 0) | (Tk > 0)).float().sum(1).mean()))
+                a = DCS.ang_err((E_p.clamp(min=1.0), th_p, ph_p, E_true, th_t, ph_t))[0][sub].cpu().numpy()
+                trig = ((Ek[sub] > 1).sum(1) >= MIN_HIT).cpu().numpy()
+                r = dict(n_det=nd, n_showers=int(sub.sum()), n_counted=n_counted, triggered=float(trig.mean()),
+                         ang_med=float(np.median(a)),
+                         read_det=float(keep[sub].float().sum(1).mean()), ghosts=float((ghost & keep)[sub].float().sum(1).mean()),
+                         lit_det=float(((Ek > 0) | (Tk > 0))[sub].float().sum(1).mean()))
                 for th, kk in ((1, "1"), (2.5, "2.5"), (5, "5")):
                     r[f"notrig_{kk}"] = float(np.mean(a < th))
                     r[f"all_{kk}"] = float(np.mean((a < th) & trig))
