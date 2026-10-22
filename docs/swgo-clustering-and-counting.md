@@ -33,10 +33,25 @@ computing cost. Trigger: Poisson P(≥ 50 tanks with ≥ 1 particle), per tank 1
 | SWGO notebook | Groups of ~3 units | The r_b step |
 | TambOpt (runs 18, 19) | Even coverage; spreads from any start, no dense core, no gain over the grid beyond noise | Detectors on the plane |
 
-SWGO hollows the centre for acceptance: cores land over the array + 2 km, central units are redundant, units moved
-out catch lost showers, and the utility counts events. TambOpt lacks all three: every axis hits the plane (nothing
-to gain outward, the edge stops it), at ~1 km spacing a hole loses showers, and the objective is resolution. An
-acceptance term (run 12) did push detectors to the rim, without a gain against the kernel.
+SWGO hollows the centre for acceptance: cores are thrown over the array + 2 km (`R_slack`), so units moved outward
+gain triggered showers, while at SWGO's density central units largely see the same showers (inference, not stated in
+the paper). Its utility is flux precision, energy and pointing resolution (U_GF, U_IR, U_PR); acceptance enters through
+the number of triggered showers. In TambOpt every axis hits the plane, so moving outward gains nothing; the run 19
+objective (share of all showers within 1°) does include acceptance, but there is none to win outside the array. Both
+optimisers spread out and avoid dense cores (TambOpt's even coverage is the analogue of SWGO's expansion). Run 12's
+acceptance term (σ = 50) pushed detectors to the rim with no gain; run 14's (σ = 10) gave +3.1 % (not bootstrapped);
+both Malata-era kernels.
+
+Hollow-centre test, run 19 (100 detectors evenly over an annulus r_in – 6 km, all 5,000 showers, no counting;
+`annuli_none.json`): a hole loses showers.
+
+| r_in | 0 (6 km disk) | 2 km | 3 km | 4 km | grid |
+|---|---|---|---|---|---|
+| Within 1° / 5° | 11.9 / 77.4 % | 9.9 / 73.0 % | 8.4 / 65.0 % | 5.2 / 52.1 % | 10.4 / 73.5 % |
+| Median error | 2.76° | 3.05° | 3.56° | 4.76° | 3.05° |
+
+With counting all are 4–5 % within 5° (0.5 detectors per shower with a particle), so the test is only informative
+without counting.
 
 ## 3. Expected particles
 
@@ -122,6 +137,24 @@ kNN 2-of-3 gate with Poisson counting in the Malata-like region (current recon, 
   10 µs (r = 10 m: 7.4 vs 4.7 %) is ~2.5σ.
 - Within 1° ≤ 2 % everywhere with counting (recon not trained on counted inputs). Without counting the gate keeps
   88–98 % of detectors and matters only at 10 µs. For r ≤ 50 m the in-triangle 2-of-3 equals the kNN gate.
+
+Notebook-style trigger on **expected** counts: ≥ 3 read-out detectors with μ ≥ 1 (hard; the smooth r_b gives the
+same numbers within ~1 point). Malata-like region, 0 µs, all read out (`region_mutrig_{none,poisson}.json`):
+
+| Region | Layout | Det. with μ ≥ 1 | Triggered | Within 5° of triggered, no counting / counting | Triggered and within 5°, no counting / counting |
+|---|---|---|---|---|---|
+| R = 500 m | even disk | 14.5 | 80.5 % | 70.0 / 18.4 % | 56.4 / 14.8 % |
+| | triangles r = 25 m | 14.0 | 81.0 % | 72.5 / 19.3 % | 58.7 / 15.6 % |
+| R = 750 m | even disk | 7.3 | 58.0 % | 73.4 / 17.7 % | 42.6 / 10.3 % |
+| | triangles r = 25 m | 7.2 | 61.3 % | 72.4 / 13.4 % | 44.4 / 8.2 % |
+| R = 1 km | even disk | 4.3 | 42.7 % | 76.8 / 17.7 % | 32.8 / 7.6 % |
+| | triangles r = 25 m | 4.4 | 51.4 % | 75.7 / 14.3 % | 38.9 / 7.4 % |
+
+This reproduces the notebook mechanism: at lower density tight triangles cross the μ ≥ 1 edge together and trigger
+more often (R = 1 km: 51 vs 43 %, ~4σ), with about the same accuracy per triggered shower, so an objective that
+counts only triggered, well-reconstructed showers prefers triangles (no counting: 38.9 vs 32.8 %). With counting the
+advantage disappears (7.4 vs 7.6 %): drawn counts fluctuate around μ, so the hard edge that triangles exploit is
+smeared out. The expected-count trigger is an analysis rule; a real detector sees the drawn count.
 
 ## 5. Status and open (2026-10-22)
 
