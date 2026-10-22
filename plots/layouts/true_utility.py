@@ -183,7 +183,7 @@ class KernelDualLabels:
         return out[0] if len(out) == 1 else torch.cat(out, dim=0)
 
 
-def load_events(n_events, device, mountain):
+def load_events(n_events, device, mountain, select=None):
     """Load and PLACE the first `n_events` events' clouds for EVERY species, and
     build their matching `primary_batch` — all from the SAME heldout corpus.
 
@@ -204,6 +204,10 @@ def load_events(n_events, device, mountain):
     2*n_pairs+i ... one per entry of constants.SPECIES_NAMES, all sharing the
     primary and so the same decay vertex + direction. Placement uses the
     pipeline's C8 `place_clouds_enu` at the real vertex.
+
+    `select`: optional callable (positions (B, 3) ENU, unit dirs (B, 3)) -> bool
+    (B,): only those of the first `n_events` events are kept (dropped like the
+    non-finite ones below). None (default) keeps every event.
 
     Returns (species_clouds, B, n_pairs, primary_batch) with `species_clouds` a
     list in SPECIES_NAMES order."""
@@ -248,10 +252,15 @@ def load_events(n_events, device, mountain):
     # wrong primary.
     for c in species_clouds:
         bad |= ~torch.isfinite(c).all(dim=(1, 2))
+    if select is not None:
+        sel = select(pos, dirs).cpu().bool()
+        print(f"[load_events] select keeps {int((sel & ~bad).sum())}/{B} events")
+        bad = bad | ~sel
     if bad.any():
-        print(f"[load_events] dropping {int(bad.sum())}/{B} events with a "
-              f"non-finite point cloud in some species (rows "
-              f"{torch.nonzero(bad).squeeze(-1).tolist()})")
+        if select is None:
+            print(f"[load_events] dropping {int(bad.sum())}/{B} events with a "
+                  f"non-finite point cloud in some species (rows "
+                  f"{torch.nonzero(bad).squeeze(-1).tolist()})")
         keep = ~bad
         species_clouds = [c[keep] for c in species_clouds]
         frames = frames[keep] if frames is not None else None
