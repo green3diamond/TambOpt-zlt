@@ -124,14 +124,14 @@ trigger within ~1 point).
 
 **Detectors per shower** (counting, 0 µs)
 
-| Region | Layout | Showers | With ≥ 1 drawn particle | Kept by the kNN gate | With μ ≥ 1 (expected) |
+| Region | Layout | Showers | With ≥ 1 drawn particle | Read out by the kNN gate | With μ ≥ 1 (expected) |
 |---|---|---|---|---|---|
-| R = 500 m | even disk | 257 | 18.3 | 93 % | 14.5 |
-| | triangles | 257–326 | 16.2–18.0 | 92–95 % | 12.7–14.1 |
-| R = 750 m | even disk | 576 | 9.8 | 87 % | 7.3 |
-| | triangles | 579–689 | 8.8–9.8 | 88–91 % | 6.6–7.3 |
-| R = 1 km | even disk | 1,031 | 6.1 | 82 % | 4.3 |
-| | triangles | 1,031–1,172 | 5.8–6.1 | 83–89 % | 4.2–4.5 |
+| R = 500 m | even disk | 257 | 18.3 | 17.0 | 14.5 |
+| | triangles | 257–326 | 16.2–18.0 | 15.4–16.7 | 12.7–14.1 |
+| R = 750 m | even disk | 576 | 9.8 | 8.5 | 7.3 |
+| | triangles | 579–689 | 8.8–9.8 | 7.8–8.8 | 6.6–7.3 |
+| R = 1 km | even disk | 1,031 | 6.1 | 5.0 | 4.3 |
+| | triangles | 1,031–1,172 | 5.8–6.1 | 4.9–5.4 | 4.2–4.5 |
 
 **Readout: within 5° of all showers** (Poisson counting)
 
