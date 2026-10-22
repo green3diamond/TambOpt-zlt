@@ -126,15 +126,20 @@ axis lands inside (257–1,172 per layout, ±1–4 %), current recon (not traine
 | R = 1 km | even disk | 61 % | 10.0 % | 43 % | 32.8 % | 7.6 % |
 | | triangles | 58–63 % | 8.7–9.4 % | 41–55 % | 31.2–41.1 % | 6.7–7.9 % |
 
-On the 12 km grid the drawn-particle trigger fires for 4.9 % of showers.
-
-- Without a trigger, counted or not, triangles do not beat the even disk.
-- kNN gate: at 10 µs it removes ghosts (3.0–3.4 → 0.3–0.6 per shower) and doubles the share within 5°; at 0 µs it
-  drops lone real hits. Triangles pass it slightly more often; accuracy equal within noise.
-- Notebook trigger (μ ≥ 1): at lower density triangles cross the edge together and trigger more often (R = 1 km:
-  up to 55 vs 43 %), so counting only triggered, well-reconstructed showers favours them (no counting: up to 41 vs
-  33 %). With counting this disappears: drawn counts smear the edge. The triplets are an artefact of a hard cut on
-  expected counts.
+Columns:
+- **Region:** the 99 detectors fill a disk of this radius at the plane centre; only showers whose axis lands inside it
+  are counted.
+- **Layout:** *even disk* = the 99 detectors spread evenly over the disk; *triangles* = 33 tight triangles of 3
+  detectors (side 17–173 m), their centres spread evenly over the disk.
+- **≥ 1 drawn particle: triggered:** share of showers where ≥ 3 detectors actually received at least one particle
+  (particles drawn at random around the expected number).
+- **… and within 5°:** share of all showers that triggered by that rule and were also reconstructed within 5° (inputs
+  counted).
+- **μ ≥ 1 (notebook): triggered:** share of showers where ≥ 3 detectors *expect* at least one particle (the SWGOLO
+  notebook's rule with threshold 1 instead of 5; no randomness).
+- **… and within 5°, no counting:** share of all showers that pass the μ ≥ 1 trigger and are reconstructed within 5°
+  from the noise-free kernel input.
+- **… and within 5°, counting:** the same, with the drawn particle counts as recon input.
 
 ## 5. Status and open (2026-10-22)
 
