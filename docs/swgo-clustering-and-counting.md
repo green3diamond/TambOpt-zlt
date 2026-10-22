@@ -33,14 +33,9 @@ computing cost. Trigger: Poisson P(≥ 50 tanks with ≥ 1 particle), per tank 1
 | SWGO notebook | Groups of ~3 units | The r_b step |
 | TambOpt (runs 18, 19) | Even coverage; spreads from any start, no dense core, no gain over the grid beyond noise | Detectors on the plane |
 
-SWGO hollows the centre for acceptance: cores are thrown over the array + 2 km (`R_slack`), so units moved outward
-gain triggered showers, while at SWGO's density central units largely see the same showers (inference, not stated in
-the paper). Its utility is flux precision, energy and pointing resolution (U_GF, U_IR, U_PR); acceptance enters through
-the number of triggered showers. In TambOpt every axis hits the plane, so moving outward gains nothing; the run 19
-objective (share of all showers within 1°) does include acceptance, but there is none to win outside the array. Both
-optimisers spread out and avoid dense cores (TambOpt's even coverage is the analogue of SWGO's expansion). Run 12's
-acceptance term (σ = 50) pushed detectors to the rim with no gain; run 14's (σ = 10) gave +3.1 % (not bootstrapped);
-both Malata-era kernels.
+SWGO hollows the centre for acceptance: cores land over the array + 2 km, so units moved outward gain triggered
+showers (central units likely see the same showers — inference). In TambOpt every axis hits the plane, so there is
+nothing to gain outward; both optimisers spread out and avoid dense cores.
 
 Hollow-centre test, run 19 (100 detectors evenly over an annulus r_in – 6 km, all 5,000 showers, no counting;
 `annuli_none.json`): a hole loses showers.
