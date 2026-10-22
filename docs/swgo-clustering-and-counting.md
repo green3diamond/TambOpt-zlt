@@ -103,9 +103,30 @@ The trigger rate rises from 5 % to ~90 % with density; triangles trigger no more
 Combining both (gate, then ≥ k gated detectors) gives both properties. Either rule only buys real acceptance if the
 actual trigger is that rule.
 
+kNN 2-of-3 gate with Poisson counting in the Malata-like region (current recon, showers landing inside, within 5°,
+257–1,172 showers per layout, ±1–3 %; `region_knn_{poisson,none}.json`):
+
+| Region | Layout | Det. with ≥ 1 particle | Read out after the gate | All read out, 0 / 10 µs | kNN gate, 0 / 10 µs |
+|---|---|---|---|---|---|
+| R = 500 m | even disk | 18.3 | 17.0 (93 %) | 16.0 / 2.7 % | 12.8 / 6.2 % |
+| | triangles r = 10–100 m | 16.2–18.0 | 15.4–16.7 (92–95 %) | 12.6–17.0 / 3.1–4.7 % | 8.9–11.7 / 4.7–7.4 % |
+| R = 750 m | even disk | 9.8 | 8.5 (87 %) | 13.2 / 2.1 % | 8.5 / 4.7 % |
+| | triangles | 8.8–9.8 | 7.8–8.8 (89–90 %) | 10.4–12.9 / 2.8–4.0 % | 7.8–8.7 / 5.2–7.4 % |
+| R = 1 km | even disk | 6.1 | 5.0 (82 %) | 11.0 / 3.4 % | 8.2 / 5.8 % |
+| | triangles | 5.8–6.1 | 4.9–5.4 (84–89 %) | 9.5–10.2 / 2.9–4.0 % | 6.4–7.8 / 5.1–5.5 % |
+
+- At 10 µs the gate removes ghosts (3.0–3.4 → 0.3–0.6 per shower) and roughly doubles the share within 5°.
+- At 0 µs it costs (lone real hits are dropped): 500 m disk 16.0 → 12.8 %, r = 10 m triangles 15.6 → 8.9 %.
+- Triangles pass the gate only slightly more often than the even disk (89 vs 82 % of hit detectors at R = 1 km,
+  equal at 500 m where disk neighbours are ~90 m apart) and are as accurate within noise; one case at R = 750 m,
+  10 µs (r = 10 m: 7.4 vs 4.7 %) is ~2.5σ.
+- Within 1° ≤ 2 % everywhere with counting (recon not trained on counted inputs). Without counting the gate keeps
+  88–98 % of detectors and matters only at 10 µs. For r ≤ 50 m the in-triangle 2-of-3 equals the kNN gate.
+
 ## 5. Open
 - Counted fine-tune (54580014), rescore (54580015), counted scoring of all layouts (54580013).
-- kNN gate with counting in the Malata-like region; Stage 4 with counting + gate + r_b (k = 3).
+- Stage 4 with counting + gate + r_b (k = 3).
+- √2·|t1| ring radius (branch `ring-sqrt2`): needs a new run folder, Stage 1 relabel and recon retrain.
 - Calibration from π⁻ showers only.
 
 Decided (2026-10-22): detector model 2 m² scintillator, photon efficiency ε_γ = 0.02.
