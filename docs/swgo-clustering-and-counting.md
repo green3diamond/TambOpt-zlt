@@ -79,48 +79,19 @@ Poisson counting, current recon (trained without counting — a lower bound unti
 
 ## 4. Poisson triggers
 
-Triangles (33 × 3) vs an even disk of 99 detectors, showers landing inside, within 5° (±~2 %):
-
-| Region | Even disk, counting | Triangles r = 10 / 25 / 50 / 100 m, counting |
-|---|---|---|
-| R = 500 m | 16.0 % | 15.6 / 16.4 / 17.0 / 12.6 % |
-| R = 750 m | 13.2 % | 11.1 / 10.4 / 10.9 / 12.9 % |
-| R = 1 km | 11.0 % | 9.8 / 9.5 / 10.1 / 10.2 % |
-
-No trigger rule, counted or not: triangles do not beat even coverage (no counting, R = 1 km: disk 11.3 %, triangles
-9.2–11.5 % within 1°).
-
-With a Poisson event trigger, ≥ 3 detectors with ≥ 1 particle (with counting, one particle already gives E′ > 1;
-no background; showers whose axis lands inside):
-
-| 99–100 detectors | Showers | Triggered | Within 5°, triggered | Within 5°, all |
-|---|---|---|---|---|
-| Grid, 12 km | 2,453 | 4.9 % | 16.0 % | 3.8 % |
-| Disk 1.5 km | 2,155 | 38.5 % | 18.6 % | 9.0 % |
-| Disk 1 km | 1,031–1,035 | 60–61 % | 16.4 % | 10.6–11.0 % |
-| Triangles in R = 1 km (r = 10–100 m) | 1,031–1,172 | 58–63 % | 14–16 % | 9.5–10.2 % |
-| Disk 750 m | 576–579 | 74–75 % | 16–17 % | 13.1–13.2 % |
-| Triangles in R = 750 m | 579–689 | 71–73 % | 14–17 % | 10.4–12.9 % |
-| Disk 500 m (Malata-like) | 256–257 | 88–90 % | 14–17 % | 12.9–16.0 % |
-| Triangles in R = 500 m | 257–326 | 84–88 % | 15–19 % | 12.6–17.0 % |
-
-The trigger rate rises from 5 % to ~90 % with density; triangles trigger no more often than the even disk (usually
-1–3 points less) and are as accurate within noise. Within 1° stays ≤ 1.3 % (recon not trained on counted inputs).
-
 | | kNN 2-of-3 gate (per detector) | ≥ k detectors with ≥ 1 particle (per event) |
 |---|---|---|
 | Rule | Read out iff ≥ 2 of {itself, 2 nearest} hit | r_b = P(≥ k) ≈ 1 − Σ_{j<k} e^(−λ) λ^j/j!, λ = Σ_i (1 − e^(−μ_i)) |
-| Implies | ≥ 2 nearby detectors with signal; no particle threshold | Notebook step (k = 3) in Poisson form (SWGOLO `PActive`) |
-| Clustering pressure | Pairs/triplets: a triangle of equal μ passes with 3p² − 2p³; acts via recon loss or straight-through gradient | Strong, if used as a weight on every shower's reward |
-| Background | Removes isolated ghosts (10 µs, no counting: 3.2 → 0.3–0.5 per shower) | Rejects single-muon showers; ghosts still count toward k |
-| Robustness | Local: tolerates dead/noisy detectors and long windows | Global, blind to where hits are |
+| Implies | ≥ 2 nearby detectors with signal | Notebook step (k = 3) in Poisson form (SWGOLO `PActive`) |
+| Clustering pressure | Pairs/triplets (a triangle of equal μ passes with 3p² − 2p³) | Strong, if it weights every shower's reward |
+| Background | Removes isolated ghosts | Rejects single-muon showers; ghosts still count |
+| Robustness | Local: tolerates dead/noisy detectors | Global, blind to where hits are |
 
-Combining both (gate, then ≥ k gated detectors) gives both properties. Either rule only buys real acceptance if the
-actual trigger is that rule.
+Either rule buys real acceptance only if the actual trigger is that rule.
 
-Malata-like region, kNN 2-of-3 gate and the notebook-style trigger together (current recon, showers whose axis lands
-inside, triangles r = 10–100 m, ±1–4 %; `region_mutrig_{none,poisson}.json`; the smooth r_b agrees with the hard
-trigger within ~1 point).
+Tests: 99 detectors in a disk of radius R (even, or 33 triangles of r = 10–100 m), Malata-like density, showers whose
+axis lands inside (257–1,172 per layout, ±1–4 %), current recon (not trained on counted inputs; within 1° ≤ 2 %).
+`region_mutrig_{none,poisson}.json`.
 
 **Detectors per shower** (counting, 0 µs)
 
@@ -133,7 +104,7 @@ trigger within ~1 point).
 | R = 1 km | even disk | 1,031 | 6.1 | 5.0 | 4.3 |
 | | triangles | 1,031–1,172 | 5.8–6.1 | 4.9–5.4 | 4.2–4.5 |
 
-**Readout: within 5° of all showers** (Poisson counting)
+**Readout: within 5° of all showers** (counting)
 
 | Region | Layout | All read out, 0 µs | All read out, 10 µs | kNN gate, 0 µs | kNN gate, 10 µs |
 |---|---|---|---|---|---|
@@ -144,26 +115,26 @@ trigger within ~1 point).
 | R = 1 km | even disk | 11.0 % | 3.4 % | 8.2 % | 5.8 % |
 | | triangles | 9.5–10.2 % | 2.9–4.0 % | 6.4–7.8 % | 5.1–5.5 % |
 
-**Notebook-style trigger: ≥ 3 detectors with μ ≥ 1** (all read out, 0 µs)
+**Event trigger: ≥ 3 detectors** (all read out, 0 µs)
 
-| Region | Layout | Triggered | Triggered and within 5°, no counting | Triggered and within 5°, counting |
-|---|---|---|---|---|
-| R = 500 m | even disk | 81 % | 56.4 % | 14.8 % |
-| | triangles | 74–81 % | 52.5–58.7 % | 10.7–15.6 % |
-| R = 750 m | even disk | 58 % | 42.5 % | 10.2 % |
-| | triangles | 55–63 % | 40.3–45.1 % | 8.2–10.4 % |
-| R = 1 km | even disk | 43 % | 32.8 % | 7.6 % |
-| | triangles | 41–55 % | 31.2–41.1 % | 6.7–7.9 % |
+| Region | Layout | ≥ 1 drawn particle: triggered | … and within 5° | μ ≥ 1 (notebook): triggered | … and within 5°, no counting | … and within 5°, counting |
+|---|---|---|---|---|---|---|
+| R = 500 m | even disk | 90 % | 15.6 % | 81 % | 56.4 % | 14.8 % |
+| | triangles | 84–88 % | 12.6–16.4 % | 74–81 % | 52.5–58.7 % | 10.7–15.6 % |
+| R = 750 m | even disk | 75 % | 12.2 % | 58 % | 42.5 % | 10.2 % |
+| | triangles | 71–73 % | 9.9–12.2 % | 55–63 % | 40.3–45.1 % | 8.2–10.4 % |
+| R = 1 km | even disk | 61 % | 10.0 % | 43 % | 32.8 % | 7.6 % |
+| | triangles | 58–63 % | 8.7–9.4 % | 41–55 % | 31.2–41.1 % | 6.7–7.9 % |
 
-- Gate: at 10 µs it removes ghosts (3.0–3.4 → 0.3–0.6 per shower) and roughly doubles the share within 5°; at 0 µs it
-  costs (lone real hits dropped). Triangles pass it only slightly more often than the even disk; accuracy equal within
-  noise. For r ≤ 50 m the in-triangle 2-of-3 equals the kNN gate.
-- Expected-count trigger reproduces the notebook mechanism: at lower density tight triangles cross the μ ≥ 1 edge
-  together and trigger more often (R = 1 km, r = 25 m: 51 vs 43 %, ~4σ), with about the same accuracy per triggered
-  shower, so an objective counting only triggered, well-reconstructed showers prefers triangles (no counting: up to
-  41 vs 33 %). With counting the advantage disappears (6.7–7.9 vs 7.6 %): drawn counts smear the hard edge.
-- Within 1° ≤ 2 % with counting (recon not trained on counted inputs). Without counting the gate keeps 88–98 % of
-  detectors and matters only at 10 µs.
+On the 12 km grid the drawn-particle trigger fires for 4.9 % of showers.
+
+- Without a trigger, counted or not, triangles do not beat the even disk.
+- kNN gate: at 10 µs it removes ghosts (3.0–3.4 → 0.3–0.6 per shower) and doubles the share within 5°; at 0 µs it
+  drops lone real hits. Triangles pass it slightly more often; accuracy equal within noise.
+- Notebook trigger (μ ≥ 1): at lower density triangles cross the edge together and trigger more often (R = 1 km:
+  up to 55 vs 43 %), so counting only triggered, well-reconstructed showers favours them (no counting: up to 41 vs
+  33 %). With counting this disappears: drawn counts smear the edge. The triplets are an artefact of a hard cut on
+  expected counts.
 
 ## 5. Status and open (2026-10-22)
 
