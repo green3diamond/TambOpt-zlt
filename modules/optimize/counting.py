@@ -9,8 +9,8 @@ from the shower axis:
     T_s' = T_s if N_s >= 1 else 0                   no particle -> no time; combine_species_outputs then drops the
                                                     species from the leading-edge min. T is not jittered further.
 Hit = any counted particle (E' > 0). mode="expected" leaves the inputs unchanged (the reference path).
-eps_gamma = 0.02 is an assumption (~1 cm plastic scintillator: thickness / X0 ~ 1/42 for conversion, Compton of
-~40 MeV photons similar); replace it with the detector's real value when known.
+eps_gamma = 0.02 (~1 cm plastic scintillator: thickness / X0 ~ 1/42 for conversion, Compton of ~40 MeV photons
+similar) and the 2 m^2 detector area (background.AREA_M2) are the adopted detector model (2026-10-22).
 
 Gradients (Stage 4), as in SWGOLO (swgolo148.cpp, PActive): never through the sampled count. straight_through=True
 gives the counted E' in the forward pass and the gradient of its expectation (E[E'] = E, dE'/dE := 1), i.e. counts

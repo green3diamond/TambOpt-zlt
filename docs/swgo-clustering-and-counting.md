@@ -45,7 +45,7 @@ acceptance term (run 12) did push detectors to the rim, without a gain against t
 | Notebook | 215 m² | 90 | ~19,000 m² | counted (water) | ≤ 1 km array, cores ±3 km |
 | C++ / paper | 218 m² | 36–330 | 8,000–72,000 m² | counted | array + 2 km |
 | SWGO benchmarks | 11.5 m² | 3,805–8,371 | 44,000–96,000 m² | counted | — |
-| TAMBO model | 2 m² | 100 | 200 m² | ε_γ = 0.02 (assumed) | 0.5–5 km on 144 km² |
+| TAMBO model | 2 m² | 100 | 200 m² | ε_γ = 0.02 | 0.5–5 km on 144 km² |
 
 TambOpt's E is summed kinetic energy (GeV) over a 10 m Gaussian (total weight 628 m²). Expected particles per species
 at distance r: `mu_s = E_s · A / (2πσ² KE_s(r)) / ratio_s(r)` (`particles_per_E`, table `c8_scaling.json` from 16
@@ -106,4 +106,6 @@ actual trigger is that rule.
 ## 5. Open
 - Counted fine-tune (54580014), rescore (54580015), counted scoring of all layouts (54580013).
 - kNN gate with counting in the Malata-like region; Stage 4 with counting + gate + r_b (k = 3).
-- Real TAMBO detector area, type and photon efficiency (2 m², ε_γ = 0.02 assumed); calibration from π⁻ only.
+- Calibration from π⁻ showers only.
+
+Decided (2026-10-22): detector model 2 m² scintillator, photon efficiency ε_γ = 0.02.
