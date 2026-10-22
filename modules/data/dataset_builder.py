@@ -19,7 +19,7 @@ from ..showers import GetCounts_planeaware, adaptive_bandwidths
 from ..constants import (BLOB_MEDIAN_E, EAST_ENTRY, LAYER_EAST_DX, N_DETECTORS,
                          PRIMARY_DIM, SPECIES_NAMES, SIGMA_SPATIAL,
                          KERNEL_INTERP_K, KERNEL_FRAME, KERNEL_T_INTERP,
-                         KERNEL_CIRCULAR, KERNEL_TRANSVERSE, C8_PLANE_DX)
+                         KERNEL_CIRCULAR, KERNEL_TRANSVERSE, C8_PLANE_DX, RING_RADIUS_SCALE)
 from ..layouts.strategies import (_STRATEGIES, _STRATEGY_FNS)
 from ..surrogates import encode_primary, compute_normalization  # noqa: F401  (re-export)
 from ..surrogates.fnn import _load_species_sidecar
@@ -198,9 +198,11 @@ def place_clouds_shower(clouds: torch.Tensor,
     lost z nor the travel along the axis enters. The other transverse offset t2
     (~vertical) was not recorded by C8; `transverse` (default KERNEL_TRANSVERSE)
     sets the shape:
-        "ring": circularly symmetric: the point is a ring of radius |t1| around the
-                axis (cols 0, 1 = |t1|, 0); the kernel reads detectors by their
-                distance from the axis (compute_labels_batch passes ring=True).
+        "ring": circularly symmetric: the point is a ring of radius
+                RING_RADIUS_SCALE * |t1| around the axis (cols 0, 1 = that, 0); the
+                kernel reads detectors by their distance from the axis
+                (compute_labels_batch passes ring=True). |t1| alone underestimates
+                the distance (t2 is lost): see constants.RING_RADIUS_SCALE.
         "pair": cols 0, 1 = t1, t2 with t2 from `circular_t2` (random pairing).
         "line": cols 0, 1 = t1, 0.
     (`circular` is the older switch: True = "pair", False = "line".)
@@ -231,7 +233,7 @@ def place_clouds_shower(clouds: torch.Tensor,
     if transverse is None:
         transverse = KERNEL_TRANSVERSE if circular is None else ("pair" if circular else "line")
     if transverse == "ring":
-        t1, t2 = t1.abs(), torch.zeros_like(t1)
+        t1, t2 = RING_RADIUS_SCALE * t1.abs(), torch.zeros_like(t1)
     elif transverse == "pair":
         ev = torch.as_tensor(event_ids, device=clouds.device).long().view(-1)
         sp = torch.as_tensor(species, device=clouds.device).long().view(-1).expand(ev.shape[0])

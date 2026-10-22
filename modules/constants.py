@@ -108,6 +108,12 @@ KERNEL_T_INTERP = True
 #   "pair": t2 = the t1 of a randomly paired point in the same (event, species, layer).
 #   "line": t2 = 0 (every layer a line).
 KERNEL_TRANSVERSE = "ring"
+# Ring radius = RING_RADIUS_SCALE * |t1|. |t1| = r |cos phi| alone puts the energy too close to the axis: the
+# ring / true lateral energy density is 0.73 at 100 m, 0.52 at 600 m, 0.45 at 1.2 km for |t1|, but 0.86 / 0.89 / 1.03
+# for sqrt(2) |t1| (it overshoots beyond ~1.5 km: 1.2-1.9). Measured on 16 CORSIKA 8 pi- showers,
+# scripts/diagnostics/c8_ring_radius_check.py. 1.0 = run 18 / run 19 labels.
+#   - REBUILD REQUIRED: enters the labels at Stage 1; every Stage 2/3 checkpoint built with another value is stale.
+RING_RADIUS_SCALE = float(os.environ.get("TAMBOPT_RING_RADIUS_SCALE", 2.0 ** 0.5))
 KERNEL_CIRCULAR = KERNEL_TRANSVERSE != "line"     # kept for older callers/logs
 C8_PLANE_DX = 500.0               # spacing of the C8 ObservationPlanes along the axis [m]
 # Event ids of held-out showers in the circular-t2 hash (main-corpus ids are the

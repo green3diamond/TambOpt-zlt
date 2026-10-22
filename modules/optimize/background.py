@@ -14,9 +14,10 @@ t in us, positions in m.
 
 Units (2026-10-21). The kernel's E is NOT a particle count: it is summed kinetic energy [GeV] of CORSIKA 8 cells,
 weighted by a 10 m Gaussian with peak 1 and total 2 pi sigma^2 ~ 628 m^2 (modules/showers/kernel.py docstring), i.e.
-GeV collected over an effective ~628 m^2. On top, the ring kernel places each super-particle on a ring of radius |t1|
-(horizontal transverse offset only, place_clouds_shower) instead of its true distance r = sqrt(t1^2 + t2^2), which
-lowers the energy density away from the core: ring / true = ratio_s(r), ~1.0 at the core, 0.6 at 300 m, 0.45 at 1 km.
+GeV collected over an effective ~628 m^2. On top, the ring kernel places each super-particle on a ring of radius
+RING_RADIUS_SCALE * |t1| (horizontal transverse offset only, place_clouds_shower) instead of its true distance
+r = sqrt(t1^2 + t2^2): ring / true = ratio_s(r) is ~1.0 at the core, 0.6 at 300 m, 0.45 at 1 km for |t1| and
+0.86-1.03 out to 1.2 km for sqrt(2) |t1| (RING picks the matching column).
 Per species s, a kernel E at a detector a distance r from the axis therefore means
     particles_s = E * A / (2 pi sigma^2 * KE_s(r)) / ratio_s(r)                         (particles_per_E)
 with KE_s(r) the mean kinetic energy per particle at true distance r. Both are VECTORS over r per species, measured on
@@ -34,7 +35,7 @@ import os
 
 import torch
 
-from ..constants import SIGMA_SPATIAL
+from ..constants import RING_RADIUS_SCALE, SIGMA_SPATIAL
 
 RATE_PER_M2_NS = 1.826e-6
 AREA_M2 = 2.0
@@ -75,16 +76,20 @@ def ke_per_particle(species, r=None):
     return _interp(species, "ke_gev", r, log_values=True)
 
 
-def ring_ratio(species, r=None, ring="t1"):
-    """Ring-kernel energy density / true energy density for `species` at distance r: ring="t1" for the current kernel
-    (rings at |t1|), "t1x2" for rings at sqrt(2) |t1|. r=None: band value (e 0.59, mu 0.64, gamma 0.60 for t1)."""
-    key = f"ring_ratio_{ring}"
+RING = "t1x2" if abs(RING_RADIUS_SCALE - 2.0 ** 0.5) < 1e-6 else "t1"         # which c8_scaling.json column
+
+
+def ring_ratio(species, r=None, ring=None):
+    """Ring-kernel energy density / true energy density for `species` at distance r: ring="t1" (rings at |t1|) or
+    "t1x2" (rings at sqrt(2) |t1|); None = the kernel's own (constants.RING_RADIUS_SCALE). r=None: band value
+    (t1: e 0.59, mu 0.64, gamma 0.60; t1x2: e 0.90, mu 0.86, gamma 0.88)."""
+    key = f"ring_ratio_{ring or RING}"
     if r is None:
         return _TAB["band_100m_3km"][species][key]
     return _interp(species, key, r, log_values=False)
 
 
-def particles_per_E(species, r=None, area_m2=AREA_M2, ring="t1"):
+def particles_per_E(species, r=None, area_m2=AREA_M2, ring=None):
     """Expected particles of `species` in a detector of area_m2 per unit of that species' kernel E, at distance r from
     the axis: A / (2 pi sigma^2 KE_s(r)) / ratio_s(r). The per-species scaling for the per-species surrogates."""
     return area_m2 / (KERNEL_AREA_M2 * ke_per_particle(species, r)) / ring_ratio(species, r, ring)
