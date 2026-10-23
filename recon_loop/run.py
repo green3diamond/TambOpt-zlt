@@ -13,6 +13,9 @@ Run the fixed-network control with::
 Enable periodic retraining by adding --bank /path/to/bank.pt and
 --refresh-every 100. Build that bank first with recon_loop/refresh.py; it contains
 previous training examples and a separate sample for monitoring forgetting.
+Two options make the retraining data more varied: --refresh-jitter M labels
+each --score-chunk showers with the detectors randomly displaced by about M metres,
+and --refresh-recent N replays the last N refreshes' examples before the bank.
 The repository's modules/constants.py selects the shower corpus and geometry.
 
 Each output directory contains the selected detector layout and matching model,
@@ -40,8 +43,9 @@ import torch
 
 from recon_loop import refresh
 
-# Use independent random streams for detector-update and refresh draws.
+# Use independent random streams for detector-update, refresh and jitter draws.
 REFRESH_TAG = 7_303
+JITTER_TAG = 7_307
 
 
 def main():
@@ -66,6 +70,18 @@ def main():
     ap.add_argument("--bank", help="bank.pt from refresh.py; required when refreshing")
     ap.add_argument("--refresh-every", type=int, default=0, help="0: frozen recon (control)")
     ap.add_argument("--refresh-showers", type=int, default=8192)
+    ap.add_argument(
+        "--refresh-jitter",
+        type=float,
+        default=0.0,
+        help="metres; displace detectors per --score-chunk showers when labelling (0: exact layout)",
+    )
+    ap.add_argument(
+        "--refresh-recent",
+        type=int,
+        default=0,
+        help="replay the last N refreshes' examples before the bank (0: bank only)",
+    )
     for f in fields(refresh.Config):
         ap.add_argument(
             f"--refresh-{f.name.replace('_', '-')}", type=type(f.default), default=f.default
@@ -88,6 +104,8 @@ def main():
     )
     if any(getattr(args, name) <= 0 for name in positive) or args.refresh_every < 0:
         ap.error("step counts and batch sizes must be positive; refresh-every may be 0")
+    if args.refresh_jitter < 0 or args.refresh_recent < 0:
+        ap.error("refresh-jitter and refresh-recent must be nonnegative")
     if args.refresh_every and (not args.bank or args.refresh_showers < 2):
         ap.error("refreshing requires --bank and at least two refresh showers")
 
@@ -168,6 +186,7 @@ def main():
     # Restore a saved optimisation, or evaluate the initial layout.
     state_path = os.path.join(out, "opt_state.pt")
     log_steps, score_log, refresh_log, start, ver = [], [], [], 0, 0
+    recent = []  # recent refreshes' examples, newest last; saved with the checkpoint
     if os.path.exists(state_path):
         st = torch.load(state_path, map_location=device, weights_only=False)
         saved = st["config"]
@@ -188,6 +207,11 @@ def main():
         )
         best = st["best"]
         ver = st["recon_version"]
+        # The checkpoint loads onto the GPU; replay data lives on the CPU.
+        recent = [
+            dict(k=r["k"], feats=r["feats"].cpu(), target=r["target"].cpu())
+            for r in st.get("recent", [])
+        ]
         if ver:
             refresh.install(
                 recon,
@@ -255,6 +279,9 @@ def main():
             k = (epoch + 1) // args.refresh_every
             t = time.time()
             a = int(np.random.default_rng([args.seed, REFRESH_TAG, k]).integers(0, n_sweep - M + 1))
+            jitter_gen = torch.Generator().manual_seed(
+                int(np.random.default_rng([args.seed, JITTER_TAG, k]).integers(2**62))
+            )
             fresh = refresh.label(
                 kernel,
                 pool,
@@ -265,11 +292,24 @@ def main():
                 args.score_chunk,
                 bank["pool_blob"],
                 device,
+                jitter=args.refresh_jitter,
+                gen=jitter_gen,
+                mountain=mountain,
             )
             t_label = time.time() - t
+
+            # Replay recent refreshes' examples first, topped up from the bank.
+            sources = [replay]
+            if recent:
+                sources.insert(
+                    0,
+                    (torch.cat([r["feats"] for r in recent]), torch.cat([r["target"] for r in recent])),
+                )
             state, stats = refresh.fine_tune(
-                recon, fresh, replay, anchor, cfg, seed=args.seed * 100_003 + k, device=device
+                recon, fresh, sources, anchor, cfg, seed=args.seed * 100_003 + k, device=device
             )
+            if args.refresh_recent:
+                recent = (recent + [dict(k=k, feats=fresh[0], target=fresh[1])])[-args.refresh_recent :]
 
             # Save accepted weights before making that version live.
             if state is not None:
@@ -294,6 +334,7 @@ def main():
                     step=k * args.refresh_every,
                     offset=a,
                     n_fresh=len(fresh[0]),
+                    n_recent_rows=len(sources[0][0]) if len(sources) > 1 else 0,
                     label_seconds=t_label,
                     recon_version=ver,
                     **stats,
@@ -360,6 +401,7 @@ def main():
                     refresh_log=refresh_log,
                     best=best,
                     recon_version=ver,
+                    recent=recent,
                     config=vars(args),
                 ),
                 state_path,

@@ -53,6 +53,10 @@ for start in grid center; do
 done
 ```
 
+To vary the retraining data, add for example `--refresh-jitter 75 --refresh-recent 4`
+to the retraining command. Choose the jitter width near how far detectors move
+between refreshes; consecutive snapshots in `layouts/` show this.
+
 The launcher inherits the active environment and requests one GPU, eight CPUs,
 96 GB host RAM and six hours. Override these settings for your cluster.
 `RECON_LOOP_PYTHON` can select an interpreter. `--refresh-every 0` is the default
@@ -69,6 +73,24 @@ A copy of the network trains for five passes with Adam at learning rate `1e-5`.
 The best pass replaces the live network only if validation error decreases.
 Normalisation stays fixed; a separate validation sample reports forgetting.
 Detector Adam state is retained, and gradients do not pass through retraining.
+
+### More varied retraining data
+
+Labelling every refresh example at one layout gives the network no examples of
+how its inputs change when detectors move, which is what the detector gradient
+depends on. Two options, both off by default, vary the data:
+
+- `--refresh-jitter M`: each chunk of `--score-chunk` showers (32 by default)
+  is labelled with every detector
+  displaced by an independent Gaussian offset of width `M` metres, projected
+  back onto the allowed surface. The held-out validation rows are jittered too,
+  so acceptance asks whether the network improved near the current layout.
+- `--refresh-recent N`: earlier examples come from the last `N` refreshes
+  first, then from the bank when those are too few, so the replayed data
+  follows the optimiser's path instead of the original training layouts.
+  The buffer is saved with `opt_state.pt` and restored on resume.
+
+With both options at 0 the run is identical to one without them.
 
 ## Outputs and resume
 

@@ -66,7 +66,7 @@ def test_fine_tune_learns_and_keeps_buffers():
     recon = toy()
     cfg = R.Config(lr=3e-3, epochs=5, batch=64)
     state, s = R.fine_tune(
-        recon, data(2000, 1, 0.5), data(4000, 2), data(500, 3), cfg, seed=0, device="cpu"
+        recon, data(2000, 1, 0.5), [data(4000, 2)], data(500, 3), cfg, seed=0, device="cpu"
     )
     assert s["accepted"] and state is not None and s["held_best"] < s["held_before"]
     assert s["n_held"] == 200 and s["n_fresh_train"] == 1800 and s["n_replay"] == 1800
@@ -86,7 +86,7 @@ def test_reject_when_no_gain():
     state, s = R.fine_tune(
         recon,
         data(500, 1, 0.5),
-        data(1000, 2),
+        [data(1000, 2)],
         data(100, 3),
         R.Config(lr=0.0, epochs=2),
         seed=0,
@@ -101,7 +101,7 @@ def test_replay_share_and_bank_size():
     _, s = R.fine_tune(
         recon,
         data(1000, 1),
-        data(5000, 2),
+        [data(5000, 2)],
         data(50, 3),
         R.Config(lr=0.0, epochs=1, replay=0.0),
         seed=0,
@@ -111,7 +111,7 @@ def test_replay_share_and_bank_size():
     _, s = R.fine_tune(
         recon,
         data(1000, 1),
-        data(5000, 2),
+        [data(5000, 2)],
         data(50, 3),
         R.Config(lr=0.0, epochs=1, replay=0.75),
         seed=0,
@@ -122,7 +122,7 @@ def test_replay_share_and_bank_size():
         R.fine_tune,
         recon,
         data(1000, 1),
-        data(100, 2),
+        [data(100, 2)],
         data(50, 3),
         R.Config(),
         seed=0,
@@ -130,12 +130,37 @@ def test_replay_share_and_bank_size():
     )
 
 
+def test_replay_sources_in_order():
+    """Recent examples are used first; the bank only tops up; one source matches a plain draw."""
+    recent, bank = data(300, 4), data(5000, 2)
+    x, _ = R.draw([recent, bank], 200, torch.Generator().manual_seed(0))
+    assert all(any(torch.equal(r, row) for row in recent[0]) for r in x)
+    x, _ = R.draw([recent, bank], 500, torch.Generator().manual_seed(0))
+    from_recent = sum(any(torch.equal(r, row) for row in recent[0]) for r in x)
+    assert len(x) == 500 and from_recent == 300
+    g1, g2 = torch.Generator().manual_seed(3), torch.Generator().manual_seed(3)
+    x1, _ = R.draw([bank], 100, g1)
+    assert torch.equal(x1, bank[0][torch.randperm(len(bank[0]), generator=g2)[:100]])
+    assert raises(R.draw, [recent], 301, torch.Generator())
+
+
+def test_jitter_layout():
+    """Offsets have the requested width, are reproducible and pass through the projection."""
+    x, y = torch.zeros(4000), torch.full((4000,), 2000.0)
+    a = R.jitter_layout(x, y, 50.0, torch.Generator().manual_seed(1), lambda e, n: (e, n))
+    b = R.jitter_layout(x, y, 50.0, torch.Generator().manual_seed(1), lambda e, n: (e, n))
+    assert torch.equal(a[0], b[0]) and torch.equal(a[1], b[1])
+    assert abs(float(a[0].std()) - 50.0) < 3.0 and abs(float((a[1] - 2000).std()) - 50.0) < 3.0
+    clamp = R.jitter_layout(x, y, 50.0, torch.Generator().manual_seed(1), lambda e, n: (e.clamp(max=0), n))
+    assert float(clamp[0].max()) <= 0.0
+
+
 def test_deterministic():
     a = R.fine_tune(
-        toy(), data(800, 1, 0.5), data(800, 2), data(50, 3), R.Config(lr=3e-3, epochs=2), 5, "cpu"
+        toy(), data(800, 1, 0.5), [data(800, 2)], data(50, 3), R.Config(lr=3e-3, epochs=2), 5, "cpu"
     )
     b = R.fine_tune(
-        toy(), data(800, 1, 0.5), data(800, 2), data(50, 3), R.Config(lr=3e-3, epochs=2), 5, "cpu"
+        toy(), data(800, 1, 0.5), [data(800, 2)], data(50, 3), R.Config(lr=3e-3, epochs=2), 5, "cpu"
     )
     assert a[1]["held_curve"] == b[1]["held_curve"]
     assert all(torch.equal(a[0][k], b[0][k]) for k in a[0])
@@ -154,7 +179,7 @@ def test_checkpoint_loads_and_predicts():
     state, _ = R.fine_tune(
         recon,
         data(1000, 1, 0.5),
-        data(1000, 2),
+        [data(1000, 2)],
         data(50, 3),
         R.Config(lr=3e-3, epochs=2),
         seed=0,

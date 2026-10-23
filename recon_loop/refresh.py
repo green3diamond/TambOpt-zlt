@@ -1,11 +1,15 @@
 """Prepare replay data and retrain a detector reconstruction network.
 
 The network maps detector positions, expected counts and arrival-time signals to
-shower direction and energy. fine_tune() trains a copy on newly labelled showers
-from one layout, mixed with earlier examples (replay) to reduce forgetting. A
-reserved slice of the new examples selects the best epoch and decides whether
-to accept it. A fixed validation sample (anchor) only measures forgetting.
-Normalisation from the starting checkpoint stays unchanged.
+shower direction and energy. label() computes those inputs for pool showers at
+the current layout, optionally with every detector randomly displaced per small
+batch of showers (jitter), so the new examples also show how the inputs change
+as detectors move. fine_tune() trains a copy on the new examples mixed with
+earlier ones (replay), taken from the given sources in order: typically the
+latest refreshes first, then the original training data. A reserved slice of
+the new examples selects the best epoch and decides whether to accept it. A
+fixed validation sample (anchor) only measures forgetting. Normalisation from
+the starting checkpoint stays unchanged.
 
 Prepare the data file used by recon_loop/run.py with::
 
@@ -88,13 +92,27 @@ def _buffers(model):
     return {k: getattr(model, k).detach().clone() for k in BUFFERS}
 
 
+def draw(sources, n, gen):
+    """Take n random rows from (features, targets) sources, exhausting each before the next."""
+    if n > sum(len(x) for x, _ in sources):
+        raise ValueError(f"replay sources hold {sum(len(x) for x, _ in sources)} rows, refresh needs {n}")
+    xs, ys = [], []
+    for x, y in sources:
+        idx = torch.randperm(len(x), generator=gen)[:n]
+        xs.append(x[idx])
+        ys.append(y[idx])
+        n -= len(idx)
+    return torch.cat(xs), torch.cat(ys)
+
+
 def fine_tune(recon, fresh, replay, anchor, cfg, seed, device):
     """Train a candidate model and return (accepted weights or None, statistics).
 
-    fresh, replay and anchor are CPU (features, targets) tensor pairs. A fraction
-    cfg.replay of the training rows comes from earlier examples. All epochs
-    run; the best local-validation epoch is returned only if it beats the
-    incoming model. The live model and its normalisation buffers are unchanged.
+    fresh and anchor are CPU (features, targets) tensor pairs; replay is a list
+    of such pairs in priority order. A fraction cfg.replay of the training rows
+    comes from earlier examples. All epochs run; the best local-validation epoch
+    is returned only if it beats the incoming model. The live model and its
+    normalisation buffers are unchanged.
     """
     # Separate local validation from the current layout's training rows.
     t0 = time.time()
@@ -103,11 +121,9 @@ def fine_tune(recon, fresh, replay, anchor, cfg, seed, device):
 
     # Mix the requested share of earlier examples into the training set.
     n_rep = int(round(len(tr) * cfg.replay / (1.0 - cfg.replay))) if cfg.replay > 0 else 0
-    if n_rep > len(replay[0]):
-        raise ValueError(f"replay bank has {len(replay[0])} rows, refresh needs {n_rep}")
-    rep = torch.randperm(len(replay[0]), generator=gen)[:n_rep]
-    x = torch.cat([fresh[0][tr], replay[0][rep]])
-    y = torch.cat([fresh[1][tr], replay[1][rep]])
+    rx, ry = draw(replay, n_rep, gen)
+    x = torch.cat([fresh[0][tr], rx])
+    y = torch.cat([fresh[1][tr], ry])
     hx, hy = fresh[0][held], fresh[1][held]
 
     # Train a copy; rejected candidates cannot change the live model.
@@ -243,9 +259,27 @@ def kept_index(all_prim, kept_prim):
     return torch.tensor(idx, dtype=torch.long)
 
 
+def jitter_layout(x, y, sigma, gen, project):
+    """Displace every detector by an independent Gaussian offset of width sigma, then project."""
+    dx = torch.randn(len(x), generator=gen, dtype=x.dtype) * sigma
+    dy = torch.randn(len(y), generator=gen, dtype=y.dtype) * sigma
+    return project(x + dx, y + dy)
+
+
 @torch.no_grad()
-def label(kernel, pool, a, b, xy_module, surface, chunk, blob, device):
-    """Compute detector features and direction/energy targets for the current layout."""
+def label(kernel, pool, a, b, xy_module, surface, chunk, blob, device, jitter=0.0, gen=None, mountain=None):
+    """Compute detector features and direction/energy targets for the current layout.
+
+    With jitter > 0, each chunk of showers sees the layout with every detector moved
+    by a Gaussian offset of that width (metres), projected back onto the allowed
+    surface; gen makes the offsets reproducible and mountain defines the surface.
+    """
+    if jitter and (gen is None or mountain is None):
+        raise ValueError("jitter needs a generator and the mountain surface")
+
+    def project(e, n):
+        e, n = kernel.project_to_mountain_ne(mountain, e.cpu(), n.cpu())
+        return e.to(device).to(x.dtype), n.to(device).to(y.dtype)
 
     x, y = xy_module()
     feats, target = [], []
@@ -267,7 +301,8 @@ def label(kernel, pool, a, b, xy_module, surface, chunk, blob, device):
                 differentiable=False,
                 frames=None if frames is None else frames[c0:c1].to(device),
             )
-            xy = torch.stack([x, y], -1).unsqueeze(0).expand(c1 - c0, -1, -1)
+            cx, cy = jitter_layout(x.cpu(), y.cpu(), jitter, gen, project) if jitter else (x, y)
+            xy = torch.stack([cx, cy], -1).unsqueeze(0).expand(c1 - c0, -1, -1)
             f.append(features(xy, kern(None, xy)).cpu())
 
         # Store CPU training rows after removing flagged showers.
