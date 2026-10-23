@@ -112,7 +112,7 @@ class KernelDualLabels:
     all B events -- unlike lowering --n-events, which shrinks the sample."""
 
     def __init__(self, species_clouds, surface, device, chunk=0, differentiable=False,
-                expected_primary=None):
+                expected_primary=None, species_transform=None):
         """`species_clouds`: one placed (B, P, 5) tensor per species, in
         constants.SPECIES_NAMES order — the components of the SAME B events.
 
@@ -121,6 +121,11 @@ class KernelDualLabels:
         what `scripts/04_optimize_lbfgs_kernel.py` needs and this class's
         default scoring use (`true_utility.py`'s surrogate-vs-kernel table)
         does not. Default False keeps every existing caller unchanged.
+
+        `species_transform`: optional callable (per-species list, e_det, n_det,
+        frames) -> per-species list, applied to each chunk BEFORE the species
+        combination (e.g. modules/optimize/counting.CountingTransform for
+        counting noise). None (default) keeps every existing caller unchanged.
 
         `expected_primary`: the `primary_batch` `load_events()` returned
         ALONGSIDE `species_clouds` (same call, same events). When given,
@@ -136,6 +141,7 @@ class KernelDualLabels:
         self.differentiable = differentiable
         self.expected_primary = (expected_primary.detach().to(device)
                                  if expected_primary is not None else None)
+        self.species_transform = species_transform
 
     def _labels(self, clouds, e_det, n_det, frames=None):
         E, T = compute_labels_batch(clouds, e_det, n_det, self.surface,
@@ -170,12 +176,14 @@ class KernelDualLabels:
         for lo in range(0, B, self.chunk):
             hi = min(lo + self.chunk, B)
             fr = None if self.frames is None else self.frames[lo:hi]
-            out.append(combine_species_outputs(
-                *(self._labels(c[lo:hi], e_det, n_det, fr) for c in self.clouds)))
+            preds = [self._labels(c[lo:hi], e_det, n_det, fr) for c in self.clouds]
+            if self.species_transform is not None:
+                preds = self.species_transform(preds, e_det, n_det, fr)
+            out.append(combine_species_outputs(*preds))
         return out[0] if len(out) == 1 else torch.cat(out, dim=0)
 
 
-def load_events(n_events, device, mountain):
+def load_events(n_events, device, mountain, select=None):
     """Load and PLACE the first `n_events` events' clouds for EVERY species, and
     build their matching `primary_batch` — all from the SAME heldout corpus.
 
@@ -196,6 +204,10 @@ def load_events(n_events, device, mountain):
     2*n_pairs+i ... one per entry of constants.SPECIES_NAMES, all sharing the
     primary and so the same decay vertex + direction. Placement uses the
     pipeline's C8 `place_clouds_enu` at the real vertex.
+
+    `select`: optional callable (positions (B, 3) ENU, unit dirs (B, 3)) -> bool
+    (B,): only those of the first `n_events` events are kept (dropped like the
+    non-finite ones below). None (default) keeps every event.
 
     Returns (species_clouds, B, n_pairs, primary_batch) with `species_clouds` a
     list in SPECIES_NAMES order."""
@@ -240,10 +252,15 @@ def load_events(n_events, device, mountain):
     # wrong primary.
     for c in species_clouds:
         bad |= ~torch.isfinite(c).all(dim=(1, 2))
+    if select is not None:
+        sel = select(pos, dirs).cpu().bool()
+        print(f"[load_events] select keeps {int((sel & ~bad).sum())}/{B} events")
+        bad = bad | ~sel
     if bad.any():
-        print(f"[load_events] dropping {int(bad.sum())}/{B} events with a "
-              f"non-finite point cloud in some species (rows "
-              f"{torch.nonzero(bad).squeeze(-1).tolist()})")
+        if select is None:
+            print(f"[load_events] dropping {int(bad.sum())}/{B} events with a "
+                  f"non-finite point cloud in some species (rows "
+                  f"{torch.nonzero(bad).squeeze(-1).tolist()})")
         keep = ~bad
         species_clouds = [c[keep] for c in species_clouds]
         frames = frames[keep] if frames is not None else None

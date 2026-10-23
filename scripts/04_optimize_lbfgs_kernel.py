@@ -220,9 +220,10 @@ class BatchKernel:
     """Kernel forward for one sub-batch of pool events, same call signature as
     KernelDualLabels: (primary_batch, xy_batch) -> (B, n_det, 2) log-encoded."""
 
-    def __init__(self, clouds, bws, surface, differentiable, frames=None):
+    def __init__(self, clouds, bws, surface, differentiable, frames=None, species_transform=None):
         self.clouds, self.bws, self.frames = clouds, bws, frames
         self.surface, self.differentiable = surface, differentiable
+        self.species_transform = species_transform        # e.g. counting.CountingTransform; None = unchanged
 
     def __call__(self, primary_batch, xy_batch):
         e_det, n_det = xy_batch[0, :, 0], xy_batch[0, :, 1]
@@ -232,6 +233,8 @@ class BatchKernel:
                                         differentiable=self.differentiable, bandwidth=w,
                                         frames=self.frames)
             outs.append(torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1))
+        if self.species_transform is not None:
+            outs = self.species_transform(outs, e_det, n_det, self.frames)
         return combine_species_outputs(*outs)
 
 
