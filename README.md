@@ -2,7 +2,7 @@
 
 TambOpt is a differentiable end-to-end pipeline for optimizing cosmic ray detector layouts for the TAMBO Observatory. This repo is the v6 pipeline (the only maintained generation) — it combines flow-matching shower generation, a differentiable plane-aware detector-response kernel, DeepSets forward-surrogate and reconstruction networks, and gradient/global optimization of detector `(x, y)` positions on the Malata mountain mesh.
 
-Earlier generations (`detector_optimization/` through `_v5`, plus a handful of unrelated exploratory folders) have been retired to the `legacy-full-repo` git branch — see [`VERSIONS.md`](VERSIONS.md) for the full chronological history of what each generation tried and why v6 looks the way it does.
+Earlier generations (`detector_optimization/` through `_v5`) are on the `legacy-full-repo` git branch. How the current pipeline works: [`docs/THEORY.md`](docs/THEORY.md).
 
 ## Layout
 
