@@ -18,11 +18,13 @@ The repository's modules/constants.py selects the shower corpus and geometry.
 Each output directory contains the selected detector layout and matching model,
 periodic snapshots, training/score logs, and an optimisation checkpoint. Reuse
 --out to resume with the same settings; --epochs may extend the total step count.
-The selection score uses the model active at that step. Evaluate the selected
-layout and model on independent showers before claiming an improvement.
+With retraining, every snapshot is rescored with the final model at the end and the
+best one is selected. Evaluate the selected layout and model on independent showers
+before claiming an improvement.
 """
 
 import argparse
+import glob
 import json
 import logging
 import os
@@ -363,6 +365,20 @@ def main():
                 state_path,
             )
     ex.shutdown()
+
+    # Retraining changes the selection score, so rescore every snapshot with the final model.
+    if ver:
+        best = None
+        for f in sorted(glob.glob(os.path.join(out, "layouts", "step_*.pt"))):
+            lay = torch.load(f, map_location="cpu", weights_only=False)
+            xy_module.x.data.copy_(lay["x"].to(device).to(xy_module.x.dtype))
+            xy_module.y.data.copy_(lay["y"].to(device).to(xy_module.y.dtype))
+            s = kernel.pool_utility(
+                xy_module, score_set, surface, recon, args.score_chunk, backward=False
+            )["U"]
+            if best is None or s > best["U"]:
+                best = dict(U=s, epoch=lay["epoch"], x=lay["x"], y=lay["y"], recon_version=ver)
+        log.info("rescored snapshots with recon v%d: best U %.3f at step %d", ver, best["U"], best["epoch"])
 
     # Export the selected layout, its model and the last trained model.
     refresh.save_atomic(

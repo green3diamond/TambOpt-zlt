@@ -73,6 +73,8 @@ Detector Adam state is retained, and gradients do not pass through retraining.
 ## Outputs and resume
 
 `layout_best.pt` and `recon_best.pt` hold the selected layout and matching network.
+Retraining changes the score used to pick that layout, so a retraining run rescores
+every snapshot with its final network at the end and keeps the best one.
 `recon_final.pt` holds the last network. Position snapshots are in `layouts/`,
 accepted networks in `recons/`, and progress and losses in the log/result files.
 
