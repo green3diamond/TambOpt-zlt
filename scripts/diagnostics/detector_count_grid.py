@@ -43,6 +43,7 @@ def main():
     ap.add_argument("--n-events", type=int, default=1536)
     ap.add_argument("--chunk", type=int, default=64)
     ap.add_argument("--recon-dir", default=None)
+    ap.add_argument("--lit-min", type=float, default=1.0, help="lit = count > this (0.001 = the kNN gate's hit)")
     ap.add_argument("--out", default=os.path.join(C.RUN_LOCATION, "diagnostics", "detector_count"))
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -67,13 +68,13 @@ def main():
             counts, parts = GS.predict(e.repeat(rep), n.repeat(rep), prim, kern, recon)
             a, de = DCS.ang_err(parts)
         a, de = a.cpu().numpy(), de.cpu().numpy()
-        lit = (counts[:, :nd] > 1.0).sum(1).cpu().numpy()
+        lit = (counts[:, :nd] > args.lit_min).sum(1).cpu().numpy()
         r = dict(n=nd, events=int(a.size),
                  good5=float(np.mean((a < 5) & (de < 0.2))), good25=float(np.mean((a < 2.5) & (de < 0.2))),
                  good5_angle=float(np.mean(a < 5)), good25_angle=float(np.mean(a < 2.5)),
                  good1_angle=float(np.mean(a < 1)), ang_med=float(np.median(a)),
                  ang_p68=float(np.percentile(a, 68)), de_med=float(np.median(de)),
-                 lit_med=float(np.median(lit)), frac_lt3=float(np.mean(lit < 3)),
+                 lit_min=args.lit_min, lit_med=float(np.median(lit)), frac_lt3=float(np.mean(lit < 3)),
                  spacing_m=float(np.sqrt(np.ptp(mesh[:, 0]) * np.ptp(mesh[:, 1]) / nd)))
         res[nd] = r
         lay[nd] = (e.cpu().numpy(), n.cpu().numpy())
@@ -108,11 +109,11 @@ def main():
     a1b.plot(x, [res[k]["de_med"] for k in ns], "s-", color=ORANGE, lw=1.5, label="median |Δlog10 E|")
     a1b.set_ylabel("median |Δlog10 E|", color=ORANGE)
     a2 = fig.add_subplot(sub[2])
-    a2.plot(x, [res[k]["lit_med"] for k in ns], "o-", color=BLUE, lw=2, label="median lit per shower")
+    a2.plot(x, [res[k]["lit_med"] for k in ns], "o-", color=BLUE, lw=2, label=f"median lit (> {args.lit_min:g}) per shower")
     a2b = a2.twinx()
     a2b.plot(x, [100 * res[k]["frac_lt3"] for k in ns], "s-", color=ORANGE, lw=1.5)
     a2b.set_ylabel("showers with < 3 lit [%]", color=ORANGE)
-    a2.set(ylabel="lit detectors (≥ 1 count) per shower", title="Detectors seeing a shower")
+    a2.set(ylabel=f"lit detectors (> {args.lit_min:g}) per shower", title="Detectors seeing a shower")
     for a in (a0, a1, a2):
         a.set_xscale("log"); a.set_xticks(x); a.set_xticklabels([str(k) for k in ns])
         a.set_xlabel("detectors in the array (grid)")

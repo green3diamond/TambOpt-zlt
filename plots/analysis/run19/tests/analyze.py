@@ -5,6 +5,7 @@
     lit_resolution.png     median / 68% error and share within 1 deg vs lit detectors (bands: shower resamples)
     lit_geometry.png       median error and share within 1 deg vs the lit detectors' spacing / baseline
     best_per_family.png    best layout of each family per detector count, within 1 and 5 deg
+    best_per_family_layouts.png  the same (by 1 deg) with the layouts drawn
     layout_catalog_p<k>.png  every layout, grouped by detector count, ranked by share within 1 deg
 
     python analyze.py [--tag <suffix>]
@@ -33,6 +34,8 @@ SUF = f"_{args.tag}" if args.tag else ""
 T = os.path.join(C.RUN_LOCATION, "diagnostics", "tests")
 RUN = os.path.basename(C.RUN_LOCATION.rstrip("/"))
 S = json.load(open(f"{T}/scores{SUF}.json"))["scores"]
+LIT_MIN = json.load(open(f"{T}/scores{SUF}.json")).get("lit_min")
+LIT_LAB = "≥ 1 count" if LIT_MIN is None else f"E > {LIT_MIN:g}"
 P = np.load(f"{T}/pairs{SUF}.npz")
 names = list(P["names"]); lit, ang, lay, ev = P["lit"], P["ang"], P["lay"], P["ev"]
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
@@ -122,8 +125,8 @@ def binned(x, edges, sel):
     return out
 
 
-LIT_E = [0, 1, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 30, 10 ** 9]
-LIT_L = ["0", "1", "2", "3", "4", "5", "6-7", "8-9", "10-12", "13-15", "16-19", "20-29", "30+"]
+LIT_E = [0, 1, 2, 3, 4, 5, 6, 8, 10, 13, 16, 20, 30, 10 ** 9] if LIT_MIN is None else [0, 1, 2, 3, 4, 6, 8, 10, 13, 16, 20, 30, 45, 70, 10 ** 9]
+LIT_L = [f"{a}+" if b_ >= 10 ** 9 else str(a) if b_ == a + 1 else f"{a}-{b_ - 1}" for a, b_ in zip(LIT_E[:-1], LIT_E[1:])]
 fig, axs = plt.subplots(1, 3, figsize=(21, 6.4))
 x = np.arange(len(LIT_L))
 for g, col in (("all", "#1f2328"), ("spread", "#2a78d6")):
@@ -140,7 +143,7 @@ axs[0].set(yscale="log", ylim=(0.9, 20), ylabel="angle error [deg]", title="Angu
 axs[1].set(ylim=(0, 18), ylabel="share within 1° [%]", title="Share within 1° (band: 16–84% over shower resamples)")
 axs[2].set(ylabel=f"distinct showers in the bin (of {B})", title="How many different showers each bin holds")
 for ax in axs:
-    ax.set_xticks(x); ax.set_xticklabels(LIT_L, rotation=45); ax.set_xlabel("detectors with ≥ 1 count")
+    ax.set_xticks(x); ax.set_xticklabels(LIT_L, rotation=45); ax.set_xlabel(f"detectors with {LIT_LAB}")
     ax.grid(alpha=0.25, lw=0.5); ax.legend(frameon=False, fontsize=9)
 fig.suptitle(f"{RUN} · {len(names)} layouts × {B} held-out showers · spread = grids, disks ≥ {0.95 * HALF_N / 1e3:.1f} km, "
              "500 m+ clusters", fontsize=12.5)
@@ -167,7 +170,7 @@ for j, (key, title) in enumerate((("mean", "mean distance between lit detectors"
         axs[i, j].set_xticks(x); axs[i, j].set_xticklabels(D_L, rotation=45)
         axs[i, j].grid(alpha=0.25, lw=0.5); axs[i, j].legend(frameon=False, fontsize=9)
     axs[0, j].set_title(title.capitalize())
-fig.suptitle(f"{RUN} · lit = ≥ 1 count · {len(names)} layouts × {B} showers · bands: 16–84% over shower resamples", fontsize=12.5)
+fig.suptitle(f"{RUN} · lit = {LIT_LAB} · {len(names)} layouts × {B} showers · bands: 16–84% over shower resamples", fontsize=12.5)
 fig.tight_layout(); fig.savefig(f"{T}/lit_geometry{SUF}.png", dpi=120, facecolor="white", bbox_inches="tight")
 
 # ── best per family ───────────────────────────────────────────────────────────
@@ -185,6 +188,34 @@ for i, th in enumerate((1, 5)):
     axs[i, 0].set_ylabel(f"share within {th:g}° [%]")
 fig.suptitle(f"{RUN}: best layout of each family per detector count", fontsize=13)
 fig.tight_layout(); fig.savefig(f"{T}/best_per_family{SUF}.png", dpi=120, facecolor="white", bbox_inches="tight")
+
+# the same best layouts (within 1 deg) drawn: one row per detector count, bars + the real layouts on the plane
+LP = {l.split("=", 1)[0]: l.split("=", 1)[1].strip() for l in open(f"{T}/layouts.txt") if "=" in l}
+NS_ = (100, 50, 20, 10)
+fig = plt.figure(figsize=(26, 4.3 * len(NS_)))
+gs = fig.add_gridspec(len(NS_), 1 + len(FAMS), width_ratios=[1.3] + [1] * len(FAMS), hspace=0.45, wspace=0.12)
+for i, n in enumerate(NS_):
+    fs = [f for f in FAMS if any(family(x) == f and ndet(x) == n for x in names)]
+    best = [max((x for x in names if family(x) == f and ndet(x) == n), key=lambda x: S[x]["within1"]) for f in fs]
+    ab = fig.add_subplot(gs[i, 0])
+    v = [100 * S[b]["within1"] for b in best]
+    ab.bar(range(len(fs)), v, color=[COL[f] for f in fs])
+    for k, vv in enumerate(v):
+        ab.text(k, vv, f"{vv:.1f}", ha="center", va="bottom", fontsize=14)
+    ab.set_xticks(range(len(fs))); ab.set_xticklabels(fs, fontsize=13); ab.margins(y=0.2); ab.tick_params(axis="y", labelsize=12)
+    ab.set_ylabel("within 1° [%]", fontsize=13); ab.set_title(f"{n} detectors", fontsize=17, fontweight="bold"); ab.grid(alpha=0.25, lw=0.5, axis="y")
+    for j, (f, b) in enumerate(zip(fs, best)):
+        ax = fig.add_subplot(gs[i, 1 + j])
+        L = torch.load(LP[b], map_location="cpu")
+        ax.scatter(mesh[:, 0] / 1e3, mesh[:, 1] / 1e3, s=0.4, color="#ecebe6", lw=0, rasterized=True)
+        ax.scatter(np.asarray(L["x"]) / 1e3, np.asarray(L["y"]) / 1e3, s=14, color=COL[f], lw=0)
+        ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
+        ax.set_title(f"{b.replace(f'_n{n}', '')}\n1°: {100 * S[b]['within1']:.1f}%   5°: {100 * S[b]['within5']:.1f}%", fontsize=14.5)
+        for sp in ax.spines.values():
+            sp.set_color(COL[f]); sp.set_linewidth(1.5 if v[j] < max(v) else 3.5)
+fig.suptitle(f"{RUN}: best layout of each family (by share within 1°) per detector count · real layouts on the plane · "
+             f"thick frame = best of the row", fontsize=19)
+fig.savefig(f"{T}/best_per_family_layouts{SUF}.png", dpi=110, facecolor="white", bbox_inches="tight"); plt.close(fig)
 
 # ── catalogue: grouped by detector count, ranked by share within 1 deg ────────
 nn, base = P["nn"], P["base"]
@@ -214,7 +245,7 @@ for pg, (g, items) in enumerate(pages, start=1):
         for sp in ax.spines.values():
             sp.set_color(COL[family(x_)]); sp.set_linewidth(1.2)
     fig.suptitle(f"{RUN} · {' / '.join(map(str, g))} detectors: layouts ranked by share within 1° · frame: grid blue, "
-                 "disk green, cluster orange, core red, hybrid purple\nlit = median detectors with ≥ 1 count per shower · "
+                 f"disk green, cluster orange, core red, hybrid purple\nlit = median detectors with {LIT_LAB} per shower · "
                  "NN spacing / baseline = medians over showers with ≥ 2 lit", fontsize=17)
     fig.tight_layout(rect=(0, 0, 1, 0.95), h_pad=0.6, w_pad=0.3)
     fig.savefig(f"{T}/layout_catalog{SUF}_p{pg}.png", dpi=80, facecolor="white"); plt.close(fig)

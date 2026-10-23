@@ -33,6 +33,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--recon-dir", default=C.RECON_FOLDER + "_deepsets")
 ap.add_argument("--n-events", type=int, default=5000)
 ap.add_argument("--tag", default="", help="suffix for scores_<tag>.json / pairs_<tag>.npz (e.g. another recon)")
+ap.add_argument("--lit-min", type=float, default=None, help="lit = E > this (e.g. 0.001 as the kNN gate); default E >= 1")
 args = ap.parse_args()
 SUF = f"_{args.tag}" if args.tag else ""
 
@@ -72,7 +73,8 @@ for line in open(os.path.join(T, "layouts.txt")):
         lab = kern(prim, xy)                                                # (B, nd, 2) log1p E, log1p T
         E_p, th_p, ph_p = primary_to_physical_labels(recon(torch.cat([xy, lab], -1)))
         a, de = DCS.ang_err((E_p.clamp(min=1.0), th_p, ph_p, E_true, th_t, ph_t))
-        lit = torch.expm1(lab[..., 0]) >= 1
+        E = torch.expm1(lab[..., 0])
+        lit = E >= 1 if args.lit_min is None else E > args.lit_min
         mean, nn_, base = lit_geometry(pos, lit)
     names.append(name)
     for k, v in (("lit", lit.sum(1)), ("mean", mean), ("nn", nn_), ("base", base), ("ang", a)):
@@ -85,7 +87,7 @@ for line in open(os.path.join(T, "layouts.txt")):
     s = scores[name]
     print(f"[{name:28s}] n={s['n_det']:3d}  1°: {100 * s['within1']:5.1f}%  2.5°: {100 * s['within2p5']:5.1f}%  "
           f"5°: {100 * s['within5']:5.1f}%  median {s['ang_med']:.2f}°  lit {s['lit_med']:.0f}", flush=True)
-json.dump(dict(recon_dir=args.recon_dir, n_events=B, scores=scores), open(os.path.join(T, f"scores{SUF}.json"), "w"), indent=1)
+json.dump(dict(recon_dir=args.recon_dir, n_events=B, lit_min=args.lit_min, scores=scores), open(os.path.join(T, f"scores{SUF}.json"), "w"), indent=1)
 np.savez(os.path.join(T, f"pairs{SUF}.npz"), names=np.array(names),
          **{k: (np.concatenate(v) if k != "lay" else np.array(v)) for k, v in rows.items()})
 print(f"[write] {T}/scores{SUF}.json, pairs{SUF}.npz ({len(names)} layouts x {B} showers)")

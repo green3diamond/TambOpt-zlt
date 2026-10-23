@@ -110,6 +110,30 @@ fig.suptitle("Run 19 triplet designs: K cluster centres on an even grid, 3 detec
 fig.tight_layout(); fig.savefig(os.path.join(T, "triplets_designs.png"), dpi=110); plt.close(fig)
 print("[write]", os.path.join(T, "triplets_designs.png"))
 
+# the same layouts split for slides: full plane only (no zoom column), and one zoomed cluster (N = 99, every r)
+fig, axs = plt.subplots(len(ROWS), 3, figsize=(13, 17))
+for i, (n3, _) in enumerate(ROWS):
+    for j, r in enumerate((25, 100, 500)):
+        plane(axs[i, j], PT[f"tri{n3 // 3}_r{r}_n{n3}"], f"tri{n3 // 3}×3, r = {r} m (N = {n3})", s=8)
+for ax in axs[-1]: ax.set_xlabel("East [km]")
+for ax in axs[:, 0]: ax.set_ylabel("North [km]")
+fig.suptitle("Run 19 triplet designs: K cluster centres on an even grid, 3 detectors per triangle of circumradius r")
+fig.tight_layout(); fig.savefig(os.path.join(T, "triplets_designs_planes.png"), dpi=110); plt.close(fig)
+fig, ax = plt.subplots(figsize=(7.5, 7.5))
+K = 33
+for q, r in enumerate(TRI_R):
+    e, n = xy(PT[f"tri{K}_r{r}_n{3 * K}"])
+    ce, cn = e.reshape(K, 3).mean(1), n.reshape(K, 3).mean(1)
+    k = np.argmin(np.hypot(ce - ge.mean(), cn - gn.mean()))
+    de, dn = (e.reshape(K, 3)[k] - ce[k]) * 1000, (n.reshape(K, 3)[k] - cn[k]) * 1000
+    col = cm(q / max(1, len(TRI_R) - 1))
+    ax.fill(de, dn, fc="none", ec=col, lw=1.6); ax.scatter(de, dn, s=30, color=col, label=f"r = {r} m (side {r*3**.5:.0f} m)")
+ax.set_aspect("equal"); ax.set_xlabel("East [m]"); ax.set_ylabel("North [m]")
+ax.set_title("One triplet cluster (the one nearest the plane centre, N = 99), every r", fontsize=11)
+ax.legend(fontsize=9, loc="upper right"); ax.grid(alpha=0.25, lw=0.5)
+fig.tight_layout(); fig.savefig(os.path.join(T, "triplets_cluster_zoom.png"), dpi=130); plt.close(fig)
+print("[write]", os.path.join(T, "triplets_designs_planes.png"), os.path.join(T, "triplets_cluster_zoom.png"))
+
 fig, axs = plt.subplots(len(ROWS), 5, figsize=(20, 17))
 for i, (n3, n0) in enumerate(ROWS):
     _, dk = best_disk(S, n3, "0", "notrig_1")
