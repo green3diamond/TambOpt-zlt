@@ -115,3 +115,25 @@ if __name__ == "__main__":
         t()
         print(f"ok  {t.__name__}")
     print(f"\nall {len(tests)} passed")
+
+
+def test_cosmic_background_independent_of_r():
+    """Default background (TAMBOPT_BG_UNITS=cosmic): each muon's own random KE, mean ~3.85 GeV; the amplitude does not
+    depend on the detector's distance from the shower axis."""
+    import math
+    from modules.optimize import background as bg
+    if bg.BG_UNITS != "cosmic":
+        return
+    ke = bg.sample_bg_muon_ke((200_000,), torch.Generator().manual_seed(1))
+    assert ke.min() >= bg.KE_MIN - 1e-6 and ke.max() <= bg.KE_MAX + 1e-3
+    assert abs(float(ke.clamp(max=100).mean()) - 3.6) < 0.4                 # tail clipped for a stable mean
+    assert abs(bg.mean_bg_muon_ke() - 3.85) < 0.05
+    E = torch.zeros(4000, 50); t = torch.zeros(4000, 50); timed = torch.zeros(4000, 50, dtype=torch.bool)
+    out = []
+    for r in (30.0, 3000.0):
+        g = torch.Generator().manual_seed(2)
+        En, _, Nb, _ = bg.add_background(E, t, timed, t + 5.0, 1e6, g, r_axis=torch.full_like(E, r))
+        out.append(En)
+        per_muon = En.sum() / Nb.sum()
+        assert abs(float(per_muon) / (bg.mean_bg_muon_ke() * 2 * math.pi * 100 / 2) - 1) < 0.15
+    assert torch.equal(out[0], out[1])                                     # same draws -> same E at any r
