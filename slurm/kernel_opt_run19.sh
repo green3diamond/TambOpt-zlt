@@ -53,6 +53,9 @@ elif [ "$UTIL" = swgotrig ]; then
            TAMBOPT_TRIG_AREA="${TRIG_AREA:-2}" TAMBOPT_TRIG_ENERGY="${TRIG_ENERGY:-0}"
     TAG="swgotrig_l${LAM/./p}_k${TAMBOPT_TRIG_K}_a${TAMBOPT_TRIG_AREA}"
     [ "$TAMBOPT_TRIG_ENERGY" = 1 ] && TAG="${TAG}_E"
+    # TRIG_MODE=step: the notebook's near-step trigger on expected counts (TRIG_MU0, TRIG_SLOPE; suffix _step)
+    export TAMBOPT_TRIG_MODE="${TRIG_MODE:-poisson}" TAMBOPT_TRIG_MU0="${TRIG_MU0:-1.0}" TAMBOPT_TRIG_SLOPE="${TRIG_SLOPE:-10.0}"
+    [ "$TAMBOPT_TRIG_MODE" = step ] && TAG="${TAG}_step"
 elif [ "$UTIL" = threetier ]; then
     # exclusive levels: 0.9 within 1 deg, 0.3 within 5 deg, 0.1 detected (>= 3 detectors > 1 particle); angle only
     export TAMBOPT_UTILITY=three_tier TAMBOPT_THREE_TIER="${THREE_TIER_W:-0.9,0.3,0.1}"
