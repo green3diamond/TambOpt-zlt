@@ -109,14 +109,6 @@ def test_axis_distance_rows_matches_shared():
     assert torch.allclose(r1, r2, rtol=1e-4, atol=1e-2), (r1 - r2).abs().max()
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
-    for t in tests:
-        t()
-        print(f"ok  {t.__name__}")
-    print(f"\nall {len(tests)} passed")
-
-
 def test_cosmic_background_independent_of_r():
     """Default background (TAMBOPT_BG_UNITS=cosmic): each muon's own random KE, mean ~3.85 GeV; the amplitude does not
     depend on the detector's distance from the shower axis."""
@@ -137,3 +129,31 @@ def test_cosmic_background_independent_of_r():
         per_muon = En.sum() / Nb.sum()
         assert abs(float(per_muon) / (bg.mean_bg_muon_ke() * 2 * math.pi * 100 / 2) - 1) < 0.15
     assert torch.equal(out[0], out[1])                                     # same draws -> same E at any r
+
+
+def test_trigger_prob_matches_sampling():
+    """trigger_prob (exact Poisson-binomial) = the rate of >= k detectors with a Poisson-drawn particle."""
+    from modules.optimize.counting import trigger_prob
+    g = torch.Generator().manual_seed(0)
+    mu = torch.rand(64, 40, generator=g) ** 3 * 2.0                      # mostly small, some > 1
+    for k in (1, 3, 5):
+        exact = trigger_prob(mu, k)
+        draws = torch.poisson(mu.expand(4000, -1, -1), generator=g)        # (draws, B, nd)
+        mc = ((draws > 0).sum(-1) >= k).float().mean(0)
+        assert torch.allclose(exact, mc, atol=0.03), (k, (exact - mc).abs().max())
+    assert torch.allclose(trigger_prob(torch.zeros(2, 10)), torch.zeros(2))
+
+
+def test_trigger_prob_gradient():
+    from modules.optimize.counting import trigger_prob
+    mu = torch.full((1, 10), 0.3, requires_grad=True)
+    trigger_prob(mu, 3).sum().backward()
+    assert (mu.grad > 0).all()
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
+    for t in tests:
+        t()
+        print(f"ok  {t.__name__}")
+    print(f"\nall {len(tests)} passed")

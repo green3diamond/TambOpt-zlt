@@ -42,6 +42,15 @@ THREE_TIER_MIN_DET = 3
 # U_two_tier lives in (0, 1); Stage 4's penalty weight and gradient clip are quoted "in units
 # of U" for a composite of order 30, so the two-tier value is scaled to that range.
 TWO_TIER_SCALE    = 30.0
+# "swgo_trigger" (branch swgo-trigger): the two-tier reward times the trigger probability r_b = P(>= TRIG_K detectors
+# with >= 1 particle), Poisson-binomial over p_i = 1 - exp(-mu_i) (counting.trigger_prob); mu_i = expected detected
+# particles (background.particles_per_E, eps_gamma 0.02) scaled from 2 m^2 to TAMBOPT_TRIG_AREA m^2. A shower that does
+# not trigger scores 0. The response must provide `mu` (B, nd) with gradients (Stage 4 BatchKernel does in this mode).
+# Reward: g = soft within 5 deg (x soft |dlog10 E| < 0.2 with TAMBOPT_TRIG_ENERGY=1), partial credit
+# TWO_TIER_LAMBDA * (1 - g) * q as two-tier (theta_ref 20 deg, e_ref 0.5). Recon input unchanged (noise-free kernel).
+TRIG_K            = int(os.environ.get("TAMBOPT_TRIG_K", "3"))
+TRIG_AREA_M2      = float(os.environ.get("TAMBOPT_TRIG_AREA", "2.0"))
+TRIG_ENERGY       = os.environ.get("TAMBOPT_TRIG_ENERGY", "0") == "1"
 _TT_PARAMS = None
 
 
@@ -358,6 +367,27 @@ def utility_of_xy(x_det: torch.Tensor,
                      u_pr=TWO_TIER_SCALE * det.mean())
         U = _apply_offmesh_penalty(U, parts, x_det, y_det, mesh_en, penalty_w, penalty_r0)
         return U, r, parts
+    if UTILITY_MODE == "swgo_trigger":
+        from .counting import trigger_prob
+        from .background import AREA_M2
+        mu = getattr(fnn, "mu", None)
+        if mu is None:
+            raise RuntimeError("TAMBOPT_UTILITY=swgo_trigger needs a response with expected counts `mu` (Stage 4 kernel)")
+        rb = trigger_prob(mu * (TRIG_AREA_M2 / AREA_M2), TRIG_K)
+        a = angle_between_deg(_sph(theta_pred, phi_pred), _sph(theta_true, phi_true))
+        e = (torch.log10(E_pred_phys) - torch.log10(E_true)).abs()
+        g = torch.sigmoid(5.0 - a)
+        q2 = (a / 20.0) ** 2
+        if TRIG_ENERGY:
+            g = g * torch.sigmoid((0.2 - e) / 0.05)
+            q2 = q2 + (e / 0.5) ** 2
+        u = rb * (g + TWO_TIER_LAMBDA * (1.0 - g) / (1.0 + q2))
+        U = TWO_TIER_SCALE * u.mean()
+        # parts: u_theta = U, u_phi = trigger rate, u_e = triggered and good, u_pr = good (any trigger); all x30
+        parts = dict(u_theta=U, u_phi=TWO_TIER_SCALE * rb.mean(), u_e=TWO_TIER_SCALE * (rb * g).mean(),
+                     u_pr=TWO_TIER_SCALE * g.mean())
+        U = _apply_offmesh_penalty(U, parts, x_det, y_det, mesh_en, penalty_w, penalty_r0)
+        return U, rb, parts
     if UTILITY_MODE == "two_tier":
         p = _two_tier_params()
         a = angle_between_deg(_sph(theta_pred, phi_pred), _sph(theta_true, phi_true))
