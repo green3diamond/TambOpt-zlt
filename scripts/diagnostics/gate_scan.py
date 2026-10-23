@@ -21,6 +21,9 @@ Runs against whatever run constants.py points at (use the run's own checkout or
 worktree). --recon-dir overrides the recon (run 16 has none; it borrows run 15's).
 
     python scripts/diagnostics/gate_scan.py [--steps 1500] [--n-kernel 1536]
+
+Also the shared helpers (CachedKernel, predict, DEVICE, ...) that detector_count_scan.py re-exports to every run 19
+scoring script.
 """
 import argparse
 import json

@@ -1,18 +1,11 @@
-"""Build the FNN training dataset for v6 — (North, East) detector convention.
+"""Stage 1: kernel labels for every shower under layouts from the strategy zoo (modules/layouts/strategies.py).
 
-North–East sibling of `01_build_dataset.py`, kept step-for-step identical so the
-two diff cleanly. The only changes are the (North, East) pieces: detectors are
-placed by horizontal map coords (North, East), the mountain extrapolates the
-height Up = g(North, East) (`SurfaceUpMap`), and labels come from the NE
-`build_training_pairs`. Stored `xy = (North, East)`. Writes to a dedicated
-`..._northeast` folder so the original (North, Up) corpus is never overwritten.
+Detectors are placed by (East, North) and lifted onto the mesh (SurfaceUpMap); labels E, T per detector come from the
+kernel (modules/data/dataset_builder.build_training_pairs). Resumable after a preemption (build_resume.pt).
+Output in TRAINING_DATASET_FOLDER: primary, xy (East, North), E (log1p), T, strategy_ids, species_ids, blob_ids,
+norm_stats (.pt).
 
-Run from the v6 folder:
-
-    cd TambOpt
-    python 01_build_dataset_northeast.py
-
-Outputs land in `<RUN_LOCATION>/test_v6_run_01_northeast/`.
+    python scripts/01_build_dataset_northeast.py [--strategies 0 3 5]
 """
 import argparse
 import os
@@ -30,31 +23,17 @@ import modules  # noqa: F401 — package import; keeps modules on the path
 from modules.data import build_training_pairs
 from modules.surrogates import compute_normalization
 from modules.constants import (
-    SHOWER_CACHE, GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
-    EAST_ENTRY, LAYER_EAST_DX, N_PLANES, NUM_SHOWERS,
-    BATCH_SIZE, RUN_LOCATION,
+    GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
+    EAST_ENTRY, LAYER_EAST_DX, N_PLANES, NUM_SHOWERS, BATCH_SIZE,
     DUAL_SHOWER_CACHE_PATH, DATASET_FRACTION, SPECIES_NAMES,
     TRAINING_DATASET_FOLDER,
 )
-from modules.geometry    import load_tr_mountain
-from modules.geometry import SurfaceUpMap
+from modules.geometry import load_tr_mountain, SurfaceUpMap
 
 
-# ── Config ───────────────────────────────────────────────────────────────────
-# Output dir: modules.constants.TRAINING_DATASET_FOLDER (test_v6_run_01_northeast, plus
-# _<tag> with TAMBOPT_DATASET_TAG). It used to be redefined here, which silently ignored the
-# tag: the first layout-zoo build (2026-10-06) overwrote the 5-strategy run 18 dataset.
-# Paired dual-species corpus holds 2*n_pairs rows (electron block then muon
-# block, same primaries); 02 splits them per species via the species_ids.pt
-# sidecar (the primary pdg feature now carries the EM/hadronic class).
-# DATASET_FRACTION caps how many rows are loaded (split evenly across species) so
-# the build fits in RAM — see modules/constants.py.
-#
-# At DATASET_FRACTION=1.0 this is 0 ("no cap" — build_training_pairs then uses
-# every row actually in the corpus file). NUM_SHOWERS is only a rough written-
-# in-comments scale, not the real event count (Step 0's holdout split makes the
-# exact count data-dependent); deriving the cap from it here risked silently
-# truncating the corpus back down whenever the real count ran ahead of NUM_SHOWERS.
+# Corpus rows are species blocks (electron, muon, photon) of the same events; Stage 2 splits them by species_ids.pt.
+# DATASET_FRACTION < 1 caps the rows loaded (RAM); 1.0 -> 0 = every row in the corpus file (NUM_SHOWERS is only
+# approximate, so it must not set the cap).
 MAX_SHOWERS = (0 if DATASET_FRACTION >= 1.0 else
                int(DATASET_FRACTION * len(SPECIES_NAMES) * NUM_SHOWERS))
 SEED        = 0
@@ -64,13 +43,12 @@ DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--strategies", type=int, nargs="+", default=None,
-                    help="label only these strategy ids (default: all of ACTIVE_STRATEGIES); "
-                         "merge with scripts/01b_merge_strategy_blocks.py")
+                    help="label only these strategy ids (default: all of ACTIVE_STRATEGIES)")
     args = ap.parse_args()
     os.makedirs(TRAINING_DATASET_FOLDER, exist_ok=True)
 
     print("=" * 72)
-    print(f"v6/01_build_dataset_northeast.py")
+    print("v6/01_build_dataset_northeast.py")
     print("=" * 72)
     print(f"shower cache : {DUAL_SHOWER_CACHE_PATH}")
     print(f"geometry     : {GEOMETRY_PATH_RESOLVED}")
@@ -103,13 +81,8 @@ def main():
         seed=SEED,
         device=DEVICE,
         verbose=True,
-        # Placement is always the real ENU decay vertices from tau_wholesky.jl
-        # (`<corpus>_positions.pt`); a missing sidecar raises. East→layer injection
-        # uses the same calibration as the kernel.
-        east_entry=EAST_ENTRY,
+        east_entry=EAST_ENTRY,                       # placement at the real decay vertices (<corpus>_positions.pt)
         layer_east_dx=LAYER_EAST_DX,
-        # gpu_requeue can preempt mid-build; resume picks up from the last
-        # checkpointed chunk instead of restarting the whole corpus.
         resume_path=os.path.join(TRAINING_DATASET_FOLDER, "build_resume.pt"),
         strategies=args.strategies,
     )
@@ -123,8 +96,7 @@ def main():
     print(f"  blob    : {tuple(blob.shape)}    flagged={int(blob.sum())} "
           f"({100 * blob.float().mean():.2f}%)")
 
-    # Log-scale E for better FNN training (compresses heavy right tail)
-    E = torch.log1p(E)
+    E = torch.log1p(E)                               # compresses the heavy tail
 
     print(f"[log1p] E range [{E.min():.4g}, {E.max():.4g}]  "
           f"T range [{T.min():.4g}, {T.max():.4g}]")
@@ -133,9 +105,7 @@ def main():
     n_nonzero = int((E.abs().sum(dim=1) > 0).sum())
     print(f"  samples with any nonzero E : {n_nonzero}/{E.shape[0]}")
 
-    # Z-score stats over the whole training corpus, degenerate showers excluded —
-    # one blob's log1p(counts) of ~33 against single-digit normals would set
-    # out_std for every detector. Step 2 drops the same rows from its own stats.
+    # Z-score stats without the degenerate (blob) showers, which would set out_std alone; Stage 2 drops them too.
     _clean = ~blob.bool()
     stats = compute_normalization(primary[_clean], xy[_clean], E[_clean], T[_clean])
     print(f"[norm] in_mean[:5]  = {stats['in_mean'][:5].tolist()}")

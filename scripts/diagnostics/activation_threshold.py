@@ -11,6 +11,7 @@ count >= t; detectors below t are set dark (E = T = 0), as a real trigger would.
             them (random), so the SAME events are compared at 3 vs 15
 
     python scripts/diagnostics/activation_threshold.py [--n-events 4096]
+(Legacy, runs 12-18; kept for the figures in 02_findings_after_run13.pdf.)
 """
 import argparse
 import json

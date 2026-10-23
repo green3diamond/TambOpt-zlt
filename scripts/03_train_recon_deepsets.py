@@ -1,45 +1,18 @@
-"""Train a DeepSets reconstruction network on frozen dual-surrogate outputs.
+"""Stage 3: train the reconstruction network (DeepSets; --model settf: set transformer) on Stage-1 responses.
 
-Drop-in replacement for 03_train_recon.py using DeepSetsRecon instead of the
-flat MLP. Permutation invariance is structural — no augmentation needed.
+Per detector token (x, y, E, T) -> pooled (maxmean) -> decoder -> (dir_x, dir_y, dir_z, log_e_norm). Permutation
+invariant by construction. --input-mode reltime1 (run 19): positions and times relative to the earliest timed detector.
+(E, T) inputs from --recon-input:
+  kernel  the kernel labels of Stage 1 (E.pt / T.pt, species combined) -- run 18 / 19;
+  sample  the Stage 2 surrogate's prediction for each row (default, historical name);
+  mix     a per-row coin flip between the two (--mix-frac = P(kernel)).
+Shower-level split shared by all strategies and species of a shower (SEED, as Stage 2's SPLIT_SEED); blob rows dropped.
+Adam/AdamW (--weight-decay), then chunked full-batch L-BFGS; both resume after a preemption (recon_resume.pt,
+lbfgs_resume.pt). Output: RECON_FOLDER + "_deepsets"/recon.pt.
 
-Architecture:
-    token_i = [x_i, y_i, E_comb_i, T_comb_i]     (4 features, per detector)
-    h_i     = encoder(token_i)                     shared encoder
-    c       = context_proj(cat[mean h_i, max h_i])  invariant pool (maxmean)
-    out     = decoder(c)            → [dir_x, dir_y, dir_z, log_e_norm]
-
-E_comb/T_comb come from one of three sources, chosen with --recon-input:
-
-  sample  (default, historical name) — the stage-2 surrogate's prediction for
-          each row. The surrogate is mean-only, so this is its deterministic
-          mean; it was a draw from a (mean, var) distribution back when stage 2
-          trained a variance head. The name is kept because it appears in run
-          logs, saved configs and --recon-input strings across past runs.
-  kernel  — the REAL kernel-computed detector responses Step 1 already wrote
-          (E.pt / T.pt), i.e. the same labels Step 2 trained the surrogate to
-          predict.
-  mix     — a per-row coin flip between the two (--mix-frac = P(kernel)).
-
-Why `kernel`/`mix` exist: with `sample`, recon only ever sees surrogate-generated
-responses, but plots/layouts/true_utility.py scores it on KERNEL responses ("kernel
-vs surrogate on the SAME recon"). That is a train/eval distribution mismatch, and
-it shows up as a large standing artifact gap — on the 6-chain run (job 42695512)
-surrogate-U 47.94 vs true-U 22.78 on the UN-optimized grid baseline, a ~2.2-2.4x
-uniform overestimate across u_theta/u_phi/u_e that is present before the optimizer
-moves anything. Training recon on kernel responses removes that mismatch; `mix`
-keeps it robust to both, since stage 4 still feeds it surrogate output.
-
-Normalization: in_mean/in_std are (4,) — one scalar per feature kind,
-broadcast over all detector slots. Output stats are (4,) like the flat MLP.
-
-Writes to RECON_FOLDER + "_deepsets" — safe to run alongside 03_train_recon.py.
-
-Run:
-    python 03_train_recon_deepsets.py
-    python 03_train_recon_deepsets.py --recon-input kernel
-    python 03_train_recon_deepsets.py --recon-input mix --mix-frac 0.5
-    python 03_train_recon_deepsets.py --epochs 2 --lbfgs-iters 3   # smoke run
+    python scripts/03_train_recon_deepsets.py --recon-input kernel --input-mode reltime1 --weight-decay 0.03 \
+        --adam-patience 50                                    # slurm/run19_pipeline.sh recon
+    python scripts/03_train_recon_deepsets.py --epochs 2 --lbfgs-iters 3   # smoke run
 """
 import argparse
 import json
@@ -69,19 +42,13 @@ from modules.constants import (
 
 OUTPUT_FOLDER = RECON_FOLDER + "_deepsets"
 
-# Where the recon's per-detector (E, T) inputs come from — see the module
-# docstring. "sample" is the historical default; the CLI can override.
 RECON_INPUT   = "sample"     # "sample" | "kernel" | "mix"
 INPUT_MODE    = "raw"        # "raw" | "reltime" | "reltime1" (encoder input transform, see recon.py)
 WEIGHT_DECAY  = 0.0          # > 0: AdamW with this decoupled weight decay (per step the weights shrink by LR * WEIGHT_DECAY)
 MIX_FRAC      = 0.5          # P(row uses kernel labels) when RECON_INPUT == "mix"
 
 # ── Architecture ─────────────────────────────────────────────────────────────
-# 3 -> 6 layers each (2026-07-30). Cost is asymmetric: the encoder runs
-# PER DETECTOR (x100) while the decoder runs once per event after the pool, so
-# deepening the encoder is ~100x more expensive than deepening the decoder.
-# n_enc 3->6 raises encoder FLOPs ~2.5x (5 hidden matmuls vs 2); n_dec 3->6 is
-# nearly free. Params 298k -> 693k.
+# The encoder runs once per detector, the decoder once per event: encoder depth is ~100x costlier.
 HIDDEN   = 256
 CONTEXT  = 128
 N_ENC    = 4
@@ -109,9 +76,7 @@ def _arch_cfg() -> dict:
 # ── Training ─────────────────────────────────────────────────────────────────
 BATCH_SIZE = 256
 N_EPOCHS   = 600
-# Adam epochs with no val improvement before stopping early (0 = off, run all N_EPOCHS).
-# Runs 15 and 17 peaked at epochs 101 and 142 and then only overfit for ~450 epochs.
-ADAM_PATIENCE = 0
+ADAM_PATIENCE = 0      # Adam epochs without val improvement before stopping (0 = off)
 LR         = 3e-5
 GRAD_CLIP  = 10.0
 VAL_FRAC   = 0.10
@@ -123,61 +88,23 @@ DEVICE     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LBFGS_LR           = 1.0
 LBFGS_MAX_ITER     = 500
 LBFGS_HISTORY_SIZE = 20
-# Encoder activations dominate: chunk × n_det × hidden × bytes/layer.
-# chunk=4096 keeps peak memory ~3 GB on a 40 GB GPU (vs 32 768 for flat MLP).
-LBFGS_CHUNK        = 4_096
-# Early stop, mirroring 02_train_fnn_deepsets.py's LBFGS_PATIENCE. Without it
-# L-BFGS burns the full LBFGS_MAX_ITER budget long after val has flatlined: on
-# the 7.7M-row corpus (job 45345560) a closure call costs ~60-85s, and iters
-# 200-321 bought 0.00003 val for ~3h while train loss kept falling -- grinding
-# into the train set, not learning.
-LBFGS_PATIENCE      = 50
-# The sweep is driven as repeated bounded .step() calls of this many iterations
-# rather than one step(max_iter=LBFGS_MAX_ITER), so a gpu_requeue preemption
-# resumes with the Hessian history intact instead of restarting cold.
-# It MUST be done between step() calls, not inside the closure: torch's LBFGS
-# reads its working vars at lbfgs.py:349 and only writes them back at :487-493,
-# when step() returns -- a state_dict captured mid-closure is stale by a whole
-# step, and on the first one prev_flat_grad is absent entirely, so resuming
-# from it dies in `flat_grad.sub(prev_flat_grad)` with None. Costs one extra
-# closure call per step() (lbfgs.py:330), i.e. ~1/LBFGS_STEP_ITERS overhead.
+LBFGS_CHUNK        = 4_096   # rows per forward in the closure (encoder activations set the memory)
+LBFGS_PATIENCE     = 50      # closure calls without val improvement before stopping
+# The sweep is repeated step() calls of this many iterations, so a preemption resumes with the L-BFGS history intact
+# (the optimizer state is only consistent between step() calls, not inside the closure).
 LBFGS_STEP_ITERS    = 25
-# Save the rolling resume checkpoint every N Adam epochs. This MUST be small
-# relative to the preemption rate, not to the epoch count: on the 7.7M-row
-# corpus an epoch is ~390s, so the old value of 25 meant one save every 2.7h
-# while gpu_requeue preempts every 1-3h. Job 45423856 lost its first four
-# training segments outright -- they died at epochs 20, 24 and 1, i.e. always
-# before the first save, so recon_resume.pt never existed and every restart
-# began at epoch 1 (9 restarts / 9.4h bought 83 epochs). The checkpoint is
-# 5.2 MB; writing it every epoch costs well under a second against a 390s
-# epoch, so there is no reason to batch it.
+# Resume checkpoint every epoch (5 MB; an epoch takes minutes and preemptions come every 1-3 h).
 RESUME_CKPT_INTERVAL = 1
 
-RECON_INPUT_FEATURES = 4   # (x, y, E, T) per detector — E, T come from
-                            # RECON_INPUT (surrogate draw, real kernel, or a
-                            # mix); see the module docstring.
+RECON_INPUT_FEATURES = 4   # (x, y, E, T) per detector
 
 
 def shower_level_split(strategy_ids: torch.Tensor,
                        species_ids: torch.Tensor,
                        val_frac: float,
                        seed: int) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Shower-level split so all strategies AND all species for one shower
-    share a side.
-
-    `strategy_ids`/`species_ids` come from this corpus's row order (strategy-
-    major, species-major, event -- `load_kernel_responses`'s docstring),
-    n_pairs = n_strat * n_species * n_ev. Naively deriving `n_showers =
-    n_pairs // n_strat` (as this function did before species_ids was added)
-    silently treats each strategy block's `n_species * n_ev` rows as if it
-    held one row per shower -- i.e. it splits at (species, event) granularity,
-    not shower granularity, so a real shower's electron row could land in
-    train while its muon/photon rows of the SAME event land in val. That is a
-    real train/val leak (the combined kernel target is identical across a
-    shower's species rows -- see `load_kernel_responses`), not just a
-    labeling nicety. Collapsing species out here, the same way strategy
-    already was, is the fix.
-    """
+    """Shower-level split: every strategy and species row of one shower lands on the same side (their combined kernel
+    target is identical, so splitting by row would leak). Rows are strategy-major, species-major, event."""
     n_pairs   = int(strategy_ids.shape[0])
     n_strat   = int(strategy_ids.max().item() + 1)
     n_species = int(species_ids.max().item() + 1)
@@ -374,10 +301,7 @@ def _save_ckpt(path: str,
         "config": dict(
             **_arch_cfg(),
             output_dim=4,
-            # What the recon's (E, T) inputs were during training. Stage 4 and
-            # true_utility.py feed it different response sources, so a checkpoint
-            # that does not record this cannot be told apart from one trained the
-            # other way. Old checkpoints have no key -> read as "sample".
+            # The (E, T) source it was trained on (old checkpoints: missing -> "sample").
             recon_input=RECON_INPUT,
             mix_frac=(MIX_FRAC if RECON_INPUT == "mix" else None),
             input_mode=INPUT_MODE,
@@ -497,12 +421,7 @@ def main():
     xy        = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "xy.pt")).float()
     strat_ids = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "strategy_ids.pt")).long()
     species_ids = torch.load(os.path.join(TRAINING_DATASET_FOLDER, "species_ids.pt")).long()
-    # Degenerate/corrupt showers, flagged by Step 1's flag_blob_showers. Step 2
-    # (02_train_fnn_deepsets.py) drops these from train, val AND its norm stats
-    # and hard-errors if the file is missing; this script never loaded it at
-    # all, so blob rows sat in recon's training set, z-score statistics, and
-    # validation metric. Same hard-error convention as Step 2: a dataset built
-    # before the filter existed should be rebuilt, not silently scored as-is.
+    # Degenerate (blob) showers flagged at Stage 1: dropped from train, val and stats; a missing file is an error.
     _blob_path = os.path.join(TRAINING_DATASET_FOLDER, "blob_ids.pt")
     if not os.path.exists(_blob_path):
         raise SystemExit(
@@ -514,9 +433,7 @@ def main():
     print(f"[load] corpus in {time.time() - t0:.1f}s  primary={tuple(primary.shape)}  "
           f"blob={100 * (~keep).float().mean():.2f}%")
 
-    # --recon-input kernel needs no surrogate (run 18 trains none): skip it. With a
-    # surrogate (sample / mix), its draw is computed, and its summary stats beside
-    # the kernel's show how far apart the two response distributions are.
+    # --recon-input kernel needs no surrogate; with sample / mix its predictions are computed.
     dual = None if RECON_INPUT == "kernel" else load_dual_surrogate(FNN_FOLDER, DEVICE)
 
     t0 = time.time()
@@ -550,10 +467,7 @@ def main():
     del E_samp, T_samp, E_kern, T_kern
 
     target   = primary[:, :4].clone().float()
-    # Stats over the clean (non-blob) rows only -- mirrors Step 2's
-    # compute_normalization(primary[keep], ...); a blob row's corrupted E/T (or,
-    # pre-leading-edge datasets, corrupted T) would otherwise skew the very
-    # z-score every row (including clean ones) gets normalized by.
+    # Stats over the clean (non-blob) rows only.
     tgt_mean = target[keep].mean(dim=0)
     tgt_std  = target[keep].std(dim=0).clamp(min=1e-8)
     print(f"[target] mean={tgt_mean.tolist()}  std={tgt_std.tolist()}")
@@ -564,10 +478,7 @@ def main():
     val_idx   = val_idx[keep[val_idx]]
     print(f"[split] train={len(train_idx)}  val={len(val_idx)}  "
           f"(dropped {n_tr0 - len(train_idx)} train / {n_va0 - len(val_idx)} val blob rows)")
-    # Same TRAIN_FRACTION knob and formula 02_train_fnn_deepsets.py already
-    # applies to its own (per-species) train_idx -- same constant, same SEED,
-    # so a fraction < 1.0 restricts every stage to a consistent slice of
-    # showers instead of each stage drawing its own independent subsample.
+    # TRAIN_FRACTION < 1: the same slice of showers as Stage 2 (same constant and seed).
     if 0.0 < TRAIN_FRACTION < 1.0:
         _n_orig = int(train_idx.shape[0])
         _n_keep = max(1, int(round(TRAIN_FRACTION * _n_orig)))
@@ -632,9 +543,7 @@ def main():
                  else torch.optim.Adam(recon.parameters(), lr=LR))
     print(f"[optim] {type(optimizer).__name__} lr={LR} weight_decay={WEIGHT_DECAY}")
 
-    # gpu_requeue can preempt mid-training; recon_resume.pt lets the job
-    # continue from the last RESUME_CKPT_INTERVAL-epoch checkpoint rather than
-    # restarting cold.  adam_done=True means Adam finished; jump to L-BFGS.
+    # Resume from recon_resume.pt (adam_done=True: go straight to L-BFGS).
     resume_path = os.path.join(OUTPUT_FOLDER, "recon_resume.pt")
     adam_done   = False
     start_epoch = 0
@@ -643,8 +552,7 @@ def main():
     best_epoch = -1
     lbfgs_resume = None          # L-BFGS sweep state, if a preemption left one
     if os.path.exists(resume_path):
-        # A resume file that cannot be read is a stale artifact, not a reason to
-        # abort: fall through to a cold start rather than failing every restart.
+        # An unreadable resume file means a cold start, not a failure.
         try:
             _r = torch.load(resume_path, map_location=DEVICE, weights_only=False)
         except Exception as exc:
@@ -713,9 +621,7 @@ def main():
                        recon, epoch + 1, va, in_mean, in_std, tgt_mean, tgt_std)
 
         if (epoch + 1) % RESUME_CKPT_INTERVAL == 0:
-            # tmp + os.replace: a preemption landing mid-write would otherwise
-            # leave a truncated recon_resume.pt, and the torch.load above has
-            # no fallback -- the job would then die on every restart forever.
+            # tmp + os.replace: a preemption mid-write cannot leave a truncated file.
             tmp = resume_path + ".tmp"
             torch.save({
                 "state_dict": recon.state_dict(), "optimizer": optimizer.state_dict(),
@@ -791,10 +697,8 @@ def main():
     class _LBFGSStop(Exception):
         """Raised inside the closure to break out of optimizer.step()."""
 
-    # Resume a preempted sweep. Order matters: the optimizer's history
-    # (old_dirs/old_stps/prev_flat_grad/d) describes the CURRENT iterate, not
-    # the best one, so the model must be restored from the resume payload --
-    # recon.pt above holds best-val weights, which the history does not match.
+    # Resume a preempted sweep: restore the CURRENT iterate from the payload (the L-BFGS history belongs to it),
+    # not the best-val weights in recon.pt.
     if lbfgs_resume is not None:
         recon.load_state_dict(lbfgs_resume["model"])
         lbfgs_optimizer.load_state_dict(lbfgs_resume["optimizer"])

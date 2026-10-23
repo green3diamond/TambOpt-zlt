@@ -17,6 +17,7 @@ so its threshold and slope can be compared with where the recon actually improve
 
 Usage:
     python scripts/diagnostics/recon_sensitivity.py [--n-events 2048]
+(Legacy, runs 12-18; kept for the figures in 02_findings_after_run13.pdf.)
 """
 import argparse
 import json

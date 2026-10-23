@@ -75,10 +75,10 @@ fi
 [ "${GATE:-none}" != none ] && SUFFIX="${SUFFIX}_${GATE}"
 [ "${RESPONSE:-kernel}" = surrogate ] && SUFFIX="${SUFFIX}_sur"
 
-python -u scripts/04_optimize_lbfgs_kernel.py --utility recon --init "$INIT" \
+python -u scripts/04_optimize_lbfgs_kernel.py --init "$INIT" \
     --lr "$LR" --epochs "$EPOCHS" --log-every 100 \
-    --pool main --batch-events ${BATCH:-512} ${LR_FINAL:+--lr-final $LR_FINAL} --chunk ${CHUNK:-32} --n-score 1024 --score-every 250 \
-    --recon-folder "$RK" --out-suffix "$SUFFIX" --n-det "$N_DET" --skip-analytic-eval \
+    --batch-events ${BATCH:-512} ${LR_FINAL:+--lr-final $LR_FINAL} --chunk ${CHUNK:-32} --n-score 1024 --score-every 250 \
+    --recon-folder "$RK" --out-suffix "$SUFFIX" --n-det "$N_DET" \
     --bg-window-ns "${BG_WINDOW:-0}" --gate "${GATE:-none}" --response "${RESPONSE:-kernel}" ${FNN_DIR:+--fnn-folder $FNN_DIR} \
     ${FREEZE_UNSEEN:+--freeze-unseen} --lbfgs-chunks "${LBFGS_CHUNKS:-0}" --lbfgs-chunk-events "${LBFGS_EVENTS:-4096}" \
     --lbfgs-max-iter "${LBFGS_MAXITER:-40}"

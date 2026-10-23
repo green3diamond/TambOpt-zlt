@@ -12,6 +12,7 @@ normal (footprint elongation ~ 1/|cos|).
 
 Usage:
     python scripts/diagnostics/axis_impact_density.py [--h5 PATH] [--out DIR]
+(Legacy, runs 12-18; kept for the figures in 02_findings_after_run13.pdf.)
 """
 import argparse
 import os

@@ -1,6 +1,7 @@
 """Optimize detector positions: pre-Adam perturbation, then L-BFGS ensemble.
 
-The recommended Stage-4 entry. Per scheme:
+Legacy surrogate-era Stage 4 (runs 12-15), kept for the figures in 02_findings_after_run13.pdf; the current Stage 4
+is 04_optimize_lbfgs_kernel.py. Per scheme:
 
 1. Perturb the scheme's initial layout into K = `N_CHAINS` Gaussian variants
    (std `INIT_OVERDISP_SIGMA`, projected back to the mountain).

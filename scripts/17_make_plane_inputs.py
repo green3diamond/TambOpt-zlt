@@ -1,4 +1,4 @@
-"""Synthetic-plane inputs (runs 17, 18): a 45-degree plane (geometry h5) and tau primaries aimed at it.
+"""Synthetic-plane inputs (runs 17-19): a 45-degree plane (geometry h5) and tau primaries aimed at it.
 
 Geometry (site-local ENU, metres, origin = Malata's `location` so every frame matches):
     a square plane of side --side, tilted 45 deg, facing --facing: f is its horizontal outward

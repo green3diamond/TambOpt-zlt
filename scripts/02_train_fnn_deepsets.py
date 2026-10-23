@@ -1,37 +1,12 @@
-"""Train TWO parallel per-species DeepSets surrogates (electron + muon).
+"""Stage 2: train one DeepSets surrogate per species (electron, muon, photon): f_s(primary, layout) -> (E_s, T_s).
 
-The paired dual-species corpus (00_generate_data_dual_species.py) holds two
-COMPONENTS of each physical event — electron rows (pdg feature 0) and muon
-rows (pdg feature 1) sharing the same primaries. This trainer splits the
-dataset rows by that species id and trains one DeepSets surrogate per species:
-each model learns its component's response f_s(primary, layout) -> (E_s, T_s).
-Stages 3-4 evaluate BOTH models per event and combine the outputs physically
-(modules/surrogates/dual.py: counts add, times average count-weighted).
+Rows are split by species_ids.pt; the shower-level train/val split matches Stage 3 (SPLIT_SEED). Head: lit/dark hurdle
+(constants.SURROGATE_HURDLE: BCE on lit + MSE on lit slots) or mean-only z-scored MSE. Adam (OneCycle, early stop),
+then chunked full-batch L-BFGS with best-val save. Norm stats per species ship in each checkpoint. Stages 3-4 combine
+the species with modules/surrogates/dual.py (E adds, T = earliest). Output: FNN_FOLDER/fnn_<species>.pt.
 
-Per species, everything matches the original single-model trainer: shower-level
-split, log-T target treatment, z-scored MSE loss, two-phase Adam(OneCycle) →
-chunked-L-BFGS recipe with per-iter best-val save. Norm stats are computed on
-each species SUBSET (electron and muon count scales differ by ~an order of
-magnitude, so shared stats would mis-weight the smaller component's loss); the
-per-model stats ship inside each checkpoint.
-
-Architecture note (THEORY.md §10): DeepSets — a shared per-detector
-encoder/decoder with a pooled context, permutation-equivariant BY CONSTRUCTION.
-Per-batch detector-permutation augmentation (`permute_detectors_batch`) is
-still applied during Adam training as a no-op regularizer on an equivariant
-model — it changes nothing the architecture doesn't already guarantee, but
-costs one `argsort` per batch.
-
-Checkpoints land DIRECTLY in FNN_FOLDER as `fnn_electron.pt` / `fnn_muon.pt`
-(species-tagged names cannot clobber a legacy single-model fnn.pt); stages 3-4
-load them via `modules.surrogates.load_dual_surrogate(FNN_FOLDER, ...)`.
-
-Run:
-
-    cd TambOpt
-    python 02_train_fnn_deepsets.py                         # both species
-    python 02_train_fnn_deepsets.py --species muon          # retrain one
-    python 02_train_fnn_deepsets.py --epochs 2 --lbfgs-iters 3   # smoke run
+    python scripts/02_train_fnn_deepsets.py --species muon            # slurm/run19_stage2.sh <species>
+    python scripts/02_train_fnn_deepsets.py --epochs 2 --lbfgs-iters 3   # smoke run
 """
 import argparse
 import json
@@ -56,13 +31,7 @@ from modules.constants import (
     TRAINING_DATASET_FOLDER, FNN_FOLDER, TRAIN_FRACTION, SURROGATE_HURDLE,
 )
 
-# ── Config ───────────────────────────────────────────────────────────────────
-# Species-tagged checkpoints (fnn_<species>.pt) go straight into
-# FNN_FOLDER — they cannot clobber a legacy single-model fnn.pt, and stages 3-4
-# load the set from there via surrogates.load_dual_surrogate.
 OUTPUT_FOLDER = FNN_FOLDER
-# (tag, species id). The id is the index into constants.SPECIES_NAMES, which
-# is what Step 0 wrote to the species sidecar.
 SPECIES_TAGS  = tuple((name, i) for i, name in enumerate(SPECIES_NAMES))
 
 BATCH_SIZE          = 256
@@ -90,19 +59,6 @@ DS_N_ENC    = 3
 DS_N_DEC    = 3
 DS_DROPOUT  = 0.0
 
-# This trainer is MEAN-ONLY: one objective (z-scored MSE), one phase, start to
-# finish. The Gaussian-NLL machinery that used to live here -- a mean-only
-# warm-up fraction, beta-NLL reweighting (Seitzer et al. 2022), a softplus
-# variance floor, an optimizer/LR reset at the warm-up/NLL switch, and
-# checkpoint selection on val_nll_plain -- is gone along with the variance head
-# it trained (see modules/surrogates/deepsets.py).
-#
-# Why it went: every run from 13 onward passed `--nll-warmup-frac 1.0`, which
-# made the warm-up the entire schedule and left the NLL phase with zero epochs.
-# The variance head was therefore never fitted in any surviving checkpoint, and
-# Stage 3 had to pass `--fnn-mean-only` to keep from sampling noise out of it.
-# What remained was an elaborate unused branch whose presence still cost a
-# zero-init hack in the model and a phase field in every log line.
 ADAM_PATIENCE = 15   # Adam epochs with no val-MSE improvement before stopping early.
 
 # ── L-BFGS fine-tuning (full-batch, chunked closure) ─────────────
@@ -110,9 +66,6 @@ LBFGS_LR            = 1.0
 LBFGS_MAX_ITER      = 1000
 LBFGS_HISTORY_SIZE  = 10
 LBFGS_CHUNK_SIZE    = 8192   # DeepSets is light → larger chunks fit
-# Early stop: abort L-BFGS after this many closure calls with no val improvement.
-# DeepSets is well-fit by Adam, so L-BFGS tends to overfit train from iter 0;
-# this stops it burning the full budget while best-save still keeps the optimum.
 LBFGS_PATIENCE      = 150
 
 
@@ -139,14 +92,8 @@ def permute_detectors_batch(xy: torch.Tensor,
                             E:  torch.Tensor,
                             T:  torch.Tensor
                             ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Apply an independent random permutation of the 100 detectors per sample.
-
-    Left over from the flat-MLP trainer, where this taught APPROXIMATE
-    permutation equivariance by example. DeepSets is equivariant BY
-    CONSTRUCTION (see module docstring), so this is a no-op regularizer here,
-    not a correctness requirement. Since we permute xy and (E, T) with the
-    SAME permutation, the label mapping stays correct either way.
-    """
+    """An independent random detector permutation per sample (xy, E, T together). DeepSets is equivariant by
+    construction, so this is a harmless regulariser kept from the MLP era."""
     B, n_det, _ = xy.shape
     # argsort of uniform noise produces a different permutation per row
     rand_key = torch.rand(B, n_det, device=xy.device)
@@ -156,7 +103,7 @@ def permute_detectors_batch(xy: torch.Tensor,
     E_p  = torch.gather(E,  1, perms)
     T_p  = torch.gather(T,  1, perms)
     return xy_p, E_p, T_p
-    
+
 
 def mse_mean_only(mean_raw, E_tgt, T_tgt, out_mean, out_std):
     """Plain z-scored MSE on the mean channel — the trainer's only objective.
@@ -236,8 +183,6 @@ def _plot_curves(log, path, adam_epochs=0, lbfgs_iter_log=None):
                 ax.axvline(adam_epochs, color="gray", linestyle="--", alpha=0.5,
                            label="Adam\u2192L-BFGS")
 
-        # One objective across both phases, so a single y-label is honest now
-        # (it used to switch from MSE to beta-NLL partway along the x axis).
         axes[0].set_xlabel("epoch / iter"); axes[0].set_ylabel("loss (z-scored MSE)")
         axes[0].set_title("total");  axes[0].grid(alpha=0.3); axes[0].legend(fontsize=9)
         axes[1].set_xlabel("epoch / iter"); axes[1].set_ylabel("loss (z-scored MSE)")
@@ -291,24 +236,15 @@ def train_species(tag:        str,
     from the row index: the split relies on contiguous strategy-major blocks of
     equal size, which removing rows beforehand would break.
     """
-    # (1h) --out-suffix lets an experimental run land beside the production
-    # checkpoints instead of silently overwriting fnn_{tag}.pt (see the plan's
-    # safety note — the fixed name used to have no escape hatch for an A/B).
+    # --out-suffix: an experimental run lands beside fnn_{tag}.pt instead of overwriting it.
     tag_out     = f"{tag}{out_suffix}"
     ckpt_name   = f"fnn_{tag_out}.pt"
     log_name    = f"fnn_{tag_out}_train_log.json"
     curves_name = f"fnn_{tag_out}_train_curves.png"
     tvp_name    = f"fnn_{tag_out}_target_vs_pred.png"
 
-    # Resume state, read once here and applied to the model further down (the
-    # model/optimizer/scheduler don't exist yet at this point).
-    #   {"species_done": True} -> this species is fully finished; skip it.
-    #     main() trains electron THEN muon in one process, so without this a
-    #     preemption during muon would retrain electron from scratch — hours of
-    #     redundant work at the 750k scale. Same convention as
-    #     pipeline_status.json: delete the file to force a retrain.
-    #   {"adam_done": True}    -> Adam finished, jump straight to L-BFGS.
-    #   full state             -> mid-Adam; resume at ["epoch"].
+    # Resume state (applied once the model exists): {"species_done": True} skips the species (delete the file to
+    # retrain); {"adam_done": True} jumps to L-BFGS; a full state resumes Adam at ["epoch"].
     resume_path = os.path.join(OUTPUT_FOLDER, f"fnn_{tag_out}_resume.pt")
     resume_state = (torch.load(resume_path, map_location=DEVICE)
                     if os.path.exists(resume_path) else None)
@@ -321,13 +257,12 @@ def train_species(tag:        str,
     print(f"[{tag}] DeepSets surrogate on {primary.shape[0]} rows")
     print("=" * 72)
 
-    # Per-species z-score stats (NOT the corpus-wide norm_stats.pt), over the
-    # clean rows only — see the blob note in the docstring.
+    # Per-species z-score stats over the clean (non-blob) rows.
     keep = ~blob_ids.bool()
     norm_stats = compute_normalization(primary[keep], xy[keep],
                                        E_all[keep], T_all[keep])
 
-    # log-T canonical target (mirrors 02_train_fnn.py); ship modified stats in ckpt.
+    # log-T target; the modified stats ship in the checkpoint.
     T_all = torch.log1p(T_all * T_LOG_SCALE)
     _n = T_all.shape[1]
     norm_stats["out_mean"][_n:] = float(T_all.mean().item())
@@ -411,8 +346,7 @@ def train_species(tag:        str,
 
     optimizer, scheduler = _build_optim_sched(n_epochs)
 
-    # Apply the resume state read at the top of this function (mirrors
-    # 03_train_recon_deepsets.py's recon_resume.pt pattern).
+    # Apply the resume state read above.
     adam_done   = False
     start_epoch = 0
     if resume_state is not None:
@@ -497,10 +431,7 @@ def train_species(tag:        str,
             lr=lr_now, dt=dt,
         ))
 
-        # One objective throughout, so selection is simply the val loss. The
-        # lexicographic "did the mean regress" guard that used to sit here
-        # existed only to stop an NLL gain bought by degrading the mean from
-        # shipping; with no NLL term there is nothing left for it to guard.
+        # Selection: the val loss.
         if va_tot < best_val - 1e-5:
             best_val   = va_tot
             best_epoch = epoch + 1
@@ -526,8 +457,7 @@ def train_species(tag:        str,
                 "adam_no_improve": adam_no_improve,
             }, resume_path)
 
-        # Adam early stopping. Phase-0 measured Adam spending 34 of 50 minutes
-        # past its best epoch on all three species.
+        # Early stop after ADAM_PATIENCE epochs without improvement.
         if adam_no_improve >= ADAM_PATIENCE:
             print(f"[{tag}] Adam early stop: {ADAM_PATIENCE} epochs with no "
                   f"checkpoint improvement (best val={best_val:.6f} "
@@ -555,8 +485,7 @@ def train_species(tag:        str,
     print("=" * 72)
     adam_ckpt = torch.load(os.path.join(OUTPUT_FOLDER, ckpt_name), map_location=DEVICE)
     model.load_state_dict(adam_ckpt["state_dict"])
-    # Same selection key as the Adam phase (val MSE), so "best" means the same
-    # thing across both phases.
+    # Same selection key as Adam (the val loss).
     adam_best_val = adam_ckpt["val_total"]
     print(f"[lbfgs] loaded Adam best epoch={adam_ckpt['epoch']} val={adam_best_val:.6f}")
     model.eval()
@@ -577,10 +506,7 @@ def train_species(tag:        str,
 
     lbfgs_iter_log = []   # one entry per closure call
     t_lbfgs = time.time()
-    # 0030 (matches new baseline): track best L-BFGS val and save fnn.pt
-    # whenever it improves. Previously only the last iter was checked, so
-    # we threw away the L-BFGS minimum (siblings 0010/0023/0024 logged
-    # min < last by 0.003-0.006 absolute).
+    # Save whenever the L-BFGS val improves (the minimum is usually before the last iteration).
     lbfgs_best_val = adam_best_val
     lbfgs_best_iter = -1
     lbfgs_no_improve = 0
@@ -590,11 +516,7 @@ def train_species(tag:        str,
         """Raised from the closure to early-stop L-BFGS once val stalls."""
 
     def closure():
-        # 0030: chunked forward+backward to avoid full-batch OOM on wider
-        # Deep Sets. zero grads once, then for each chunk run forward,
-        # weight loss by chunk_size/n_total, backward (accumulates grad),
-        # detach the loss scalar. Final scalar = mean over all samples,
-        # final grad = exact full-batch gradient (verified in 0010).
+        # Chunked forward+backward, each chunk weighted by its share: the exact full-batch gradient within memory.
         nonlocal lbfgs_best_val, lbfgs_best_iter, lbfgs_no_improve
         lbfgs_optimizer.zero_grad()
         sum_loss = 0.0
@@ -638,11 +560,6 @@ def train_species(tag:        str,
             iter=it, loss=loss.item(), mse_E=mE.item(), mse_T=mT.item(),
             val=va_tot, val_E=va_E, val_T=va_T,
         ))
-        # The Adam phase and this one now select on the same quantity (val
-        # MSE), so "best" means the same thing across both. The TODO that used
-        # to sit here -- add a mean-regression cap to this selection -- is moot:
-        # it guarded against an NLL gain bought by degrading the mean, and the
-        # loss being selected on IS the mean MSE.
         sel_val = va_tot
         if sel_val < lbfgs_best_val - 1e-5:
             lbfgs_best_val = sel_val
@@ -690,8 +607,7 @@ def train_species(tag:        str,
 
     print(f"[lbfgs] {n_iters} iterations in {dt_lbfgs:.1f}s")
 
-    # Validation after L-BFGS: per-iter best save already happened inside
-    # the closure. fnn.pt holds the best-ever weights.
+    # The closure already saved the best weights.
     overall_best_val = lbfgs_best_val
     lbfgs_log = []
 
@@ -754,8 +670,7 @@ def train_species(tag:        str,
     except Exception as exc:
         print(f"[plot-tvp] skipped ({exc!r})")
 
-    # Mark this species finished (see the marker check at the top). Replaces the
-    # resume state so a restart skips the species instead of retraining it.
+    # Mark the species finished, so a restart skips it.
     torch.save({"species_done": True}, resume_path)
 
 
@@ -824,18 +739,14 @@ def main():
     for tag, species_val in SPECIES_TAGS:
         if tag not in wanted:
             continue
-        # Split on the Step-1 species sidecar (0=electron, 1=muon). The primary's
-        # 5th feature is now the EM/hadronic class (a real input the model learns),
-        # not the species, so it must NOT be used to route rows here.
+        # Route by species_ids.pt (the primary's pdg feature is the EM/hadronic class, not the species).
         idx = torch.nonzero(species_ids == species_val).squeeze(-1)
         if idx.numel() == 0:
             raise SystemExit(
                 f"no rows with species id {species_val} ({tag}) in the dataset — "
                 f"was 01_build_dataset.py run on the paired dual-species corpus "
                 f"(and did it write species_ids.pt)?")
-        # shower_level_split relies on strategy-major contiguous blocks; the
-        # species filter preserves that as long as every strategy block holds
-        # the same per-species rows (true for the paired corpus).
+        # shower_level_split needs strategy-major blocks; the species filter keeps them (paired corpus).
         assert idx.numel() % n_strat == 0, (idx.numel(), n_strat)
         train_species(
             tag,

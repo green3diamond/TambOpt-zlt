@@ -1,20 +1,11 @@
-"""Stage 3c: fine-tune the run's recon on inputs with cosmic-ray background added on the fly.
+"""Stage 3c: fine-tune the run's recon on inputs with optional Poisson counting and cosmic background, on the fly.
 
-Starts from <RECON_FOLDER>_deepsets/recon.pt (left untouched) and writes a NEW checkpoint to
-<RECON_FOLDER>_deepsets_noise/recon.pt (same format, so load_models(recon_dir=...) reads it).
-
-Same corpus, shower-level split and blob filter as 03_train_recon_deepsets.py (kernel labels, --recon-input kernel).
-Each training row gets its own window W drawn uniformly from --windows (default 0 / 128 ns / 1 us / 10 us; 0 keeps
-clean rows in the mix), and background from modules/optimize/background.py: E' = E + Poisson(lambda), T' = min(T,
-earliest background time), times uniform in one readout window W around the shower's earliest hit (no truth). Normalisation stats are kept from the clean
-recon. Validation: a fixed 200k-row slice of the val split with fixed noise (row i gets window i mod len(windows)),
-reported per window; the checkpoint keeps the best mean val over the windows.
-
-Inputs are built per batch from the PER-SPECIES kernel labels (E.pt / T.pt rows of the same strategy and event),
-combined with combine_species_outputs as S3.load_kernel_responses does. --counting poisson first draws particle counts
-per species (modules/optimize/counting.py); a background muon's E uses each detector's distance from the shower axis
-(axis_distance_rows, frames from the corpus metadata). Default output: <RECON_FOLDER>_deepsets_count (poisson) or
-<RECON_FOLDER>_deepsets_noise_kunits (no counting; the old _deepsets_noise, made with 1 per background muon, is kept).
+Starts from --src (<RECON_FOLDER>_deepsets, untouched) and writes a new recon.pt to --out (default
+<RECON_FOLDER>_deepsets_count with --counting poisson, else _deepsets_noise_kunits). Same rows, shower-level split and
+blob filter as 03_train_recon_deepsets.py. Per batch: the per-species kernel labels of each row (E.pt / T.pt) ->
+counted per species (--counting poisson, modules/optimize/counting.py) -> combined -> background in a window drawn from
+--windows (modules/optimize/background.py; 0 = clean). Validation: a fixed --n-val slice with fixed noise (row i gets
+window i mod len(windows)); the checkpoint keeps the best mean over the windows. Resumes from finetune_resume.pt.
 
     python scripts/03c_finetune_recon_noise.py [--windows 0 128 1000 10000] [--epochs 60] [--patience 8]
                                                [--counting poisson --eps-gamma 0.02]
@@ -33,7 +24,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 import modules.constants as C  # noqa: E402
 from modules.optimize import load_models  # noqa: E402
-from modules.optimize.background import window_centres, add_background, axis_distance_rows  # noqa: E402
+from modules.optimize.background import window_centres, add_background, axis_distance_rows, BG_UNITS  # noqa: E402
 from modules.optimize.counting import count_species, EPS_GAMMA  # noqa: E402
 from modules.surrogates import combine_species_outputs  # noqa: E402
 from modules.geometry import load_tr_mountain, SurfaceUpMap  # noqa: E402
@@ -134,8 +125,7 @@ opt = torch.optim.AdamW(recon.parameters(), lr=args.lr, weight_decay=args.weight
 
 
 def noisy(idx, xy_b, W, gen):
-    """Rows -> recon inputs: per-species labels, counted (--counting poisson), combined, then background in window W
-    (per row, background muon scaled by the detector's distance from the axis), as the recon reads them."""
+    """Rows -> recon inputs: per-species labels, counted (--counting poisson), combined, background in window W."""
     E_b, T_b, r = species_inputs(idx, xy_b, gen, MODE)
     E = torch.expm1(E_b.clamp(min=0)); t = torch.expm1(T_b.clamp(min=0)); timed = T_b > 0
     En, Tn, _, _ = add_background(E, t, timed, window_centres(t, timed, T_FALLBACK), W, gen, r_axis=r)
@@ -192,7 +182,7 @@ for ep in range(start, args.epochs):
                                       weight_decay=args.weight_decay, rows_per_epoch=args.rows_per_epoch,
                                       t_fallback_us=T_FALLBACK, counting=args.counting,
                                       eps_gamma=args.eps_gamma if args.counting == "poisson" else None,
-                                      bg_muon_scaling="per detector, distance from the axis"))
+                                      bg_units=BG_UNITS))
         torch.save(ck, os.path.join(args.out, "recon.pt.tmp")); os.replace(os.path.join(args.out, "recon.pt.tmp"),
                                                                             os.path.join(args.out, "recon.pt"))
         print(f"  [save] {args.out}/recon.pt", flush=True)

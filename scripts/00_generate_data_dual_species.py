@@ -65,11 +65,8 @@ from allshowers.generator import Generator, generate
 # ── Config ───────────────────────────────────────────────────────────────────
 BEST = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/checkpoints"
 
-# Per-species model paths + point-cloud caps, keyed by species name. The species
-# id is the BLOCK INDEX — defined by constants.SPECIES_NAMES, which this dict is
-# checked against below — and is written to the Step-0 species sidecar. It is not
-# in the corpus `pdg` field, which carries the EM/hadronic class fed to the
-# generator.
+# Per-species model paths and point caps. Their order must equal constants.SPECIES_NAMES: the block index is the
+# species id written to the species sidecar (the corpus `pdg` field is the EM/hadronic class).
 SPECIES = {
     "electron": dict(
         allshower_run=os.path.join(BEST, "20260519_185649_Electron-Allshower"),
@@ -88,10 +85,6 @@ SPECIES = {
     )
 }
 
-# SPECIES_NAMES (modules/constants.py) is the id order the corpus sidecar and
-# every downstream router use; this dict adds the model paths for each. Keeping
-# them as two objects that must agree is the point of the check -- the paths are
-# a Step-0 concern, the ORDER is a corpus-format concern.
 if tuple(SPECIES) != tuple(SPECIES_NAMES):
     raise SystemExit(
         f"SPECIES {tuple(SPECIES)} does not match constants.SPECIES_NAMES "
@@ -104,16 +97,9 @@ CHUNK_SIZE    = 2000               # showers per streamed write-batch (bounds pe
 STAGE_ROOT    = os.path.join(RUN_LOCATION, "allshowers_staged")
 DEVICE        = torch.device("cuda")
 
-# Anti-clip resampling (mainly muons). PointCountFM predicts a per-shower total
-# point count; if it exceeds the species cap (`max_points`, 25088 for muons) the
-# generator TRUNCATES the tail — losing points turns a rod into a diffuse blob.
-# Because the clip is decided from num_points BEFORE the expensive AllShowers
-# generate, we cheaply re-roll the (stochastic) PointCountFM for over-cap showers.
-# Each re-roll replaces the previous draw, so a shower that comes back under the
-# threshold keeps that draw and stops; one that stays over cap for the whole
-# budget simply keeps its LAST re-roll and is truncated as before. MAX_CLIP_FRAC
-# = tolerable fraction of predicted points lost to the cap (0.0 = re-roll on any
-# clipping). Set MAX_PCFM_RETRIES = 0 to disable.
+# Anti-clip: a PointCountFM count above the species cap truncates the shower (rod -> blob). Showers that would lose
+# more than MAX_CLIP_FRAC of their points are re-rolled on the cheap CPU stage, up to MAX_PCFM_RETRIES times (0 = off);
+# the last draw is kept.
 MAX_CLIP_FRAC    = 0.10
 MAX_PCFM_RETRIES = 10
 
@@ -158,10 +144,8 @@ def stage_run_dir(name, cfg):
     os.makedirs(os.path.join(dst, "weights"), exist_ok=True)
     os.makedirs(os.path.join(dst, "preprocessing"), exist_ok=True)
 
-    # conf.yaml is ALWAYS rewritten (even when already staged) so older staged
-    # dirs pick up the injection: these May checkpoints were trained with
-    # pre-LN transformer blocks (verified 2026-06-10 — post-LN loads silently
-    # but generates blobs), so the staged conf requests pre_ln explicitly.
+    # conf.yaml is always rewritten with pre_ln: True: these checkpoints use pre-LN blocks, and loading them post-LN
+    # silently generates blobs.
     with open(os.path.join(src, "conf.yaml")) as f:
         conf = yaml.safe_load(f)
     conf["model"]["pre_ln"] = True
@@ -269,68 +253,40 @@ def _generate_batched(gen, energies, num_points, directions, labels, sp_batch):
             print(f"  [oom] retrying generate at batch {sp_batch}", flush=True)
 
 
-def _gen_chunk(gen, pcfm, cfg, species_name, energies, directions, labels,
-               shower_ids, target_P,
-               max_clip_frac=MAX_CLIP_FRAC, max_retries=MAX_PCFM_RETRIES,
-               batch=BATCH_SIZE):
-    """Generate one chunk of showers for a species from PRE-SAMPLED primaries
-    → a showerdata.Showers, padded to target_P. Bounded memory (only this
-    chunk is held). Primaries (energies, directions, labels, shower_ids) come in
-    as slices of the corpus-wide arrays so both species blocks share them (paired
-    events).
-
-    `labels` is the per-event EM/hadronic primary class (0/1) — the generator's
-    conditioning input (both per-species models were trained on both classes)
-    and the value stored as the corpus `pdg` field. `shower_ids` is the
-    paired-event id, so every component row of one event shares it."""
+def _gen_chunk(gen, pcfm, cfg, energies, directions, labels, shower_ids, target_P,
+               max_clip_frac=MAX_CLIP_FRAC, max_retries=MAX_PCFM_RETRIES, batch=BATCH_SIZE):
+    """One chunk of one species from pre-sampled primaries (shared by all species blocks) -> showerdata.Showers padded
+    to target_P. `labels` = EM/hadronic class (0/1): the generator's conditioning and the stored `pdg`; `shower_ids` =
+    the event id, shared by every component row of an event."""
     labels = labels.to(torch.int64)
 
-    # Stage 1 — PointCountFM on CPU (TorchScript device-baked → CUDA mismatches).
+    # PointCountFM on CPU (TorchScript device constants are baked at trace time)
     num_points = run_point_count_fm(
         model_path=pcfm, energies=energies, directions=directions, labels=labels,
     )
 
-    # Anti-clip re-roll for over-cap showers (mainly muons): re-roll only the
-    # failed subset on the cheap CPU stage so the single GPU generate below sees
-    # counts that mostly fit the cap (truncation → blob). See resample_overclip.
     num_points = resample_overclip(
         pcfm, energies, directions, labels, num_points,
         cap=int(cfg["max_points"]), max_clip_frac=max_clip_frac, max_retries=max_retries,
     )
 
-    # Stage 2 — AllShowers on GPU (max_points already set on gen).
-    # Batch scaled by the species point cap: flex_attention's block mask is
-    # O(batch x cap^2), and the caps differ 6x (electron 4096, photon 8064, muon
-    # 25088). One flat batch either OOMs on muon or wastes the GPU on electron --
-    # at BATCH_SIZE=60 the muon mask alone asked for 20.35 GiB on a 19.6 GB card.
-    # `batch` is therefore the budget AT the electron cap. gpu_test also hands out
-    # mixed cards, so halve and retry rather than assume which one we got.
+    # AllShowers on GPU. `batch` is the budget at the electron cap (4096); the attention mask is O(batch x cap^2), so
+    # it is scaled down per species and halved on OOM.
     sp_batch = max(1, int(batch * 4096 / int(cfg["max_points"])))
     samples = _generate_batched(
         gen, energies, num_points, directions, labels, sp_batch)
 
     samples = _pad_points(samples, target_P)
 
-    # Underflow guard: the inverse energy trafo (exp of a latent) can emit
-    # EXACTLY 0.0 for extreme negative latents (float32 underflow, ~1-in-1e8
-    # per point — guaranteed at production corpus sizes). showerdata requires
-    # real points contiguous at the front: its ragged save slices
-    # [:num_points] (an interior zero silently drops the last real point) and
-    # a zero at slot 0 raises "Padding should be in the end". Stable-partition
-    # each shower: e>0 rows first in original order, zero rows (including the
-    # padding) at the end.
+    # The energy trafo can underflow to exactly 0 (~1e-8 per point); showerdata needs real points first, so move
+    # zero-energy rows (and the padding) to the end, keeping the order.
     key = (samples[:, :, 3] <= 0).to(torch.int8)           # 0 = real, 1 = zero/pad
     order = torch.argsort(key, dim=1, stable=True)         # (n, target_P)
     samples = torch.gather(
         samples, 1, order.unsqueeze(-1).expand(-1, -1, samples.shape[2]))
-    
-    # Saved pdg = the EM/hadronic primary class (the generator's conditioning
-    # label). The e/µ species is recorded in the Step-0 species sidecar, not here.
-    pdg = labels
-
     return showerdata.Showers(
         points=samples.numpy(), energies=energies.numpy(),
-        pdg=pdg.numpy(), directions=directions.numpy(),
+        pdg=labels.numpy(), directions=directions.numpy(),
         shower_ids=shower_ids.numpy(),
     )
 
@@ -353,14 +309,8 @@ def _save_progress(progress_path, state):
 def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
                      event_ids_all, positions_all, target_P, chunk_size,
                      batch=BATCH_SIZE):
-    """Generate one full paired electron+muon corpus at `out_path`, resuming
-    automatically from `<out_path>.progress.json` if a prior attempt was
-    preempted mid-run (gpu_requeue). `tag` is a log label ("train"/"holdout").
-
-    Progress is tracked per-species (rows written so far); a chunk is only
-    counted done AFTER `showerdata.save_batch` returns, so a kill mid-chunk
-    just re-does that one chunk on restart — no partial rows on disk get
-    silently treated as complete."""
+    """One paired multi-species corpus at `out_path` (`tag`: "train" / "holdout"). Resumes from
+    <out_path>.progress.json (rows done per species; a chunk counts only after save_batch returns)."""
     n_pairs   = int(energies_all.shape[0])
     n_species = len(SPECIES_NAMES)
     total     = n_species * n_pairs
@@ -375,17 +325,12 @@ def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
         print(f"[{tag}] preallocated {out_path} ({total}x{target_P}x5, "
               f"≈{total * target_P * 5 * 4 / 1e9:.1f} GB)")
 
-    # Species + real-position sidecars: cheap, derived purely from n_pairs/
-    # positions_all, so always safe to (re)write regardless of resume state.
-    # Species-major, matching the block layout below: id s fills rows
-    # [s*n_pairs, (s+1)*n_pairs).
+    # Sidecars (always rewritten): species id per row (block s = rows [s*n_pairs, (s+1)*n_pairs)) and decay vertices.
     species_ids = torch.repeat_interleave(
         torch.arange(n_species, dtype=torch.int64), n_pairs)
     species_path = os.path.splitext(out_path)[0] + "_species.pt"
     torch.save(species_ids, species_path)
     if positions_all is not None:
-        # Every component of an event decays at the same vertex, so the block is
-        # repeated once per species rather than stored per row.
         positions_dual = torch.cat([positions_all] * n_species, dim=0)
         positions_path = os.path.splitext(out_path)[0] + "_positions.pt"
         torch.save(positions_dual, positions_path)
@@ -413,7 +358,7 @@ def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
         while done < n_pairs:
             c = min(chunk_size, n_pairs - done)
             sh = _gen_chunk(
-                gen, pcfm, cfg, name,
+                gen, pcfm, cfg,
                 energies_all[done:done + c], directions_all[done:done + c],
                 labels_all[done:done + c], event_ids_all[done:done + c], target_P,
                 batch=batch,
@@ -439,9 +384,6 @@ def _generate_corpus(tag, out_path, energies_all, directions_all, labels_all,
 
 def main():
     ap = argparse.ArgumentParser()
-    # Streamed in chunks → peak RAM is one chunk, not the whole corpus, so the
-    # pair count can scale freely (disk is the only limit). Muons are capped at
-    # 25088 points; the file is preallocated at that P and electrons are padded up.
     ap.add_argument("--n-pairs", type=int, default=0,
                     help="number of paired events BEFORE the holdout split (see "
                          "HOLDOUT_FRAC); 0 = all available (all in-band tau "
@@ -452,16 +394,10 @@ def main():
     ap.add_argument("--chunk", type=int, default=CHUNK_SIZE,
                     help="showers per streamed write-batch (bounds peak RAM)")
     ap.add_argument("--batch", type=int, default=BATCH_SIZE,
-                    help="GPU generation batch AT the electron cap (4096); scaled "
-                         "down per species by its own max_points, and halved on "
-                         "OOM. Lower it on a small card -- the default needed "
-                         "20.35 GiB for the muon block on a 19.6 GB GPU")
+                    help="GPU generation batch at the electron cap (4096); scaled per species, halved on OOM")
     ap.add_argument("--out", type=str, default=None,
-                    help="MAIN (train-pool) output .pt path (default: "
-                         "DUAL_SHOWER_CACHE_PATH from constants). The holdout "
-                         "corpus always goes to HELDOUT_SHOWER_CACHE_PATH — it "
-                         "isn't overridable, so eval_true_utility.py can always "
-                         "find it.")
+                    help="main corpus path (default DUAL_SHOWER_CACHE_PATH); the holdout always goes to "
+                         "HELDOUT_SHOWER_CACHE_PATH")
     args = ap.parse_args()
 
     os.makedirs(SHOWER_CACHE, exist_ok=True)
@@ -469,12 +405,8 @@ def main():
 
     target_P = max(cfg["max_points"] for cfg in SPECIES.values())
 
-    # Sample the primaries ONCE — both species blocks reuse them, so row i and
-    # row n_pairs+i are the two components of one physical event.
-    if USE_TAU_PRIMARIES:
-        # Real tau primaries (energy + direction + physical ENU decay position),
-        # filtered to the generator's trained energy band. n_pairs follows the
-        # number of in-band events (capped by --n-pairs if given).
+    # Primaries sampled once; every species block reuses them (rows i, n_pairs + i, ... are one event).
+    if USE_TAU_PRIMARIES:                                # tau decays in the energy band (capped by --n-pairs)
         prim = load_tau_primaries(
             TAU_WHOLESKY_PATH, e_min=10**LOG_E_MIN, e_max=10**LOG_E_MAX,
             n=int(args.n_pairs), seed=args.seed,
@@ -491,17 +423,11 @@ def main():
         positions_all = None                              # synthetic: no real position (Step 1 re-centers)
 
     energies_all, directions_all = prim["energies"], prim["directions"]
-    # Per-event EM/hadronic primary class (0/1); both species blocks reuse it so paired rows share the class.
-    labels_all = prim["labels"]
+    labels_all = prim["labels"]                           # EM/hadronic class per event
     n_total = int(energies_all.shape[0])
     event_ids_all = torch.arange(n_total, dtype=torch.int64)   # global event id (informational)
 
-    # ── Holdout split — PHYSICAL EVENT level, before any generation ──────────
-    # Deterministic seeded permutation of the n_total events (independent of
-    # --seed, which only drives the EM/hadronic label draw): HOLDOUT_FRAC go to
-    # a separate corpus that Steps 1-4 never read, reserved for
-    # eval_true_utility.py. Sorting each half keeps rows in file order (cheap,
-    # not required for correctness, just tidier logs/debugging).
+    # Holdout split by event, before generation (own seed): HOLDOUT_FRAC go to a corpus Stages 1-4 never read.
     g = torch.Generator().manual_seed(HOLDOUT_SEED)
     perm = torch.randperm(n_total, generator=g)
     n_holdout = max(1, int(round(HOLDOUT_FRAC * n_total)))
