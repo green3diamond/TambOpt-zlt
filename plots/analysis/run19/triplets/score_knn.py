@@ -3,7 +3,7 @@ neighbours (in the layout, East-North)} are hit (hit = E' > 0.001); otherwise E 
 Same noise draws for every readout ('none' = all read out, 'knn' = gated; tri* also 'group' = 2-of-3 within its own
 triangle). Clean run 19 recon.
 Layouts: grid_n99, disk_r6000_n99, all tri33_* (triplets/layouts.txt) and clu20x5_r1000_n100 (tests/layouts.txt).
-Writes knn_scores.json: {layout: {readout: {W: metrics}}}. A background muon's E uses the detector's distance from
+Writes knn_scores.json: {layout: {readout: {W: metrics}}} (angle and energy: *_e = |dlog10 E| < 0.2, *_5e = both). A background muon's E uses the detector's distance from
 the shower axis. --counting poisson draws particle counts per species before the species combination
 (modules/optimize/counting.py; hit = any counted particle) and writes knn_scores_poisson.json unless --out is given.
 
@@ -33,6 +33,7 @@ _s = importlib.util.spec_from_file_location("dcs", os.path.join(REPO, "scripts/d
 DCS = importlib.util.module_from_spec(_s); _s.loader.exec_module(DCS)
 T_DIR = os.path.join(C.RUN_LOCATION, "diagnostics", "triplets")
 MIN_HIT = 3
+E_GOOD = 0.2                                                                       # |dlog10 E| for "energy good" (two-tier e_good)
 HIT_MIN = 1e-3                                                                     # the kernel's timing threshold (HIT_DEPOSIT_MIN)
 READOUTS = ("none", "knn")
 
@@ -129,7 +130,7 @@ for li, (name, path) in enumerate(layouts.items()):
                 Ek, Tk = torch.where(keep, En, 0.0), torch.where(keep, Tn, 0.0)
                 E_p, th_p, ph_p = primary_to_physical_labels(recon(torch.cat([xy, torch.log1p(Ek)[..., None],
                                                                              torch.log1p(Tk)[..., None]], -1)))
-                a = DCS.ang_err((E_p.clamp(min=1.0), th_p, ph_p, E_true, th_t, ph_t))[0][sub].cpu().numpy()
+                a, de = (x[sub].cpu().numpy() for x in DCS.ang_err((E_p.clamp(min=1.0), th_p, ph_p, E_true, th_t, ph_t)))
                 trig = ((Ek[sub] > 1).sum(1) >= MIN_HIT).cpu().numpy()
                 r = dict(n_det=nd, n_showers=int(sub.sum()), n_counted=n_counted, triggered=float(trig.mean()),
                          ang_med=float(np.median(a)),
@@ -142,6 +143,11 @@ for li, (name, path) in enumerate(layouts.items()):
                 rb = torch.sigmoid(5 * (torch.sigmoid(5 * (mk - args.mu_min)).mul(keep[sub]).sum(1) - args.k_min)).cpu().numpy()
                 r.update(mu_det=float((mk >= args.mu_min).float().sum(1).mean()), trig_mu=float(trig_mu.mean()),
                          r_soft=float(rb.mean()))
+                # energy: |dlog10 E| < E_GOOD (the two-tier e_good); "5e" = within 5 deg and energy good
+                eg = de < E_GOOD
+                r.update(notrig_e=float(eg.mean()), allmu_e=float(np.mean(eg & trig_mu)),
+                         notrig_5e=float(np.mean(eg & (a < 5))), allmu_5e=float(np.mean(eg & (a < 5) & trig_mu)),
+                         de_med=float(np.median(de)), de_med_trig=float(np.median(de[trig_mu])) if trig_mu.any() else float("nan"))
                 for th, kk in ((1, "1"), (2.5, "2.5"), (5, "5")):
                     r[f"notrig_{kk}"] = float(np.mean(a < th))
                     r[f"all_{kk}"] = float(np.mean((a < th) & trig))
