@@ -51,6 +51,12 @@ TWO_TIER_SCALE    = 30.0
 TRIG_K            = int(os.environ.get("TAMBOPT_TRIG_K", "3"))
 TRIG_AREA_M2      = float(os.environ.get("TAMBOPT_TRIG_AREA", "2.0"))
 TRIG_ENERGY       = os.environ.get("TAMBOPT_TRIG_ENERGY", "0") == "1"
+# TAMBOPT_TRIG_MODE=step: the SWGOLO notebook's trigger on EXPECTED counts instead of the Poisson probability:
+# per detector sigmoid(TRIG_SLOPE (mu - TRIG_MU0)), per shower r_b = sigmoid(5 (sum - TRIG_K)) (0.5 at exactly TRIG_K).
+# A near-step: detectors placed together cross the threshold together (the notebook's source of triplets).
+TRIG_MODE         = os.environ.get("TAMBOPT_TRIG_MODE", "poisson")
+TRIG_MU0          = float(os.environ.get("TAMBOPT_TRIG_MU0", "1.0"))
+TRIG_SLOPE        = float(os.environ.get("TAMBOPT_TRIG_SLOPE", "10.0"))   # 10: a dark detector adds sigmoid(-10) ~ 5e-5 (5 leaks ~0.7 over 100)
 _TT_PARAMS = None
 
 
@@ -373,7 +379,11 @@ def utility_of_xy(x_det: torch.Tensor,
         mu = getattr(fnn, "mu", None)
         if mu is None:
             raise RuntimeError("TAMBOPT_UTILITY=swgo_trigger needs a response with expected counts `mu` (Stage 4 kernel)")
-        rb = trigger_prob(mu * (TRIG_AREA_M2 / AREA_M2), TRIG_K)
+        mu_a = mu * (TRIG_AREA_M2 / AREA_M2)
+        if TRIG_MODE == "step":
+            rb = torch.sigmoid(5.0 * (torch.sigmoid(TRIG_SLOPE * (mu_a - TRIG_MU0)).sum(-1) - TRIG_K))
+        else:
+            rb = trigger_prob(mu_a, TRIG_K)
         a = angle_between_deg(_sph(theta_pred, phi_pred), _sph(theta_true, phi_true))
         e = (torch.log10(E_pred_phys) - torch.log10(E_true)).abs()
         g = torch.sigmoid(5.0 - a)
