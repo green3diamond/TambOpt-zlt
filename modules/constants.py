@@ -250,6 +250,10 @@ SPECIES_NAMES = ("electron", "muon", "photon")
 USE_TAU_PRIMARIES = True
 # TAU_WHOLESKY_PATH = "/n/home05/zdimitrov/tambo/TambOpt/decay_locations/tau_wholesky_balanced_1e5_1e8_max.h5"
 TAU_WHOLESKY_PATH = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/19_plane45S_12km_showerframe_400k/inputs/plane_taus.h5"   # run 19: LHS decays aimed at the 12 km South-facing plane
+# TAMBOPT_TAU_PATH overrides it (run 20: the Julia tau_wholesky_n750k.h5 decays aimed at Malata).
+TAU_WHOLESKY_PATH = os.environ.get("TAMBOPT_TAU_PATH", TAU_WHOLESKY_PATH)
+# Site whose layout-strategy sizes modules/layouts/strategies.py uses: "plane12" (run 19's 12 km plane) or "malata".
+SITE = os.environ.get("TAMBOPT_SITE", "plane12")
 
 # TAU_WHOLESKY_PATH = ".../decay_locations/tau_wholesky_n2M_83k.h5"  # built the current corpus
 TAU_CORPUS_PATH   = os.path.join(SHOWER_CACHE, "cashed_showers_tau_dual.pt")

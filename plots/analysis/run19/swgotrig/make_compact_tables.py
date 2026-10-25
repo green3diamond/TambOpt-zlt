@@ -23,14 +23,11 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 sys.path.insert(0, REPO)
 import modules.constants as C  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout_names import layouts  # noqa: E402
 
 D = os.path.join(C.RUN_LOCATION, "diagnostics", "swgotrig")
-LAYOUTS = [("disk_r6000_n99", "Disk 6 km"), ("grid_n99", "Grid"), ("tri33_r10_n99", "Triplets 10 m"),
-           ("tri33_r25_n99", "Triplets 25 m"), ("opt_a2_grid", "Opt. Poisson, grid"),
-           ("opt_a2_center", "Opt. Poisson, centre"), ("opt_a20_grid", "Opt. Poisson 20 m², grid"),
-           ("opt_a2_step_grid_5000", "Opt. step, grid (5k)"), ("opt_a2_step_grid_8000", "Opt. step, grid (8k)"),
-           ("opt_a2_step_center", "Opt. step, centre"), ("disk_r1500_n99", "Disk 1.5 km"),
-           ("tri33disk_R1000_r25_n99", "Triplets, 1 km disk")]
+LAYOUTS = layouts(D, short=True)                                 # validate_count_layouts.txt order
 CONDS = [("No background, all read out", "none", "0"), ("No background, kNN gate", "knn", "0"),
          ("1 µs background, all read out", "none", "1000"), ("1 µs background, kNN gate", "knn", "1000"),
          ("10 µs background, all read out", "none", "10000"), ("10 µs background, kNN gate", "knn", "10000")]
@@ -43,7 +40,8 @@ mark = ((lambda x: r"$\colorbox{#f8c4c4}{\textbf{" + x.replace("%", r"\%") + "}}
         else (lambda x: f"**{x}**"))
 RECONS = [("default", "validate_count", "default"), ("dropout", "valdrop_count", "dropout fine-tune"),
           ("count", "valcnt_count", "drawn-count fine-tune")]
-SEL = [i for i, r in enumerate(RECONS) if ONLY in (None, r[0])]
+SEL = [i for i, r in enumerate(RECONS) if ONLY in (None, r[0])                 # recons with score files
+       and glob.glob(os.path.join(D, f"{r[1]}_s*_*.json"))]
 pct = lambda v: f"{100 * v:.1f}"                                               # noqa: E731
 U3 = lambda v: f"{v:.3f}"                                                      # noqa: E731
 

@@ -20,16 +20,11 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 sys.path.insert(0, REPO)
 import modules.constants as C  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout_names import layouts  # noqa: E402
 
 D = os.path.join(C.RUN_LOCATION, "diagnostics", "swgotrig")
-LAYOUTS = [("disk_r6000_n99", "Uniform disk 6 km"), ("grid_n99", "Grid"),
-           ("tri33_r10_n99", "Triplets r = 10 m on grid"), ("tri33_r25_n99", "Triplets r = 25 m on grid"),
-           ("opt_a2_grid", "Opt. Poisson 2 m², grid start"), ("opt_a2_center", "Opt. Poisson 2 m², centre start"),
-           ("opt_a20_grid", "Opt. Poisson 20 m², grid start"),
-           ("opt_a2_step_grid_5000", "Opt. step 2 m², grid start (5,000 steps)"),
-           ("opt_a2_step_grid_8000", "Opt. step 2 m², grid start (8,000 steps)"),
-           ("opt_a2_step_center", "Opt. step 2 m², centre start"), ("disk_r1500_n99", "Disk 1.5 km"),
-           ("tri33disk_R1000_r25_n99", "Triplets on 1 km disk")]
+LAYOUTS = layouts(D)                                 # validate_count_layouts.txt order
 COLS = [("notrig_1", "1°", lambda v: f"{100 * v:.1f}%"), ("notrig_2.5", "2.5°", lambda v: f"{100 * v:.1f}%"),
         ("notrig_5", "5°", lambda v: f"{100 * v:.1f}%"), ("u_two_tier", "Old U", lambda v: f"{v:.3f}"),
         ("u_swgo_drawn", "New U (drawn trigger)", lambda v: f"{v:.3f}"),

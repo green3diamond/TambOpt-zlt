@@ -39,7 +39,7 @@ source slurm/env.sh
 source slurm/notify.sh
 source slurm/gpu_gate.sh
 gpu_health_gate
-source slurm/run19_guard.sh
+source slurm/${RUN_GUARD:-run19}_guard.sh                  # RUN_GUARD=run20: the Malata run
 
 INIT=${1:-grid}; UTIL=${2:-current}; LAM=${3:-0.3}; LR=${4:-10}; EPOCHS=${5:-20000}; CALIB=${6:-kernel_5deg}
 RK=${RECON_DIR:-$(python -c 'import sys; sys.path.insert(0, "."); import modules.constants as C; print(C.RECON_FOLDER + "_deepsets")')}

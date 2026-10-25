@@ -4,7 +4,12 @@
                         circumradius r (side r*sqrt(3)), each triangle at a random rotation; K = 33 / 16 / 7 / 3, r = 10-500 m
     grid_n<N>, disk_r<R>_n<N>   the grid and centred disks at the same N = 99 / 48 / 21 / 9 (the main test set has 100 / 50 / 20 / 10)
 Detectors off the plane snap to its nearest face, as everywhere in the pipeline.
+--disks / --tri-r replace the radii (default: run 19's, sized for the 12 km plane; run 20, Malata: --disks 100 150 200
+300 400 --tri-r 10 25).
+
+    python plots/analysis/run19/triplets/make_triplets.py [--disks R ...] [--tri-r r ...]
 """
+import argparse
 import os
 import sys
 
@@ -21,9 +26,12 @@ os.makedirs(os.path.join(T, "layouts"), exist_ok=True)
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
                      layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
 centre = np.asarray(m.centroids_ENU)[:, :2].mean(0)
-DISKS = (100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 4500, 6000, 9000, 12000)
-KS = (33, 16, 7, 3)
-TRI_R = (10, 25, 50, 100, 200, 500)
+ap = argparse.ArgumentParser()
+ap.add_argument("--disks", type=int, nargs="+", default=[100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 4500, 6000,
+                                                          9000, 12000], help="centred disk radii [m]")
+ap.add_argument("--tri-r", type=int, nargs="+", default=[10, 25, 50, 100, 200, 500], help="triangle circumradii [m]")
+args = ap.parse_args()
+DISKS, KS, TRI_R = tuple(args.disks), (33, 16, 7, 3), tuple(args.tri_r)
 lines = []
 
 

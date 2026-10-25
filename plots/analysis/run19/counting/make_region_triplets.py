@@ -6,9 +6,12 @@ Writes <RUN_LOCATION>/diagnostics/counting/layouts/*.pt and region_layouts.txt:
                               rotations of make_triplets.py, rng(33)); R = 500 / 750 / 1000 m, r = 10 / 25 / 50 / 100 m
     disk_r<R>_n99             the 99-detector disks of the triplet test (triplets/layouts.txt), same R, for comparison
 Detectors off the plane snap to its nearest face, as everywhere in the pipeline.
+--radii / --tri-r replace R and r (run 20, Malata: --radii 150 --tri-r 25; each R needs disk_r<R>_n99 in
+triplets/layouts.txt, i.e. make_triplets.py --disks including it).
 
-    python plots/analysis/run19/counting/make_region_triplets.py
+    python plots/analysis/run19/counting/make_region_triplets.py [--radii R ...] [--tri-r r ...]
 """
+import argparse
 import os
 import sys
 
@@ -25,7 +28,11 @@ os.makedirs(os.path.join(D, "layouts"), exist_ok=True)
 m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
                      layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
 centre = np.asarray(m.centroids_ENU)[:, :2].mean(0)
-K, RS, TRI_R = 33, (500, 750, 1000), (10, 25, 50, 100)
+ap = argparse.ArgumentParser()
+ap.add_argument("--radii", type=int, nargs="+", default=[500, 750, 1000], help="cluster-disk radii R [m]")
+ap.add_argument("--tri-r", type=int, nargs="+", default=[10, 25, 50, 100], help="triangle circumradii r [m]")
+args = ap.parse_args()
+K, RS, TRI_R = 33, tuple(args.radii), tuple(args.tri_r)
 lines = []
 
 

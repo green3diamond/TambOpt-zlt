@@ -6,7 +6,7 @@ tensors on the mountain surface.
 """
 
 import torch
-from ..constants import N_DETECTORS
+from ..constants import N_DETECTORS, SITE
 import numpy as np
 from typing import Tuple
 
@@ -228,6 +228,19 @@ ACTIVE_STRATEGIES = (
     # Run 19 (2026-10-09): a wider centre blob for the 12 km plane (center_gauss400 is ~1.5 km across there).
     "center_gauss800",
 )
+
+# Per-site sizes (constants.SITE, env TAMBOPT_SITE): the table above is sized for the 12 km plane (run 19). Malata
+# (run 20) is a ~1.3 x 1.7 km slope: disks at half the ~900 m radius that would fill it, grid patches up to the slope,
+# and "center_gauss800" a narrow 200 m blob (center_gauss400 already spans the slope). Same names and order, so
+# strategy ids keep their meaning.
+_SITE_SIZES = {
+    "malata": {"disk_a":          dict(r_min=100.0, r_max=450.0),
+               "grid_patch_a":    dict(side_min=250.0, side_max=1700.0),
+               "grid_patch_b":    dict(side_min=250.0, side_max=1700.0),
+               "center_gauss800": dict(sigma=200.0)},
+}
+for _name, _kw in _SITE_SIZES.get(SITE, {}).items():
+    _ALL_STRATEGIES[_name] = (_ALL_STRATEGIES[_name][0], _kw)
 
 _STRATEGIES = [(name, *_ALL_STRATEGIES[name]) for name in ACTIVE_STRATEGIES]
 

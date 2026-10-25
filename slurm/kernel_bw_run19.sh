@@ -17,6 +17,6 @@
 source slurm/env.sh
 source slurm/gpu_gate.sh
 gpu_health_gate
-source slurm/run19_guard.sh
+source slurm/${RUN_GUARD:-run19}_guard.sh                  # RUN_GUARD=run20: the Malata run
 mkdir -p "$(python -c 'import sys; sys.path.insert(0, "."); import modules.constants as C; print(C.TRAINING_DATASET_FOLDER)')"
 python -u scripts/04_optimize_lbfgs_kernel.py --precompute-bw "$SLURM_ARRAY_TASK_ID"

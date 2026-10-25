@@ -28,10 +28,10 @@
 source slurm/env.sh
 source slurm/gpu_gate.sh
 gpu_health_gate
-source slurm/run19_guard.sh
+source slurm/${RUN_GUARD:-run19}_guard.sh                  # RUN_GUARD=run20: the Malata run
 
 MODE=${1:-gen}
-STATUS_FILE="pipeline_status_run19_${MODE}.json"
+STATUS_FILE="pipeline_status_${RUN_GUARD:-run19}_${MODE}.json"
 [ -s "$STATUS_FILE" ] || echo '{}' > "$STATUS_FILE"
 _status_done() {
     python -c "import json,sys; sys.exit(0 if json.load(open('$STATUS_FILE')).get('$1')=='done' else 1)"
