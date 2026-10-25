@@ -183,7 +183,7 @@ class KernelDualLabels:
         return out[0] if len(out) == 1 else torch.cat(out, dim=0)
 
 
-def load_events(n_events, device, mountain, select=None):
+def load_events(n_events, device, mountain, select=None, start=0):
     """Load and PLACE the first `n_events` events' clouds for EVERY species, and
     build their matching `primary_batch` — all from the SAME heldout corpus.
 
@@ -209,26 +209,28 @@ def load_events(n_events, device, mountain, select=None):
     (B,): only those of the first `n_events` events are kept (dropped like the
     non-finite ones below). None (default) keeps every event.
 
+    `start`: first held-out event (events [start, start + n_events)), to score the held-out set in chunks.
+
     Returns (species_clouds, B, n_pairs, primary_batch) with `species_clouds` a
     list in SPECIES_NAMES order."""
     n_species = len(SPECIES_NAMES)
     positions_all = torch.load(HELDOUT_POSITIONS_PATH)           # (M, 3) ENU E,N,U
     n_pairs = positions_all.shape[0] // n_species
-    B = min(n_events, n_pairs)
+    B = max(0, min(n_events, n_pairs - start))
 
     # Metadata comes from the first block; every block shares the primary.
-    first = showerdata.load(HELDOUT_SHOWER_CACHE_PATH, start=0, stop=B)
+    first = showerdata.load(HELDOUT_SHOWER_CACHE_PATH, start=start, stop=start + B)
     dirs = torch.as_tensor(first.directions, dtype=torch.float32)
     dirs = dirs / dirs.norm(dim=1, keepdim=True).clamp(min=1e-12)
     energies = torch.as_tensor(first.energies, dtype=torch.float32)
     pdg      = torch.as_tensor(first.pdg,      dtype=torch.long)
-    pos = positions_all[:B].float()
+    pos = positions_all[start:start + B].float()
 
     species_clouds, frames = [], None
     bad = torch.zeros(B, dtype=torch.bool)
-    event_ids = HELDOUT_EVENT_ID_OFFSET + torch.arange(B)
+    event_ids = HELDOUT_EVENT_ID_OFFSET + start + torch.arange(B)
     for s_i in range(n_species):
-        lo = s_i * n_pairs
+        lo = s_i * n_pairs + start
         sub = first if s_i == 0 else showerdata.load(
             HELDOUT_SHOWER_CACHE_PATH, start=lo, stop=lo + B)
         c = torch.as_tensor(sub.points, dtype=torch.float32)

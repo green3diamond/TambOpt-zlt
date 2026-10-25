@@ -45,9 +45,16 @@ ap.add_argument("--src", default=C.RECON_FOLDER + "_deepsets")
 ap.add_argument("--out", default=None)
 ap.add_argument("--counting", choices=("none", "poisson"), default="none")
 ap.add_argument("--eps-gamma", type=float, default=EPS_GAMMA, help="photon detection probability (counting only)")
+ap.add_argument("--dropout", type=float, default=0.0,
+                help="per row, a fraction f ~ U(0, dropout) of the detectors goes missing (E = T = 0), after background: "
+                     "trains the recon to reconstruct with missing inputs; 0 = off")
+ap.add_argument("--min-hit", type=int, default=0,
+                help="train and validate only on rows with >= this many read-out detectors with signal (E' > 0, after "
+                     "counting and background): the trigger; 0 = every row")
 args = ap.parse_args()
 if args.out is None:
-    args.out = C.RECON_FOLDER + ("_deepsets_count" if args.counting == "poisson" else "_deepsets_noise_kunits")
+    args.out = C.RECON_FOLDER + ("_deepsets_count" if args.counting == "poisson" else
+                                 "_deepsets_dropout" if args.dropout > 0 else "_deepsets_noise_kunits")
 
 dev = S3.DEVICE
 D = C.TRAINING_DATASET_FOLDER
@@ -129,7 +136,18 @@ def noisy(idx, xy_b, W, gen):
     E_b, T_b, r = species_inputs(idx, xy_b, gen, MODE)
     E = torch.expm1(E_b.clamp(min=0)); t = torch.expm1(T_b.clamp(min=0)); timed = T_b > 0
     En, Tn, _, _ = add_background(E, t, timed, window_centres(t, timed, T_FALLBACK), W, gen, r_axis=r)
+    if args.dropout > 0:                                                         # missing detectors
+        f = torch.rand(En.shape[0], 1, device=En.device, generator=gen) * args.dropout
+        alive = torch.rand(En.shape, device=En.device, generator=gen) >= f
+        En, Tn = En * alive, Tn * alive
     return torch.stack([xy_b[..., 0], xy_b[..., 1], torch.log1p(En), torch.log1p(Tn)], -1)
+
+
+def triggered(inp):
+    """(B,) 1.0 for rows with >= --min-hit detectors with signal (E' > 0), all 1.0 with --min-hit 0."""
+    if not args.min_hit:
+        return torch.ones(inp.shape[0], device=inp.device)
+    return ((inp[..., 2] > 0).sum(1) >= args.min_hit).float()
 
 
 @torch.no_grad()
@@ -142,8 +160,9 @@ def validate():
         wi = torch.arange(len(idx), device=dev) % len(WS)
         inp = noisy(idx, xy_b, WS.to(dev)[wi], gen)
         l = S3._per_axis_loss(recon(inp), tgt_b, reduction="none")[0].detach()
-        sums += torch.zeros(len(WS), device=dev).index_add_(0, wi, l).cpu()
-        cnt += torch.bincount(wi, minlength=len(WS)).cpu().float()
+        trig = triggered(inp)
+        sums += torch.zeros(len(WS), device=dev).index_add_(0, wi, l * trig).cpu()
+        cnt += torch.zeros(len(WS), device=dev).index_add_(0, wi, trig).cpu()
     return (sums / cnt).tolist()
 
 
@@ -167,6 +186,11 @@ for ep in range(start, args.epochs):
         W = WS.to(dev)[torch.randint(len(WS), (len(idx),), device=dev, generator=gen)]
         with torch.no_grad():
             inp = noisy(idx, xy_b, W, gen)
+        if args.min_hit:
+            keep = triggered(inp).bool()
+            if not keep.any():
+                continue
+            inp, tgt_b, idx = inp[keep], tgt_b[keep], idx[keep.cpu()]
         loss = S3._per_axis_loss(recon(inp), tgt_b)[0]
         opt.zero_grad(set_to_none=True); loss.backward()
         torch.nn.utils.clip_grad_norm_(recon.parameters(), max_norm=S3.GRAD_CLIP); opt.step()
@@ -190,7 +214,8 @@ for ep in range(start, args.epochs):
                     epoch=ep + 1), resume + ".tmp")
     os.replace(resume + ".tmp", resume)
     json.dump(dict(log=log, best_val_mean=best, best_epoch=best_ep, windows_ns=args.windows, src=args.src,
-                   counting=args.counting, eps_gamma=args.eps_gamma if args.counting == "poisson" else None),
+                   counting=args.counting, eps_gamma=args.eps_gamma if args.counting == "poisson" else None,
+                   min_hit=args.min_hit, dropout=args.dropout),
               open(os.path.join(args.out, "finetune_log.json"), "w"), indent=1)
     if ep + 1 - best_ep >= args.patience:
         print(f"[stop] {args.patience} epochs without improvement; best mean val {best:.5f} at epoch {best_ep}")
