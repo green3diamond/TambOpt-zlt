@@ -5,6 +5,7 @@
 #   {validation: 2 recons x 5 count seeds, ghosts} -> tables + one notification mail
 #
 #   bash slurm/run20_submit.sh <filter_job>
+#   RECON_JOB=<id> bash slurm/run20_submit.sh -     everything after an already submitted recon job
 set -e
 cd /n/home05/zdimitrov/tambo/TambOpt
 FILT=$1
@@ -16,16 +17,21 @@ GPU="-p gpu_requeue --gres=gpu:1 --constraint=a100|h100|h200 --exclude=holygpu8a
 PRE="source slurm/env.sh; source slurm/notify.sh; source slurm/gpu_gate.sh; gpu_health_gate; source slurm/run20_guard.sh; export MPLCONFIGDIR=/tmp/mplcache_\$USER"
 sub() { sbatch --parsable "$@"; }
 
-BUILD=$(sub -J r20_build --mem=320g -d afterok:$FILT slurm/run19_pipeline.sh build)
-BW=$(sub -J r20_kernel_bw -d afterok:$BUILD slurm/kernel_bw_run19.sh)
-RECON=$(sub -J r20_recon -d afterok:$BUILD slurm/run19_pipeline.sh recon)
+# RECON_JOB=<id>: the build and kernel widths are done, the recon is that job; submit only what follows it
+if [ -n "$RECON_JOB" ]; then
+    RECON=$RECON_JOB; BUILD=done; BW=""
+else
+    BUILD=$(sub -J r20_build --mem=320g -d afterok:$FILT slurm/run19_pipeline.sh build)
+    BW=$(sub -J r20_kernel_bw -d afterok:$BUILD slurm/kernel_bw_run19.sh)
+    RECON=$(sub -J r20_recon -d afterok:$BUILD slurm/run19_pipeline.sh recon)
+fi
 FT=$(sub $GPU -J r20_ft_count -c 8 --mem=200g -t 08:00:00 -d afterok:$RECON -o $R/slurm_logs/slurm-%j-%x.out \
      --chdir=$PWD --wrap "$PRE; python -u scripts/03c_finetune_recon_noise.py --counting poisson --min-hit 3 \
      --windows 0 1000 10000 --epochs 28 --patience 5; rc=\$?; notify_end \$rc; exit \$rc")
 OPT=""
 for spec in "grid 2 poisson" "center 2 poisson" "grid 20 poisson" "grid 2 step" "center 2 step"; do
     set -- $spec
-    OPT="$OPT:$(BATCH=2048 CHUNK=64 TRIG_AREA=$2 TRIG_MODE=$3 sub -J r20_opt_${1}_a$2_$3 -d afterok:$RECON:$BW \
+    OPT="$OPT:$(BATCH=2048 CHUNK=64 TRIG_AREA=$2 TRIG_MODE=$3 sub -J r20_opt_${1}_a$2_$3 -d afterok:$RECON${BW:+:$BW} \
                 slurm/kernel_opt_run19.sh $1 swgotrig 0.3 10 5000)"
 done
 S4=$R/test_v6_run_04_optimize_lbfgs_kernel_swgotrig_l0p3_k3

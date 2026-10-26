@@ -668,15 +668,14 @@ def main():
 
     recon.eval()   # dropout off; grad stays True
 
-    # Pre-stack full training set as (N_train, n_det, 4) on GPU.
-    xy_train  = xy[train_idx].to(DEVICE)
-    E_train   = E_pred[train_idx].to(DEVICE)
-    T_train   = T_pred[train_idx].to(DEVICE)
-    tgt_train = target[train_idx].to(DEVICE)
+    # Pre-stack full training set as (N_train, n_det, 4) in pinned CPU memory; the closure moves it to the GPU
+    # LBFGS_CHUNK rows at a time (run 20: the 13.8M-row set is 20 GB, too big for a 40 GB GPU next to its parts).
+    xy_train  = xy[train_idx]
     inp_all   = torch.stack([xy_train[..., 0], xy_train[..., 1],
-                             E_train, T_train], dim=-1)    # (N_train, n_det, 4)
-    del xy_train, E_train, T_train
-    print(f"[lbfgs] full train set on {DEVICE}: {tgt_train.shape[0]} samples")
+                             E_pred[train_idx], T_pred[train_idx]], dim=-1).pin_memory()   # (N_train, n_det, 4)
+    tgt_train = target[train_idx].to(DEVICE)
+    del xy_train
+    print(f"[lbfgs] full train set in pinned CPU memory, streamed to {DEVICE}: {tgt_train.shape[0]} samples")
 
     lbfgs_optimizer = torch.optim.LBFGS(
         recon.parameters(),
@@ -720,7 +719,7 @@ def main():
         sums = [0.0] * 5
         for lo in range(0, N_train, LBFGS_CHUNK):
             hi = min(lo + LBFGS_CHUNK, N_train)
-            losses = _per_axis_loss(recon(inp_all[lo:hi]),
+            losses = _per_axis_loss(recon(inp_all[lo:hi].to(DEVICE, non_blocking=True)),
                                     tgt_train[lo:hi], reduction="sum")
             (losses[0] / N_train).backward()
             for i, v in enumerate(losses):
