@@ -5,10 +5,10 @@
 #   -> after them AND the main chain's tables: append opt_cab* to validate_count_layouts.txt, rescore every layout
 #   (2 recons x 5 count seeds, same files as run20_submit.sh, overwritten), ghosts, tables + one notification mail
 #
-#   bash slurm/run20_cable_submit.sh <recon_job> <widths_job> <main_tables_job>
+#   bash slurm/run20_cable_submit.sh <recon_job> <widths_job or - if done> <main_tables_job>
 set -e
 cd /n/home05/zdimitrov/tambo/TambOpt
-RECON=$1; BW=$2; MAINTAB=$3
+RECON=$1; BW=${2#-}; MAINTAB=$3
 R=/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6/20_malata_showerframe
 O=$R/diagnostics/swgotrig; L=$O/validate_count_layouts.txt
 export RUN_GUARD=run20
@@ -21,7 +21,7 @@ S4=$R/test_v6_run_04_optimize_lbfgs_kernel_swgotrig_l0p3_k3_a2_lr10
 for spec in "grid 0.05" "grid 0.1" "grid 0.2" "center 0.1"; do
     set -- $spec
     OPT="$OPT:$(CABLE=$2 BATCH=2048 CHUNK=64 TRIG_AREA=2 TRIG_MODE=poisson sub -J r20_cab_${1}_${2} \
-                -d afterok:$RECON:$BW slurm/kernel_opt_run19.sh $1 swgotrig 0.3 10 5000)"
+                -d afterok:$RECON${BW:+:$BW} slurm/kernel_opt_run19.sh $1 swgotrig 0.3 10 5000)"
     LINES="$LINES opt_cab${2/./p}_$1=${S4}_$1_b2048_cab${2/./p}/layout_best.pt"
 done
 LAY=$(sub -p serial_requeue -c 1 --mem=2g -t 00:10:00 -J r20_cab_layouts -d afterok$OPT,afterany:$MAINTAB \
