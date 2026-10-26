@@ -5,6 +5,7 @@
 #SBATCH -c 8
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=a100
+#SBATCH --exclude=holygpu8a19102
 #SBATCH --requeue
 #SBATCH --open-mode=append
 #SBATCH --mail-type=FAIL
