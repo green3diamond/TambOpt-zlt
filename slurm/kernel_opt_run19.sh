@@ -77,6 +77,12 @@ if [ -n "$BG_WINDOW" ] && [ "$BG_WINDOW" != 0 ]; then
 fi
 [ "${GATE:-none}" != none ] && SUFFIX="${SUFFIX}_${GATE}"
 [ "${RESPONSE:-kernel}" = surrogate ] && SUFFIX="${SUFFIX}_sur"
+# CABLE=<lambda>: subtract the cable cost, lambda x 30 x (3-D MST length / grid_n99's) (CABLE_DMIN spacing hinge, default
+# 5 m); suffix _cab<lambda>
+if [ -n "$CABLE" ] && [ "$CABLE" != 0 ]; then
+    export TAMBOPT_CABLE_LAMBDA="$CABLE" TAMBOPT_CABLE_DMIN="${CABLE_DMIN:-5}"
+    SUFFIX="${SUFFIX}_cab${CABLE/./p}"
+fi
 
 python -u scripts/04_optimize_lbfgs_kernel.py --init "$INIT" \
     --lr "$LR" --epochs "$EPOCHS" --log-every 100 \

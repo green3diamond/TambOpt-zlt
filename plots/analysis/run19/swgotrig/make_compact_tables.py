@@ -4,6 +4,7 @@
      New U (drawn trigger) over all showers; shower and ghost trigger rate
   2. robustness to background: 5 deg of triggered at 1 / 10 us as a share of the no-background value
   3. triggered ghosts (background only): median zenith and log10 E per recon, mean over layouts
+  4. cable: the 3-D minimum-spanning-tree length of each layout (modules/optimize/cable.py), and as a share of the grid
 Reads the score JSONs of make_triggered_tables.py and make_ghost_tables.py; writes
 validation_compact.md (the long tables stay where they are). --only <recon>: that recon alone, one value per cell,
 bold = best layout in the column; writes validation_compact_<recon>.md. --notion: the best values in a red box
@@ -44,6 +45,25 @@ SEL = [i for i, r in enumerate(RECONS) if ONLY in (None, r[0])                 #
        and glob.glob(os.path.join(D, f"{r[1]}_s*_*.json"))]
 pct = lambda v: f"{100 * v:.1f}"                                               # noqa: E731
 U3 = lambda v: f"{v:.3f}"                                                      # noqa: E731
+
+
+def cable_km(d):
+    """{layout: 3-D MST length [km]} for the layout files of <d>/validate_count_layouts.txt (missing file: absent)."""
+    import torch
+    from modules.geometry import load_tr_mountain, SurfaceUpMap
+    from modules.optimize.cable import cable_length
+    m = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
+                         layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
+    surface = SurfaceUpMap.from_mountain(m, grid_h=256, grid_w=256)
+    out = {}
+    for line in open(os.path.join(d, "validate_count_layouts.txt")):
+        if "=" in line:
+            k, p = (s.strip() for s in line.split("=", 1))
+            if os.path.exists(p):
+                lay = torch.load(p, map_location="cpu")
+                with torch.no_grad():
+                    out[k] = float(cable_length(lay["x"].float(), lay["y"].float(), surface)[0]) / 1e3
+    return out
 
 
 def chunks(files):
@@ -157,6 +177,15 @@ for title, rd, w in (("10 µs, all read out", "none", "10000"), ("10 µs, kNN ga
                                        for p in per)
     L.append(f"| {title} | {f('zen_p10_50_90', 1)} | {f('log10E_med')} | "
              + " / ".join(f"{100 * np.nanmean([x['in_e_range'] for x in p]):.0f}%" for p in per) + " |")
+L += ["", "### 4. Cable — 3-D minimum-spanning-tree length over the detectors", "",
+      "Installation cost proxy: the shortest cable network linking every detector, along the surface "
+      "(modules/optimize/cable.py). Relative to the grid.", "", "| Layout | Cable [km] | vs grid |", "|---|---|---|"]
+cab = cable_km(D)
+ref = next((v for k, v in cab.items() if k.startswith("grid_n")), float("nan"))
+for k, name in LAYOUTS:
+    c = cab.get(k, float("nan"))
+    L.append(f"| {name} | " + ("–" if np.isnan(c) else f"{c:.2f}") + " | "
+             + ("–" if np.isnan(c / ref) else f"{100 * c / ref:.0f}%") + " |")
 txt = "\n".join(L) + "\n"
 OUT = os.path.join(D, ("validation_compact" + (f"_{ONLY}" if ONLY else "") + ("_notion" if A.notion else "") + ".md"))
 open(OUT, "w").write(txt)

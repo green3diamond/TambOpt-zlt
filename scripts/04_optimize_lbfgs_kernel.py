@@ -45,7 +45,8 @@ from modules.geometry import project_to_mountain_ne, sample_initial_layout_ne
 from modules.optimize import utility_of_xy
 from modules.optimize.background import add_background, window_centres, knn_pairs, knn_gate, axis_distance
 from modules.optimize.counting import expected_counts
-from modules.optimize.objective import UTILITY_MODE
+from modules.optimize.objective import UTILITY_MODE, TWO_TIER_SCALE
+from modules.optimize.cable import cable_length
 from modules.surrogates import load_dual_surrogate
 from modules.surrogates import build_recon_from_ckpt
 
@@ -58,6 +59,11 @@ _plt_spec.loader.exec_module(_opt_plotting)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SEED = 4200
 NAN_MAX_SKIPS = 30     # consecutive non-finite steps (each a fresh batch, same layout) before the run gives up
+# Cable cost (TAMBOPT_CABLE_LAMBDA > 0): the objective becomes U - 30 (lambda L / L_ref + spacing / d_min^2), L the 3-D
+# minimum-spanning-tree length over the detectors, L_ref that of the grid baseline grid_n99 (modules/optimize/cable.py).
+# 0 = off: nothing below changes.
+CABLE_LAMBDA = float(os.environ.get("TAMBOPT_CABLE_LAMBDA", "0"))
+CABLE_DMIN = float(os.environ.get("TAMBOPT_CABLE_DMIN", "5"))
 
 
 # ── Main pool: the Stage-1 events ─────────────────────────────────────────────
@@ -284,6 +290,36 @@ def lr_at(args, epoch):
     return args.lr * (args.lr_final / args.lr) ** f
 
 
+class CableCost:
+    """The cable penalty in units of U, 30 (CABLE_LAMBDA L / L_ref + spacing / CABLE_DMIN^2); L_ref = the MST length of
+    grid_n99 (the grid of make_triplets.py: seed 0, 99 detectors)."""
+
+    def __init__(self, mountain, surface):
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(0)
+            e, n = init_layout(mountain, "grid", DEVICE, 99)
+        self.surface = surface
+        with torch.no_grad():
+            self.l_ref = float(cable_length(e, n, surface, CABLE_DMIN)[0])
+        print(f"[cable] lambda={CABLE_LAMBDA:g}  d_min={CABLE_DMIN:g} m  L_ref (grid_n99) = {self.l_ref / 1e3:.2f} km")
+
+    def __call__(self, x, y):
+        """(penalty tensor, L [m])."""
+        L, h = cable_length(x, y, self.surface, CABLE_DMIN)
+        return TWO_TIER_SCALE * (CABLE_LAMBDA * L / self.l_ref + h / CABLE_DMIN ** 2), float(L)
+
+
+def add_cable(cable, xy_module, tot, backward):
+    """Subtract the cable penalty from tot["U"] (backward: add its gradient); tot keeps U_util, cable_km, penalty."""
+    with (torch.enable_grad() if backward else torch.no_grad()):
+        pen, L = cable(*xy_module())
+        if backward:
+            pen.backward()
+    tot.update(U_util=tot["U"], cable_km=L / 1e3, penalty=float(pen))
+    tot["U"] -= float(pen)
+    return tot
+
+
 def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
     pool = MainPool(mountain)
     load = pool.load_prim if resp is not None and resp["surrogate"] is not None else pool.load
@@ -305,10 +341,13 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
         g.manual_seed(int(seed))
         return g
 
+    cable = CableCost(mountain, surface) if CABLE_LAMBDA > 0 else None
+
     def score():
         # the same background draws every time, so scores are comparable across steps
-        return pool_utility(xy_module, score_set, surface, recon, args.score_chunk,
-                            backward=False, resp=resp, gen=gen_for(args.seed * 1000003 + 999_999_937))["U"]
+        tot = pool_utility(xy_module, score_set, surface, recon, args.score_chunk,
+                           backward=False, resp=resp, gen=gen_for(args.seed * 1000003 + 999_999_937))
+        return (add_cable(cable, xy_module, tot, False) if cable else tot)["U"]
 
     log, score_log = [], []
     start = 0
@@ -343,6 +382,8 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
         optimizer.zero_grad(set_to_none=True)
         tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True,
                            resp=resp, gen=gen_for(args.seed * 1000003 + epoch))   # per-step draws, resume-safe
+        if cable:
+            add_cable(cable, xy_module, tot, True)
         # NaN guard: a non-finite utility or gradient skips the step (no Adam update, so neither the positions nor
         # Adam's moments are poisoned); the first offending layout is saved; NAN_MAX_SKIPS in a row stop the run.
         n_bad = sum(int((~torch.isfinite(p.grad)).sum()) for p in xy_module.parameters() if p.grad is not None)
@@ -393,7 +434,8 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
                   f"(u_theta={tot['u_theta']:.3f} u_phi={tot['u_phi']:.3f} "
                   f"u_e={tot['u_e']:.3f})  r={tot['r_mean']:.3f}  read={tot['read']:.3f} ghosts={tot['ghosts']:.3f}  "
                   f"lr={lr_at(args, epoch):.3g}  frozen={tot.get('frozen', 0)}  "
-                  f"{(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
+                  + (f"U_util={tot['U_util']:+.3f} cable={tot['cable_km']:.2f}km  " if cable else "")
+                  + f"{(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
         if (epoch + 1) % args.ckpt_every == 0:
             os.makedirs(out_dir, exist_ok=True)
             torch.save(dict(xy=xy_module.state_dict(), optimizer=optimizer.state_dict(),
@@ -406,7 +448,7 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
     lbfgs_log = []
     if args.lbfgs_chunks > 0:
         best_u, best_x, best_y, lbfgs_log = run_lbfgs(args, mountain, surface, recon, out_dir, resp, load, n_sweep,
-                                                      xy_module, score, gen_for, best_u, best_x, best_y)
+                                                      xy_module, score, gen_for, best_u, best_x, best_y, cable)
 
     print(f"[done] best scoring-set U={best_u:+.3f}")
     os.makedirs(out_dir, exist_ok=True)
@@ -423,7 +465,7 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
 
 
 def run_lbfgs(args, mountain, surface, recon, out_dir, resp, load, n_sweep, xy_module, score, gen_for,
-              best_u, best_x, best_y):
+              best_u, best_x, best_y, cable=None):
     """Chunked L-BFGS polish after Adam, as 04_optimize_lbfgs_ensemble.py (e44cdd0): starting from the Adam best, one
     torch.optim.LBFGS step (strong-Wolfe line search, up to --lbfgs-max-iter iterations) per FIXED chunk of
     --lbfgs-chunk-events pool showers with ONE frozen background draw (the generator is re-seeded at every closure, so
@@ -459,6 +501,8 @@ def run_lbfgs(args, mountain, surface, recon, out_dir, resp, load, n_sweep, xy_m
         def closure():
             opt.zero_grad(set_to_none=False)
             tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True, resp=resp, gen=gen_for(seed_c))
+            if cable:
+                add_cable(cable, xy_module, tot, True)
             calls["n"] += 1; calls["U"] = tot["U"]
             for prm in xy_module.parameters():
                 if prm.grad is not None:

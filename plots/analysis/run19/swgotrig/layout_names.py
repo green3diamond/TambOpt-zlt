@@ -18,6 +18,10 @@ def _metres(v):
 
 
 def label(key, short=False):
+    m = re.fullmatch(r"opt_cab(\d+p?\d*)_(grid|center)", key)            # Stage 4 with the cable cost, CABLE=<lambda>
+    if m:
+        lam, init = m.group(1).replace("p", "."), "grid" if m.group(2) == "grid" else "centre"
+        return f"Opt. + cable λ {lam}, {init}" if short else f"Opt. Poisson 2 m² + cable λ = {lam}, {init} start"
     if key in OPT:
         return OPT[key].replace(" 2 m²", "").replace(", grid start", ", grid").replace(", centre start", ", centre") \
             .replace(" (5,000 steps)", " (5k)").replace(" (8,000 steps)", " (8k)") if short else OPT[key]
