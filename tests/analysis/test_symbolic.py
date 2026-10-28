@@ -12,8 +12,8 @@ import numpy as np
 import torch
 from scipy import special
 
-from symbolic import (atmosphere as atm, copula as cp, fit_profiles, generator, longitudinal, planes, sampler,
-                      score, sources, unwrap as uw)
+from symbolic import (annuli, atmosphere as atm, copula as cp, evaluate as ev, fit_profiles, generator, lateral,
+                      longitudinal, planes, sampler, score, sources, unwrap as uw)
 
 DIST = atm.PLANE_SPACING * np.arange(1, 25)
 
@@ -200,6 +200,79 @@ def test_johnson_su_margin_recovers_a_skewed_heavy_tailed_law():
     z = jsu.score(D[te], x[te])
     assert abs(z.mean()) < 0.05 and abs(z.std() - 1) < 0.05
     assert np.allclose(jsu.ppf(D[te], special.ndtr(z)), x[te], atol=1e-6, rtol=1e-6)
+
+
+def test_mlp_margin_follows_a_curved_law_the_linear_one_misses():
+    rng = np.random.default_rng(6)
+    D, a = toy_conditions(12000, rng)
+    x = np.sin(2.5 * a) + 0.2 * rng.normal(size=len(a))
+    tr, te = slice(0, 9000), slice(9000, None)
+    lin, mlp = cp.Margin("jsu").fit(D[tr], x[tr]), cp.MLPMargin(seed=0).fit(D[tr], x[tr])
+    truth = (-0.5 * np.log(2 * np.pi * 0.04) - (x[te] - np.sin(2.5 * a[te])) ** 2 / 0.08).mean()
+    ll_mlp, ll_lin = mlp.loglik(D[te], x[te]).mean(), lin.loglik(D[te], x[te]).mean()
+    z = mlp.score(D[te], x[te])
+    print(f"      held out, nats below the true law: MLP {truth - ll_mlp:.3f} ({mlp.steps} steps), linear {truth - ll_lin:.3f}")
+    assert truth - ll_mlp < 0.05 and abs(z.mean()) < 0.1 and abs(z.std() - 1) < 0.05, (truth - ll_mlp, z.mean(), z.std())
+    assert np.allclose(mlp.ppf(D[te], special.ndtr(z)), x[te], atol=1e-6, rtol=1e-6)
+
+
+def test_evaluation_metrics_separate_a_wrong_model_from_the_truth():
+    E = np.array([[0.0, 0.5, 3.0, 9.0, 2.0, 0.0], [5.0, 4.0, 0.0, 0.0, 0.0, 0.0], [0.0] * 6])
+    sm = ev.summaries(E)
+    assert sm["onset"].tolist() == [2, 0, 6] and sm["end"].tolist() == [4, 1, -1] and sm["peak"].tolist()[:2] == [3, 0]
+    rng = np.random.default_rng(8)
+    n = 1500
+    cond = np.column_stack([rng.uniform(5, 6, n), rng.uniform(-0.2, 0.5, n)])
+    law = lambda: 10 ** (2 + cond[:, :1] + 0.3 * rng.normal(size=(n, 24)))
+    Ec = {s: law() for s in sources.SPECIES_NAMES}
+    same = ev.all_metrics({s: law()[:, None] for s in sources.SPECIES_NAMES}, Ec, cond, cond)
+    off = ev.all_metrics({s: 3 * law()[:, None] for s in sources.SPECIES_NAMES}, Ec, cond, cond)
+    j0, j1 = same["joint"], off["joint"]
+    print(f"      AUC same {j0['auc']:.3f} shifted {j1['auc']:.3f}; mean diff {j0['mean_abs_diff']:.3f} / {j1['mean_abs_diff']:.3f}")
+    assert abs(j0["auc"] - 0.5) < 0.06 and j1["auc"] > 0.9 and j1["mean_abs_diff"] > 5 * j0["mean_abs_diff"]
+    assert {"joint.mean_abs_diff", "joint.auc", "electron.w1_total"} <= set(ev.worse(off, same))
+
+
+def test_torch_profile_shape_matches_numpy_and_has_finite_gradients():
+    rng = np.random.default_rng(12)
+    X = np.tile(atm.plane_depths([80.0], 24), (200, 1))
+    xmax, L = rng.uniform(300, 900, (200, 1)), rng.uniform(100, 400, (200, 1))
+    R = np.r_[rng.uniform(-0.6, 0.6, 190), np.zeros(5), np.full(5, 1e-6)][:, None]
+    ref = longitudinal.shape(X, xmax, L, R)
+    Rt = torch.tensor(R, requires_grad=True)
+    got = longitudinal.shape_torch(torch.tensor(X), torch.tensor(xmax), torch.tensor(L), Rt)
+    assert np.allclose(np.nan_to_num(got.detach().numpy(), neginf=-1e9), np.nan_to_num(ref, neginf=-1e9), atol=1e-9)
+    ok = torch.isfinite(got)
+    torch.exp(torch.where(ok, got, torch.zeros_like(got))).where(ok, torch.zeros_like(got)).sum().backward()
+    assert torch.all(torch.isfinite(Rt.grad)) and np.any(~np.isfinite(ref))
+
+
+def test_across_track_cells_keep_plane_energy_spread_cells_and_radius_mode_is_unchanged():
+    nb, nf = annuli.N_BIN, 8
+    law = {"N": np.zeros((nf, nb)), "cell": np.zeros((nf, nb)), "cell_mode": np.zeros(nb), "count_sd": np.array(0.0),
+           "count": np.r_[np.log(400.0), np.zeros(nf - 1)], "delay": np.zeros(nb)}
+    law["N"][0, 8:] = -50.0                       # bins beyond 200 m empty
+    x, d, k, e_k = np.r_[1.0, np.zeros(nf - 1)], np.array([0.6, -0.7, 0.05]), 5, 1e4
+    d = d / np.linalg.norm(d)
+    h, perp, c = lateral.frame(d)
+    axis = (k + 1) * atm.PLANE_SPACING * d[:2]
+    flat = generator.plane_cells(k, d, e_k, x, law, np.random.default_rng(0), 0.0, "across")
+    spread = generator.plane_cells(k, d, e_k, x, {**law, "spread": np.r_[[np.full(nb, 0.7)], np.zeros((nf - 1, nb))]},
+                                   np.random.default_rng(0), 0.0, "across")
+    t = lateral.to_plane(spread[:, :2] - axis, h, perp, c)
+    assert np.isclose(spread[:, 3].sum(), e_k) and np.isclose(flat[:, 3].sum(), e_k)
+    assert np.abs(t[:, 0]).max() < 200 and np.abs(t[:, 1]).max() < 200 + 1e-6
+    assert len(np.unique(flat[:, 3].round(9))) <= 8 and 0.5 < np.log(spread[:, 3]).std() < 0.9
+    old = law["N"].copy()
+    rng_a, rng_b = np.random.default_rng(3), np.random.default_rng(3)
+    a = generator.plane_cells(k, d, e_k, x, law, rng_a, 0.0)
+    n = max(1, int(round(np.exp(x @ law["count"] + 0.0 * rng_b.normal()))))
+    counts = rng_b.multinomial(n, generator.softmax(x @ old))
+    j = np.repeat(np.arange(nb), counts)
+    r = np.sqrt(rng_b.uniform(annuli.EDGES[j] ** 2, annuli.EDGES[j + 1] ** 2))
+    phi = rng_b.uniform(0, 2 * np.pi, len(r))
+    ref = axis + (r * np.cos(phi))[:, None] * perp + (r * np.sin(phi) * c)[:, None] * h
+    assert np.allclose(a[:, :2], ref)
 
 
 def test_gaussian_copula_and_species_blocks():

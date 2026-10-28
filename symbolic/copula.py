@@ -8,6 +8,7 @@ torch.set_default_dtype(torch.float64)
 LOG_2PI = np.log(2 * np.pi)
 U_EPS = 1e-12
 LOG_DELTA_BOUNDS = (-3.0, 4.0)        # Johnson SU tail parameter; large delta is the normal limit
+LOG_SCALE_BOUNDS = (-7.0, 3.0)        # standardized scale; keeps small-sample fits off the zero-scale singularity
 
 
 class Design:
@@ -36,8 +37,8 @@ class Margin:
     def _params(self, D, W):
         P = D @ W
         if self.family == "normal":
-            return P[:, 0], P[:, 1]
-        return P[:, 0], P[:, 1], P[:, 2], P[:, 3].clamp(*LOG_DELTA_BOUNDS)
+            return P[:, 0], P[:, 1].clamp(*LOG_SCALE_BOUNDS)
+        return P[:, 0], P[:, 1].clamp(*LOG_SCALE_BOUNDS), P[:, 2], P[:, 3].clamp(*LOG_DELTA_BOUNDS)
 
     def _g(self, x, p):
         """Standard-normal variate of standardized x, and log |dg/dx|."""
@@ -102,6 +103,55 @@ class Margin:
         """Normal score of x, computed without passing through the CDF (exact in the tails)."""
         D, x = _t(D), _t(x)
         return self._g((x - self.loc) / self.scale, self._params(D, self.W))[0].numpy()
+
+
+class MLPMargin(Margin):
+    """Johnson SU margin whose four parameters are a small MLP of the standardized (log10 E, cos zenith) instead of
+    linear laws: the flexible-function control. Maximum likelihood with Adam, early stopping on a held-out tenth."""
+
+    def __init__(self, seed=0, hidden=32, lr=1e-2, max_steps=20000, check=100, patience=20, val_frac=0.1):
+        super().__init__("jsu")
+        self.seed, self.hidden, self.lr, self.max_steps = seed, hidden, lr, max_steps
+        self.check, self.patience, self.val_frac = check, patience, val_frac
+
+    def _params(self, D, net):
+        P = net(D[:, 1:3])
+        return P[:, 0], P[:, 1], P[:, 2], P[:, 3].clamp(*LOG_DELTA_BOUNDS)
+
+    def fit(self, D, x):
+        D, x = _t(D), _t(x)
+        self.loc, self.scale = float(x.mean()), float(x.std())
+        xs = (x - self.loc) / self.scale
+        g = torch.Generator().manual_seed(self.seed)
+        perm = torch.randperm(len(xs), generator=g)
+        n_val = max(1, int(self.val_frac * len(xs)))
+        va, tr = perm[:n_val], perm[n_val:]
+        torch.manual_seed(self.seed)
+        net = torch.nn.Sequential(torch.nn.Linear(2, self.hidden), torch.nn.Tanh(),
+                                  torch.nn.Linear(self.hidden, self.hidden), torch.nn.Tanh(),
+                                  torch.nn.Linear(self.hidden, 4))
+        with torch.no_grad():                                   # start at the constant law of the linear fit
+            ls = torch.log(torch.std(xs))
+            net[-1].weight.mul_(0.01)
+            net[-1].bias.copy_(torch.stack([xs.mean(), ls + np.log(1.76), torch.tensor(0.0), torch.tensor(np.log(2.0))]))
+        opt = torch.optim.Adam(net.parameters(), lr=self.lr)
+        nll = lambda idx: -self._logpdf(xs[idx], self._params(D[idx], net)).mean()
+        best, best_state, bad = np.inf, None, 0
+        for step in range(self.max_steps):
+            opt.zero_grad()
+            nll(tr).backward()
+            opt.step()
+            if step % self.check == 0:
+                with torch.no_grad():
+                    v = float(nll(va))
+                if v < best - 1e-5:
+                    best, best_state, bad = v, {k: t.clone() for k, t in net.state_dict().items()}, 0
+                elif (bad := bad + 1) >= self.patience:
+                    break
+        net.load_state_dict(best_state)
+        net.requires_grad_(False)
+        self.W, self.steps, self.val_nll = net, step + 1, best
+        return self
 
 
 def normal_scores(margins, D, X):

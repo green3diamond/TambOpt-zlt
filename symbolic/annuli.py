@@ -1,7 +1,10 @@
-"""Per shower, species and plane of repaired CORSIKA: energy, cell count and median arrival delay in rings of radius
-about the shower axis, on the training slice. The generator's in-plane laws are fitted to these (table()).
+"""Per shower, species and plane of repaired CORSIKA: energy, cell count, the first two moments of ln(cell energy)
+and the median arrival delay in bins of distance from the shower axis, on the training slice. The distance is the
+in-plane radius (--coord radius, folder annuli) or the across-track offset |t1| (--coord across, folder across),
+the one transverse coordinate the ground cells record exactly. The generator's in-plane laws are fitted to these
+(table()).
 
-Stages: hist (CPU array, one part of the slice per task), merge -> OUT/annuli/annuli.npz.
+Stages: hist (CPU array, one part of the slice per task), merge -> OUT/<folder>/annuli.npz.
 """
 import argparse
 import os
@@ -19,7 +22,7 @@ from symbolic import logs
 from modules.constants import N_PLANES, SPECIES_NAMES
 from symbolic import atmosphere, fit_profiles, lateral, sources, unwrap
 
-FOLDER = "annuli"
+FOLDERS = {"radius": "annuli", "across": "across"}
 EDGES = np.array([0.0, 10, 20, 30, 50, 70, 100, 140, 200, 280, 400, 560, 800, 1100, 1600, 2300, 3200, 4500, 6400,
                   9000, np.inf])     # m, in-plane radius about the axis
 N_BIN = len(EDGES) - 1
@@ -43,29 +46,37 @@ def read_showers(s, rows):
     return meta, pts
 
 
-def plane_profiles(pts, k, d, h, perp, c):
-    """Energy, cell count and median delay per ring of plane k."""
+def distance(pts, k, d, h, perp, c, coord):
+    """Distance of each cell of plane k from the axis: in-plane radius or across-track offset |t1|."""
+    t = lateral.to_plane(pts[:, :2] - (k + 1) * atmosphere.PLANE_SPACING * d[:2], h, perp, c)
+    return np.hypot(*t.T) if coord == "radius" else np.abs(t[:, 0])
+
+
+def plane_profiles(pts, k, d, h, perp, c, coord):
+    """Energy, cell count, sum and sum of squares of ln(cell energy) and median delay per bin of plane k."""
     p = pts[np.rint(pts[:, 2]).astype(int) == k]
-    r = np.hypot(*lateral.to_plane(p[:, :2] - (k + 1) * atmosphere.PLANE_SPACING * d[:2], h, perp, c).T)
-    j = np.digitize(r, EDGES) - 1
+    j = np.digitize(distance(p, k, d, h, perp, c, coord), EDGES) - 1
     e_ann = np.bincount(j, p[:, 3], N_BIN)
     n_ann = np.bincount(j, minlength=N_BIN).astype(float)
+    ln_e = np.log(p[:, 3])
+    s1, s2 = np.bincount(j, ln_e, N_BIN), np.bincount(j, ln_e ** 2, N_BIN)
     delay = np.full(N_BIN, np.nan)
     tk = p[:, 4] - (k + 1) * atmosphere.PLANE_SPACING / C_LIGHT
     for b in np.unique(j):
         delay[b] = np.median(tk[j == b])
-    return e_ann, n_ann, delay
+    return e_ann, n_ann, s1, s2, delay
 
 
 def shower_task(task):
-    pts, d = task
+    pts, d, coord = task
     pts, d = pts[pts[:, 3] > 0], d / np.linalg.norm(d)
     h, perp, c = lateral.frame(d)
-    out = {"e_ann": np.zeros((N_PLANES, N_BIN)), "n_ann": np.zeros((N_PLANES, N_BIN)),
-           "delay": np.full((N_PLANES, N_BIN), np.nan), "r_ref": np.zeros(N_PLANES)}
+    out = {w: np.zeros((N_PLANES, N_BIN)) for w in ("e_ann", "n_ann", "s1_ann", "s2_ann")}
+    out.update({"delay": np.full((N_PLANES, N_BIN), np.nan), "r_ref": np.zeros(N_PLANES)})
     for k in range(N_PLANES):
         if np.any(np.rint(pts[:, 2]).astype(int) == k):
-            out["e_ann"][k], out["n_ann"][k], out["delay"][k] = plane_profiles(pts, k, d, h, perp, c)
+            (out["e_ann"][k], out["n_ann"][k], out["s1_ann"][k], out["s2_ann"][k],
+             out["delay"][k]) = plane_profiles(pts, k, d, h, perp, c, coord)
             out["r_ref"][k] = float(lateral.r_m_ref(k, d[2]))
     return out
 
@@ -73,7 +84,7 @@ def shower_task(task):
 def stage_hist(args, log):
     rows = slice_rows(args.out, args.limit)
     rows = rows[fit_profiles.part_rows(len(rows), args.n_parts, args.part)]
-    path = fit_profiles.part_path(os.path.join(args.out, FOLDER), args.part, args.n_parts)
+    path = fit_profiles.part_path(os.path.join(args.out, FOLDERS[args.coord]), args.part, args.n_parts)
     if os.path.exists(path):
         log.info("part %d already on disk, skipped", args.part)
         return {"skipped": True}
@@ -82,7 +93,8 @@ def stage_hist(args, log):
         for s in SPECIES_NAMES:
             t0 = time.time()
             meta, pts = read_showers(s, rows)
-            res = pool.map(shower_task, [(p, meta["directions"][i]) for i, p in enumerate(pts)], chunksize=4)
+            res = pool.map(shower_task, [(p, meta["directions"][i], args.coord) for i, p in enumerate(pts)],
+                           chunksize=4)
             arrays.update({f"{s}.{k}": np.stack([r[k] for r in res]) for k in res[0]})
             arrays.update({f"meta.{k}": v for k, v in meta.items()})
             log.info("%-8s %d showers, %.1f s", s, len(rows), time.time() - t0)
@@ -91,7 +103,7 @@ def stage_hist(args, log):
 
 
 def stage_merge(args, log):
-    folder = os.path.join(args.out, FOLDER)
+    folder = os.path.join(args.out, FOLDERS[args.coord])
     parts = [dict(np.load(fit_profiles.part_path(folder, i, args.n_parts))) for i in range(args.n_parts)]
     arrays = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
     if not np.array_equal(arrays["meta.rows"], slice_rows(args.out, args.limit)):
@@ -108,9 +120,9 @@ def features(age, log10_e, cos_z, ln_ek, r_ref):
                             np.log(r_ref / 100.0)])
 
 
-def table(root):
-    """Per species, one row per plane with >= MIN_CELLS cells and a fitted profile: its rings and conditions."""
-    z = np.load(os.path.join(root, FOLDER, "annuli.npz"))
+def table(root, coord="radius"):
+    """Per species, one row per plane with >= MIN_CELLS cells and a fitted profile: its bins and conditions."""
+    z = np.load(os.path.join(root, FOLDERS[coord], "annuli.npz"))
     fs = np.load(os.path.join(root, fit_profiles.SLICE))
     if not np.array_equal(fs["meta.rows"], z["meta.rows"]):
         raise ValueError("annuli rows differ from the profile-fit slice")
@@ -120,7 +132,8 @@ def table(root):
               & np.isfinite(fs[f"{s}.xmax"])[:, None])
         i, k = np.nonzero(ok)
         tab[s] = {"i": i, "k": k, "label": fs["meta.labels"][i], "cos_z": np.abs(fs["meta.cos_zenith"][i]),
-                  **{w: z[f"{s}.{w}"][i, k] for w in ("e_ann", "n_ann", "r_ref", "delay")}}
+                  **{w: z[f"{s}.{w}"][i, k] for w in ("e_ann", "n_ann", "r_ref", "delay", "s1_ann", "s2_ann")
+                     if f"{s}.{w}" in z}}
     return tab
 
 
@@ -129,12 +142,13 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--stage", required=True, choices=["hist", "merge"])
     ap.add_argument("--n-parts", type=int, required=True)
+    ap.add_argument("--coord", choices=list(FOLDERS), default="radius")
     ap.add_argument("--part", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", -1)))
     ap.add_argument("--limit", type=int, default=0, help="smoke run: LIMIT showers spread over the slice")
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     args = ap.parse_args()
     name = args.stage if args.stage != "hist" else f"hist_{args.part:04d}"
-    log_dir, log = logs.start(os.path.join(FOLDER, "logs", name), args)
+    log_dir, log = logs.start(os.path.join(FOLDERS[args.coord], "logs", name), args)
     stage = {"hist": stage_hist, "merge": stage_merge}[args.stage]
     logs.save(log_dir, stage(args, log), args, log)
 

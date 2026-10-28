@@ -1,8 +1,11 @@
 """Symbolic shower generator: energy per plane from the sampler, then cells within each plane from ring laws.
 
-Per plane: a cell count, its split over rings about the axis, an energy per cell in each ring, one random
-concentration number per plane (AR(1) along the shower) and a fixed arrival delay per ring. Cells are placed at a
-random angle within their ring. All laws are linear in annuli.features, per species and class.
+Per plane: a cell count, its split over bins of distance from the axis, an energy per cell in each bin, one random
+concentration number per plane (AR(1) along the shower) and a fixed arrival delay per bin. With --coord radius the
+bins are rings of in-plane radius and cells sit at a random angle; with --coord across the bins are in the
+across-track offset |t1| (exact in the data), the along-track in-plane offset is drawn from the same profile (radial
+symmetry) and squashed by |cos z| on the ground, and a bin's energy is split over its cells by lognormal weights
+whose width is a law too. All laws are linear in annuli.features, per species and class.
 
 Stages: fit (laws -> generator/MODEL), draw (one cloud per scored test primary; --oracle uses CORSIKA's own plane
 energies to test the in-plane laws alone).
@@ -76,6 +79,22 @@ def fit_cell_energy(x, e_ann, n_ann, train, test):
     return C, held
 
 
+def fit_spread(x, n_ann, s1, s2, train):
+    """Per bin, a linear law for the sd of ln(cell energy) among a plane's cells in the bin (weighted by cells)."""
+    S = np.zeros((x.shape[1], annuli.N_BIN))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mean = s1 / n_ann
+        sd = np.sqrt(np.maximum(s2 / n_ann - mean ** 2, 0) * n_ann / np.maximum(n_ann - 1, 1))
+    for j in range(annuli.N_BIN):
+        m = train & (n_ann[:, j] >= 2)
+        if m.sum() >= MIN_CELL_PLANES:
+            w = np.sqrt(n_ann[m, j])
+            S[:, j] = np.linalg.lstsq(x[m] * w[:, None], sd[m, j] * w, rcond=None)[0]
+        elif j:
+            S[:, j] = S[:, j - 1]
+    return S
+
+
 def pattern_scores(r, w, g):
     """Per row, the weighted least-squares number a of r ~ a g."""
     return (w * r) @ g / np.maximum(w @ g ** 2, 1e-12)
@@ -110,7 +129,7 @@ def fit_pattern(r, w, rng):
 
 
 def stage_fit(out, args, log):
-    tab = annuli.table(args.out)
+    tab = annuli.table(args.out, args.coord)
     fs = np.load(os.path.join(args.out, fit_profiles.SLICE))
     n_rows = len(fs["meta.rows"])
     rng = np.random.default_rng(args.seed)
@@ -148,6 +167,8 @@ def stage_fit(out, args, log):
             rho = lag1(a, t["i"][fit], t["k"][fit])
             r["pattern: lag-1 rho, variance removed train / held-out"] = [
                 round(rho, 3), round(removed(res_e[fit], w[fit], g), 4), round(removed(res_e[held_p], w[held_p], g), 4)]
+            if args.coord == "across":
+                model[f"{s}.{cn}.spread"] = fit_spread(x, t["n_ann"], t["s1_ann"], t["s2_ann"], train)
             model.update({f"{s}.{cn}.N": B, f"{s}.{cn}.cell": C, f"{s}.{cn}.count": c_n,
                           f"{s}.{cn}.count_sd": np.array(res_n.std()), f"{s}.{cn}.cell_mode": g,
                           f"{s}.{cn}.cell_rho": np.array(rho),
@@ -158,30 +179,49 @@ def stage_fit(out, args, log):
     if bad:
         raise ValueError(f"laws not finite: {bad}")
     os.makedirs(out, exist_ok=True)
-    np.savez(os.path.join(out, args.model), edges=annuli.EDGES, **model)
+    np.savez(os.path.join(out, args.model), edges=annuli.EDGES, coord=np.array(args.coord), **model)
     return res
 
 
-def plane_cells(k, d, e_k, x, law, rng, a):
+def in_bin(j, rng, area):
+    """A distance uniform within bin j: in area (rings of radius) or in length (an offset); the open last bin ends
+    at R_OPEN x its inner edge."""
+    lo, hi = annuli.EDGES[j], annuli.EDGES[j + 1]
+    hi = np.where(np.isfinite(hi), hi, R_OPEN * lo)
+    return np.sqrt(rng.uniform(lo ** 2, hi ** 2)) if area else rng.uniform(lo, hi)
+
+
+def plane_cells(k, d, e_k, x, law, rng, a, coord="radius"):
     """Cells [x, y, plane, energy, time] of one plane."""
     n = max(1, int(round(np.exp(x @ law["count"] + law["count_sd"] * rng.normal()))))
-    counts = rng.multinomial(n, softmax(x @ law["N"]))
+    share = softmax(x @ law["N"])
+    counts = rng.multinomial(n, share)
     w = counts * np.exp(x @ law["cell"] + a * law["cell_mode"])
     e_ann = e_k * w / w.sum()
     j = np.repeat(np.arange(len(counts)), counts)
-    lo, hi = annuli.EDGES[j], annuli.EDGES[j + 1]
-    hi = np.where(np.isfinite(hi), hi, R_OPEN * lo)
-    r = np.sqrt(rng.uniform(lo ** 2, hi ** 2))
-    phi = rng.uniform(0, 2 * np.pi, len(r))
+    if "spread" in law:                          # split each bin's energy over its cells by lognormal weights
+        v = np.exp(np.maximum(x @ law["spread"], 0)[j] * rng.normal(size=len(j)))
+        e_cell = e_ann[j] * v / np.bincount(j, v, len(counts))[j]
+    else:
+        e_cell = (e_ann / np.maximum(counts, 1))[j]
     h, perp, c = lateral.frame(d)
-    ground = ((k + 1) * atmosphere.PLANE_SPACING * d[:2] + (r * np.cos(phi))[:, None] * perp
-              + (r * np.sin(phi) * c)[:, None] * h)
+    if coord == "radius":
+        r, phi = in_bin(j, rng, True), rng.uniform(0, 2 * np.pi, len(j))
+        across, along = r * np.cos(phi), r * np.sin(phi)
+    else:
+        sign = lambda: rng.choice([-1.0, 1.0], len(j))
+        across = sign() * in_bin(j, rng, False)
+        along = sign() * in_bin(rng.choice(len(share), len(j), p=share), rng, False)
+    ground = (k + 1) * atmosphere.PLANE_SPACING * d[:2] + across[:, None] * perp + (along * c)[:, None] * h
     t = (k + 1) * atmosphere.PLANE_SPACING / annuli.C_LIGHT + law["delay"][j]
-    return np.column_stack([ground, np.full(len(r), k), (e_ann / np.maximum(counts, 1))[j], t])
+    return np.column_stack([ground, np.full(len(j), k), e_cell, t])
 
 
 def stage_draw(out, args, log):
     model = dict(np.load(os.path.join(out, args.model)))
+    coord = str(model.pop("coord", "radius"))
+    keys = ("N", "cell", "cell_mode", "count", "count_sd", "delay") + (("spread",) if coord == "across"
+                                                                        and not args.no_spread else ())
     rows = chain.primaries()[0]
     rows = rows[:: max(1, len(rows) // args.smoke)] if args.smoke else rows
     zt = np.load(os.path.join(args.out, fit_profiles.TEST))
@@ -207,13 +247,12 @@ def stage_draw(out, args, log):
     for s in SPECIES_NAMES:
         per = []
         for i in range(len(rows)):
-            law = {w: model[f"{s}.{planes.CLASS[lab[i]]}.{w}"]
-                   for w in ("N", "cell", "cell_mode", "count", "count_sd", "delay")}
+            law = {w: model[f"{s}.{planes.CLASS[lab[i]]}.{w}"] for w in keys}
             a = sampler.ar1(1, N_PLANES, float(model[f"{s}.{planes.CLASS[lab[i]]}.cell_rho"]), rng)[0]
             ks = np.nonzero(E[s][i] > 0)[0]
             x = annuli.features(age(X[i, ks], xmax[s][i]), np.full(len(ks), l[i]), np.full(len(ks), u[i]),
                                 np.log(E[s][i, ks]), np.array([lateral.r_m_ref(k, dirs[i, 2]) for k in ks]))
-            cells = [plane_cells(k, dirs[i], E[s][i, k], x[j], law, rng, a[k]) for j, k in enumerate(ks)]
+            cells = [plane_cells(k, dirs[i], E[s][i, k], x[j], law, rng, a[k], coord) for j, k in enumerate(ks)]
             per.append(np.concatenate(cells) if cells else np.zeros((0, 5)))
             if cells and not np.allclose(np.bincount(per[-1][:, 2].astype(int), per[-1][:, 3], N_PLANES), E[s][i]):
                 raise ValueError("generated cells do not sum to the sampled plane energies")
@@ -222,7 +261,7 @@ def stage_draw(out, args, log):
         clouds[f"{s}.E"] = E[s]
         log.info("%s: cells per shower median %d, max %d", s, int(np.median([len(p) for p in per])), cap)
     name = "clouds" + ("_oracle" if args.oracle else "") + (f"_{os.path.splitext(args.model)[0]}"
-                                                           if args.model != "model.npz" else "")
+                                                           if args.model != "model.npz" else "") + ("_nospread" if args.no_spread else "")
     np.savez(os.path.join(out, name + ".npz"), rows=rows, labels=lab, **clouds)
     return {"n_primaries": len(rows), "seed": args.seed, "clouds": name + ".npz"}
 
@@ -234,6 +273,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--oracle", action="store_true", help="draw: CORSIKA's own plane energies and Xmax per primary")
     ap.add_argument("--model", default="model.npz", help="model file in the generator folder (fit writes, draw reads)")
+    ap.add_argument("--coord", choices=list(annuli.FOLDERS), default="radius", help="fit: distance the bins use")
+    ap.add_argument("--no-spread", action="store_true", help="draw: equal energy per cell within a bin (ablation)")
     ap.add_argument("--smoke", type=int, default=0, help="fit on about SMOKE showers spread over the slice, draw SMOKE primaries")
     args = ap.parse_args()
     folder = FOLDER + ("_smoke" if args.smoke else "")

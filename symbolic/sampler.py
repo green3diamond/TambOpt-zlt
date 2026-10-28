@@ -29,9 +29,9 @@ def load(path):
     return d
 
 
-def class_rows(d, c, top=TOP):
-    """Showers of class c with a clean fit in every species: their joint numbers and conditions."""
-    m = ((d["meta"]["labels"] == c) & (d["meta"]["log10_E"] < top)
+def class_rows(d, c, top=TOP, keep=None):
+    """Showers of class c with a clean fit in every species (within keep, if given): joint numbers and conditions."""
+    m = ((d["meta"]["labels"] == c) & (d["meta"]["log10_E"] < top) & (True if keep is None else keep)
          & np.all([d[s]["clean"] & np.isfinite(d[s]["start"]) for s in SPECIES_NAMES], 0))
     return {"rows": np.nonzero(m)[0],
             "X": np.hstack([np.column_stack([d[s]["Z"][m], d[s]["start"][m]]) for s in SPECIES_NAMES]),
@@ -50,18 +50,20 @@ def plane_residuals(d, rows):
         r[~np.isfinite(r)] = np.nan
         bias, sd = np.nanmean(r, 0), np.nanstd(r, 0)
         u = (r - bias) / sd
+        min_pair = min(MIN_PAIR, len(rows) // 10)
         rhos = [np.corrcoef(u[ok, k], u[ok, k + 1])[0, 1] for k in range(r.shape[1] - 1)
-                for ok in [np.isfinite(u[:, k]) & np.isfinite(u[:, k + 1])] if ok.sum() >= MIN_PAIR]
+                for ok in [np.isfinite(u[:, k]) & np.isfinite(u[:, k + 1])] if ok.sum() >= min_pair]
         out[s] = {"bias": np.nan_to_num(bias), "sd": np.nan_to_num(sd), "rho": float(np.mean(rhos))}
     return out
 
 
-def fit(d, c, top=TOP):
-    """Fit the sampler for class c on the output of load(), on showers below log10 E = top."""
-    t = class_rows(d, c, top)
+def fit(d, c, top=TOP, keep=None, margin=lambda: cp.Margin("jsu")):
+    """Fit the sampler for class c on the output of load(), on showers below log10 E = top (and within keep).
+    margin() makes each number's margin: linear laws by default."""
+    t = class_rows(d, c, top, keep)
     design = cp.Design(t["l"], t["u"])
     D = design(t["l"], t["u"])
-    margins = [cp.Margin("jsu").fit(D, t["X"][:, j]) for j in range(t["X"].shape[1])]
+    margins = [margin().fit(D, t["X"][:, j]) for j in range(t["X"].shape[1])]
     C = cp.corr(cp.normal_scores(margins, D, t["X"]))
     return {"design": design, "margins": margins, "C": C, "planes": plane_residuals(d, t["rows"]),
             "n_train": len(t["rows"])}

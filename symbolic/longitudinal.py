@@ -24,6 +24,19 @@ def shape(X, xmax, L, R):
     return np.where(t <= -1.0, -np.inf, np.where(small, series, exact))
 
 
+def shape_torch(X, xmax, L, R):
+    """shape() on torch tensors with finite gradients everywhere (the unused branch gets safe inputs)."""
+    import torch
+    z = (X - xmax) / L
+    t = R * z
+    small = t.abs() < R_SERIES
+    Rs = torch.where(small, torch.ones_like(R * z), R * torch.ones_like(z))
+    ts = torch.clamp(torch.where(small, torch.zeros_like(t), t), min=-1.0 + 1e-12)
+    exact = torch.log1p(ts) / (Rs * Rs) - z / Rs
+    series = -0.5 * z * z + R * z ** 3 / 3.0 - R * R * z ** 4 / 4.0
+    return torch.where(t <= -1.0, torch.full_like(z, -torch.inf), torch.where(small, series, exact))
+
+
 def r_caps(xmax, L, xfirst, xlast):
     """Largest |R| for each sign that keeps the curve's start before the first plane and its end after the last."""
     ahead, behind = np.asarray(xmax - xfirst, np.float64), np.asarray(xlast - xmax, np.float64)
