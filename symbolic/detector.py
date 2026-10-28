@@ -17,14 +17,13 @@ import torch
 import analysis_core.run  # noqa: E402,F401  (puts plots/layouts on the path)
 import showerdata  # noqa: E402
 from true_utility import KernelDualLabels, grid_layout  # noqa: E402
-from data_lane import sources  # noqa: E402
 from modules.constants import (DET_KEY, EAST_ENTRY, GEOMETRY_GROUP, GEOMETRY_PATH_RESOLVED,  # noqa: E402
                                HELDOUT_SHOWER_CACHE_PATH, LAYER_EAST_DX, N_PLANES,
                                SPECIES_NAMES, T_LOG_SCALE)
 from modules.data import place_clouds_enu  # noqa: E402
 from modules.geometry import SurfaceUpMap, load_tr_mountain  # noqa: E402
 from modules.optimize import LAYOUT_THRESHOLD  # noqa: E402
-from symbolic import atmosphere, m1, unwrap  # noqa: E402
+from symbolic import atmosphere, fit_profiles, planes, sources, unwrap  # noqa: E402
 
 KERNEL_POINTS = 3e6       # events x points per kernel chunk
 BLOCK = 25                # events per kernel block
@@ -129,7 +128,7 @@ def metrics(E, T, ref_E, ref_T, dist):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--root", required=True, help="output folder of m1.py and generator.py (--out there)")
+    ap.add_argument("--root", required=True, help="output folder of fit_profiles.py and generator.py (--out there)")
     ap.add_argument("--clouds", required=True, help="generator clouds (.npz with rows and <species>.points)")
     ap.add_argument("--chain", default="", help="the neural chain's clouds at the same or more primaries (optional)")
     ap.add_argument("--out", required=True)
@@ -143,7 +142,7 @@ def main():
     device = torch.device("cuda")
     gen = np.load(args.clouds)
     rows = gen["rows"]
-    zt = np.load(os.path.join(args.root, m1.FOLDER, "fit", "fits_test.npz"))
+    zt = np.load(os.path.join(args.root, fit_profiles.TEST))
     lab = zt["meta.labels"][rows]
     with h5py.File(sources.corsika_path(SPECIES_NAMES[0], "test"), "r") as f:
         dirs = f["directions"][...][rows].astype(np.float64)
@@ -167,7 +166,7 @@ def main():
     xy = torch.stack([e_det, n_det], -1)[None].to(device)
     resp = {k: response(per, pos, dirs, surface, xy, device) for k, per in clouds.items()}
     res = {"threshold": float(LAYOUT_THRESHOLD), "clouds": args.clouds, "chain": args.chain}
-    for c, cn in m1.CLASS.items():
+    for c, cn in planes.CLASS.items():
         m = lab == c
         ref_E, ref_T = resp["CORSIKA"][0][m], resp["CORSIKA"][1][m]
         res[cn] = {"n_events": int(m.sum()),

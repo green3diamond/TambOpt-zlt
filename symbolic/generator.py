@@ -20,12 +20,12 @@ from scipy.special import logsumexp, softmax
 
 from analysis_core import logs
 from modules.constants import N_PLANES, SPECIES_NAMES
-from symbolic import annuli, atmosphere, latent, lateral, m1, m2, sampler, score
+from symbolic import annuli, atmosphere, chain, fit_profiles, lateral, longitudinal, planes, sampler
 
 FOLDER = "generator"
-ROWS = os.path.join("chain", "clouds_draw00.npz")   # the scored test primaries, shared with the neural chain
 AGE_RANGE = (0.2, 2.5)
 R_OPEN = 1.4                 # the open last ring is drawn up to R_OPEN x its inner edge
+COS_BANDS = (0.0, 0.1, 0.3, 1.01)  # |cos z| bands of the held-out share check
 MIN_CELL_PLANES = 50
 PATTERN_MIN_ANN = 4
 PATTERN_ITERS = 300
@@ -110,16 +110,16 @@ def fit_pattern(r, w, rng):
 
 
 def stage_fit(out, args, log):
-    tab = annuli.law_table(os.path.join(args.out, annuli.FOLDER), args)
-    m1f = np.load(os.path.join(args.out, m1.FOLDER, "fit", "fits_train.npz"))
-    n_rows = len(m1f["meta.rows"])
+    tab = annuli.table(args.out)
+    fs = np.load(os.path.join(args.out, fit_profiles.SLICE))
+    n_rows = len(fs["meta.rows"])
     rng = np.random.default_rng(args.seed)
     model, res = {}, {s: {} for s in tab}
     for s, t in tab.items():
-        x = annuli.features(age(m1f["X"][t["i"], t["k"]], m1f[f"{s}.{m2.NAME}.xmax"][t["i"]]),
-                            m1f["meta.log10_E"][t["i"]], m1f["meta.cos_zenith"][t["i"]],
+        x = annuli.features(age(fs["X"][t["i"], t["k"]], fs[f"{s}.xmax"][t["i"]]),
+                            fs["meta.log10_E"][t["i"]], fs["meta.cos_zenith"][t["i"]],
                             np.log(t["e_ann"].sum(1)), t["r_ref"])
-        for c, cn in m1.CLASS.items():
+        for c, cn in planes.CLASS.items():
             m = (t["label"] == c) & (((t["i"] // 5) % max(1, n_rows // args.smoke) == 0) if args.smoke else True)
             test = m & (t["i"] % 5 == 0)
             train = m & ~test
@@ -132,7 +132,7 @@ def stage_fit(out, args, log):
                 f"{lo}-{hi}": [round(float(a / b), 3) if b > 1e-4 else None for a, b in
                                zip(sh[test & (t["cos_z"] >= lo) & (t["cos_z"] < hi)].mean(0),
                                    pred[(t["cos_z"][test] >= lo) & (t["cos_z"][test] < hi)].mean(0))]
-                for lo, hi in zip(annuli.COS_BANDS[:-1], annuli.COS_BANDS[1:])}
+                for lo, hi in zip(COS_BANDS[:-1], COS_BANDS[1:])}
             C, held = fit_cell_energy(x, t["e_ann"], t["n_ann"], train, test)
             r["cell law held-out residual mean, sd per annulus"] = held
             ln_n = np.log(t["n_ann"].sum(1))
@@ -182,9 +182,11 @@ def plane_cells(k, d, e_k, x, law, rng, a):
 
 def stage_draw(out, args, log):
     model = dict(np.load(os.path.join(out, args.model)))
-    rows = np.load(os.path.join(args.out, ROWS))["rows"]
+    rows = chain.primaries()[0]
     rows = rows[:: max(1, len(rows) // args.smoke)] if args.smoke else rows
-    zt = np.load(os.path.join(args.out, m1.FOLDER, "fit", "fits_test.npz"))
+    zt = np.load(os.path.join(args.out, fit_profiles.TEST))
+    if not np.array_equal(zt["meta.rows"], np.arange(len(zt["meta.rows"]))):
+        raise ValueError("draw needs the profile fits of the whole test file")
     l, u, lab, X = zt["meta.log10_E"][rows], zt["meta.cos_zenith"][rows], zt["meta.labels"][rows], zt["X"][rows]
     dirs = zt["meta.directions"][rows] / np.linalg.norm(zt["meta.directions"][rows], axis=1, keepdims=True)
     rng = np.random.default_rng(args.seed)
@@ -192,22 +194,22 @@ def stage_draw(out, args, log):
     xmax = {s: np.zeros(len(rows)) for s in SPECIES_NAMES}
     if args.oracle:
         for s in SPECIES_NAMES:
-            E[s], xmax[s] = zt[f"{s}.E"][rows].astype(np.float64), zt[f"{s}.{m2.NAME}.xmax"][rows]
+            E[s], xmax[s] = zt[f"{s}.E"][rows].astype(np.float64), zt[f"{s}.xmax"][rows]
     else:
-        tr, fits = score.load_train(args, log)
-        for c in m1.CLASS:
+        tr = sampler.load(os.path.join(args.out, fit_profiles.TRAIN))
+        for c in planes.CLASS:
             m = lab == c
-            d, lat = sampler.sample(sampler.fit(tr, fits, c), l[m], u[m], X[m], rng, return_latent=True)
+            d, lat = sampler.sample(sampler.fit(tr, c), l[m], u[m], X[m], rng)
             for i, s in enumerate(SPECIES_NAMES):
                 E[s][m] = d[s]
-                xmax[s][m] = latent.from_latent(sampler.species_block(lat, i)[0], l[m])[0]
+                xmax[s][m] = longitudinal.from_latent(sampler.species_block(lat, i)[0], l[m])[0]
     clouds = {}
     for s in SPECIES_NAMES:
         per = []
         for i in range(len(rows)):
-            law = {w: model[f"{s}.{m1.CLASS[lab[i]]}.{w}"]
+            law = {w: model[f"{s}.{planes.CLASS[lab[i]]}.{w}"]
                    for w in ("N", "cell", "cell_mode", "count", "count_sd", "delay")}
-            a = sampler.ar1(1, N_PLANES, float(model[f"{s}.{m1.CLASS[lab[i]]}.cell_rho"]), rng)[0]
+            a = sampler.ar1(1, N_PLANES, float(model[f"{s}.{planes.CLASS[lab[i]]}.cell_rho"]), rng)[0]
             ks = np.nonzero(E[s][i] > 0)[0]
             x = annuli.features(age(X[i, ks], xmax[s][i]), np.full(len(ks), l[i]), np.full(len(ks), u[i]),
                                 np.log(E[s][i, ks]), np.array([lateral.r_m_ref(k, dirs[i, 2]) for k in ks]))
@@ -227,7 +229,7 @@ def stage_draw(out, args, log):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", required=True, help="output folder of m1.py and annuli.py")
+    ap.add_argument("--out", required=True, help="output folder of fit_profiles.py and annuli.py")
     ap.add_argument("--stage", required=True, choices=["fit", "draw"])
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--oracle", action="store_true", help="draw: CORSIKA's own plane energies and Xmax per primary")

@@ -1,4 +1,4 @@
-"""Scores the per-plane energy sampler against CORSIKA, paired per test primary with the neural generator.
+"""Scores the per-plane energy sampler against CORSIKA, paired per test primary with the neural chain (chain.py draws).
 
 Metric: energy score (lower is better) of log10(1 + E_k) on planes 2-24, per species and for all three together.
 """
@@ -16,13 +16,11 @@ import numpy as np
 
 from analysis_core import logs, plots
 from modules.constants import SPECIES_NAMES
-from symbolic import m1, m2, sampler
+from symbolic import chain, fit_profiles, planes, sampler
 
 FOLDER = "score"
 PLANES = slice(1, None)
-DRAWS = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic/score/draws"
-COLORS = {"CORSIKA": "black", "sampler": "steelblue", "generator": "#eb6834"}
-VARIANTS = {"sampler": {}, "sampler, curve only": {"planes": False}, "sampler, species independent": {"independent": True}}
+COLORS = {"CORSIKA": "black", "sampler": "steelblue", "neural chain": "#eb6834"}
 
 
 def obs(E):
@@ -42,43 +40,33 @@ def paired(a, b):
     return [float(d.mean()), float(d.std() / np.sqrt(len(d)))]
 
 
-def load_draws():
-    paths = sorted(glob.glob(os.path.join(DRAWS, "draw_*.npz")))
+def load_draws(root):
+    paths = sorted(glob.glob(os.path.join(root, chain.DRAWS, "draw_*.npz")))
     if len(paths) < 2:
-        raise ValueError(f"need at least 2 generator draws, found {len(paths)}")
+        raise ValueError(f"need at least 2 neural chain draws, found {len(paths)}")
     zs = [np.load(p) for p in paths]
     rows = zs[0]["rows"]
     if any(not np.array_equal(z["rows"], rows) for z in zs):
-        raise ValueError("generator draws were made on different primaries")
+        raise ValueError("neural chain draws were made on different primaries")
     return rows, {s: np.stack([z[f"{s}.E"] for z in zs], 1) for s in SPECIES_NAMES}
 
 
-def load_train(args, log):
-    """Profile numbers and fit arrays of the training showers."""
-    path = os.path.join(args.out, m2.FOLDER, "fit", "fits_train_full.npz")
-    tr = m2.load_latent(path, log)
-    z = np.load(path)
-    keep = z["meta.log10_E"] <= m2.LOG10_E_MAX
-    fits = {k: z[k][keep] for k in z.files if k == "X" or k.split(".")[0] in SPECIES_NAMES}
-    return tr, fits
-
-
 def fig_medians(cor, models, labels):
-    planes = np.arange(1, cor[SPECIES_NAMES[0]].shape[1] + 1)
-    fig = plt.figure(figsize=(len(SPECIES_NAMES) * 4.2, len(m1.CLASS) * 4.8))
-    outer = gridspec.GridSpec(len(m1.CLASS), len(SPECIES_NAMES), figure=fig, hspace=0.45, wspace=0.38)
-    for r, (c, cn) in enumerate(m1.CLASS.items()):
+    k_planes = np.arange(1, cor[SPECIES_NAMES[0]].shape[1] + 1)
+    fig = plt.figure(figsize=(len(SPECIES_NAMES) * 4.2, len(planes.CLASS) * 4.8))
+    outer = gridspec.GridSpec(len(planes.CLASS), len(SPECIES_NAMES), figure=fig, hspace=0.45, wspace=0.38)
+    for r, (c, cn) in enumerate(planes.CLASS.items()):
         m = labels == c
         for j, s in enumerate(SPECIES_NAMES):
             inner = gridspec.GridSpecFromSubplotSpec(2, 1, subplot_spec=outer[r, j], height_ratios=[3, 1], hspace=0.08)
             ax, ar = fig.add_subplot(inner[0]), fig.add_subplot(inner[1])
             ref = np.median(cor[s][m], 0)
-            ax.plot(planes, ref, color=COLORS["CORSIKA"], lw=1.5, drawstyle="steps-mid", label="CORSIKA")
-            for k in ("sampler", "generator"):
-                med = np.median(models[k][s][m].reshape(-1, len(planes)), 0)
-                ax.plot(planes, med, color=COLORS[k], lw=1.5, drawstyle="steps-mid", label=k)
+            ax.plot(k_planes, ref, color=COLORS["CORSIKA"], lw=1.5, drawstyle="steps-mid", label="CORSIKA")
+            for k, v in models.items():
+                med = np.median(v[s][m].reshape(-1, len(k_planes)), 0)
+                ax.plot(k_planes, med, color=COLORS[k], lw=1.5, drawstyle="steps-mid", label=k)
                 with np.errstate(invalid="ignore", divide="ignore"):
-                    ar.plot(planes, med / ref, color=COLORS[k], lw=1.2, drawstyle="steps-mid")
+                    ar.plot(k_planes, med / ref, color=COLORS[k], lw=1.2, drawstyle="steps-mid")
             ar.axhline(1, color="gray", lw=0.8, ls="--")
             ar.set_ylim(0.5, 1.5)
             ar.set_xlabel("Plane", fontsize=8)
@@ -95,62 +83,47 @@ def fig_medians(cor, models, labels):
 
 
 def stage_run(out, args, log):
-    rows, gen = load_draws()
-    M = next(iter(gen.values())).shape[1]
-    zt = np.load(os.path.join(args.out, m1.FOLDER, "fit", "fits_test.npz"))
+    rows, nn = load_draws(args.out)
+    M = next(iter(nn.values())).shape[1]
+    zt = np.load(os.path.join(args.out, fit_profiles.TEST))
     if not np.array_equal(zt["meta.rows"], np.arange(len(zt["meta.rows"]))):
-        raise ValueError("fits_test.npz rows are not the test file in order")
+        raise ValueError("scoring needs the profile fits of the whole test file")
     l, u, lab, X = zt["meta.log10_E"][rows], zt["meta.cos_zenith"][rows], zt["meta.labels"][rows], zt["X"][rows]
     if l.max() >= sampler.TOP:
         raise ValueError("scored primaries reach the left-out top energy bin")
     cor = {s: zt[f"{s}.E"][rows].astype(np.float64) for s in SPECIES_NAMES}
-    log.info("%d primaries (EM %d, hadronic %d), %d generator draws each", len(rows), (lab == 0).sum(), (lab == 1).sum(), M)
-    tr, fits = load_train(args, log)
-    te = m2.load_latent(os.path.join(args.out, m1.FOLDER, "fit", "fits_test.npz"), log)
-    draws = {k: {s: np.zeros_like(gen[s]) for s in SPECIES_NAMES} for k in VARIANTS}
+    log.info("%d primaries (EM %d, hadronic %d), %d draws each", len(rows), (lab == 0).sum(), (lab == 1).sum(), M)
+    tr = sampler.load(os.path.join(args.out, fit_profiles.TRAIN))
+    te = sampler.load(os.path.join(args.out, fit_profiles.TEST))
+    sym = {s: np.zeros_like(nn[s]) for s in SPECIES_NAMES}
     rng = np.random.default_rng(args.seed)
-    res = {"n_primaries": len(rows), "n_draws": M, "top": sampler.TOP, "curve": m2.NAME, "classes": {}}
-    for c, cn in m1.CLASS.items():
-        model = sampler.fit(tr, fits, c)
+    res = {"n_primaries": len(rows), "n_draws": M, "top": sampler.TOP, "classes": {}}
+    for c, cn in planes.CLASS.items():
+        model = sampler.fit(tr, c)
         chk = sampler.check(model, te, c)
-        p = model["planes"]
-        log.info("%s sampler: %d training showers | held-out tail rates %s | log c per shower %s | plane noise lag-1 %s",
-                 cn, model["n_train"], chk["tail_rate"], {k: np.round(v, 3).tolist() for k, v in chk["logc_per_shower"].items()},
-                 {s: round(v["rho"], 2) for s, v in p.items()})
+        log.info("%s sampler: %d training showers | held-out tail rates %s | log c per shower %s", cn,
+                 model["n_train"], chk["tail_rate"], {k: np.round(v, 3).tolist() for k, v in chk["logc_per_shower"].items()})
         m = lab == c
-        for k, kw in VARIANTS.items():
-            for j in range(M):
-                d = sampler.sample(model, l[m], u[m], X[m], rng, **kw)
-                for s in SPECIES_NAMES:
-                    draws[k][s][m, j] = d[s]
+        for j in range(M):
+            d, _ = sampler.sample(model, l[m], u[m], X[m], rng)
+            for s in SPECIES_NAMES:
+                sym[s][m, j] = d[s]
         redrawn = model["n_redrawn"] / model["n_drawn"]
         log.info("%s draws ending inside the planes, drawn again: %.4f", cn, redrawn)
-        res["classes"][cn] = {"n_train": model["n_train"], "check": chk, "redrawn_frac": redrawn,
-                              "planes": {s: {k: (v.round(4).tolist() if isinstance(v, np.ndarray) else v)
-                                             for k, v in pp.items()} for s, pp in p.items()}}
-    models = {"generator": gen, **draws}
-    y = {s: obs(cor[s]) for s in SPECIES_NAMES}
-    for c, cn in m1.CLASS.items():
-        m = lab == c
+        y = {s: obs(cor[s][m]) for s in SPECIES_NAMES}
         sc = {}
-        for k, dr in models.items():
-            sc[k] = {s: energy_score(obs(dr[s][m]), y[s][m]) for s in SPECIES_NAMES}
+        for k, dr in (("sampler", sym), ("neural chain", nn)):
+            sc[k] = {s: energy_score(obs(dr[s][m]), y[s]) for s in SPECIES_NAMES}
             sc[k]["joint"] = energy_score(np.concatenate([obs(dr[s][m]) for s in SPECIES_NAMES], 2),
-                                          np.concatenate([y[s][m] for s in SPECIES_NAMES], 1))
-        r = res["classes"][cn]
-        r["n"] = int(m.sum())
-        r["energy_score_mean"] = {k: {s: float(v.mean()) for s, v in per.items()} for k, per in sc.items()}
-        r["vs_generator"] = {k: {s: paired(v, sc["generator"][s]) for s, v in per.items()}
-                             for k, per in sc.items() if k != "generator"}
-        r["plane1_empty_frac"] = {"CORSIKA": {s: float(np.mean(cor[s][m, 0] == 0)) for s in SPECIES_NAMES},
-                                  **{k: {s: float(np.mean(dr[s][m, :, 0] == 0)) for s in SPECIES_NAMES}
-                                     for k, dr in models.items()}}
-        for k, per in sc.items():
-            log.info("%-8s %-30s energy score %s", cn, k, {s: round(float(v.mean()), 4) for s, v in per.items()})
-        for k, v in r["vs_generator"].items():
-            log.info("%-8s %-30s minus generator %s", cn, k, {s: [round(x, 4) for x in d] for s, d in v.items()})
-    plots.save(fig_medians(cor, {"sampler": draws["sampler"], "generator": gen}, lab), out, "score_medians", log)
-    np.savez(os.path.join(out, "sampler_draws.npz"), rows=rows, **{f"{s}.E": draws["sampler"][s] for s in SPECIES_NAMES})
+                                          np.concatenate([y[s] for s in SPECIES_NAMES], 1))
+        diff = {s: paired(sc["sampler"][s], sc["neural chain"][s]) for s in sc["sampler"]}
+        res["classes"][cn] = {"n": int(m.sum()), "n_train": model["n_train"], "check": chk, "redrawn_frac": redrawn,
+                              "energy_score_mean": {k: {s: float(v.mean()) for s, v in p.items()} for k, p in sc.items()},
+                              "sampler minus neural chain": diff}
+        log.info("%-8s sampler minus neural chain, energy score mean +- se %s", cn,
+                 {s: [round(x, 4) for x in v] for s, v in diff.items()})
+    plots.save(fig_medians(cor, {"sampler": sym, "neural chain": nn}, lab), out, "score_medians", log)
+    np.savez(os.path.join(out, "sampler_draws.npz"), rows=rows, **{f"{s}.E": sym[s] for s in SPECIES_NAMES})
     return res
 
 

@@ -3,11 +3,17 @@ import h5py
 import numpy as np
 import torch
 
-from data_lane import sources
-from data_lane.census import angles
 from modules.constants import N_PLANES, SPECIES_NAMES
+from symbolic import sources
 
 LAYER_TOL = 1e-3
+CLASS = {0: "EM", 1: "hadronic"}      # the primary's class, column `pdg` of the CORSIKA files
+
+
+def angles(directions):
+    """Zenith and azimuth [deg] of (N, 3) directions (Up = column 2, azimuth from column 0)."""
+    d = directions / np.linalg.norm(directions, axis=1, keepdims=True)
+    return np.degrees(np.arccos(np.clip(d[:, 2], -1, 1))), np.degrees(np.arctan2(d[:, 1], d[:, 0])) % 360
 
 
 def _layers(layer):

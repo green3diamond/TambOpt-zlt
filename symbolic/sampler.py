@@ -4,12 +4,29 @@ import numpy as np
 from scipy import special
 
 from modules.constants import SPECIES_NAMES
-from symbolic import copula as cp, families as fam, latent, m2
+from symbolic import copula as cp, longitudinal
 
+LOG10_E_MAX = 6.25         # the training showers end here
 TOP = 6.125                # log10 E; the training file's top bin is under-filled and left out
 MIN_PAIR = 1000
 MAX_REDRAWS = 100
-BLOCK = len(latent.NAMES[m2.NAME]) + 1     # numbers per species: the profile, then the start depth
+BLOCK = len(longitudinal.NAMES) + 1     # numbers per species: the profile, then the start depth
+
+
+def load(path):
+    """Conditions, plane data and profile numbers of every species from a fits file (fit_profiles.py). Clean =
+    fitted, off the bounds and peaking within the planes."""
+    z = np.load(path)
+    keep = z["meta.log10_E"] <= LOG10_E_MAX
+    d = {"meta": {k: z[f"meta.{k}"][keep] for k in ("log10_E", "cos_zenith", "labels")}, "X": z["X"][keep]}
+    rng = np.random.default_rng(0)
+    for s in SPECIES_NAMES:
+        E = z[f"{s}.E"][keep]
+        f = {k: z[f"{s}.{k}"][keep] for k in ("ln_n", "theta")}
+        fl = longitudinal.flags(f, d["X"], E)
+        d[s] = {"E": E, **f, "Z": longitudinal.to_latent(f, d["meta"]["log10_E"]),
+                "start": longitudinal.start_depth(E, d["X"], rng), "clean": ~(fl["unfit"] | fl["bound"] | fl["outside"])}
+    return d
 
 
 def class_rows(d, c, top=TOP):
@@ -21,16 +38,15 @@ def class_rows(d, c, top=TOP):
             "l": d["meta"]["log10_E"][m], "u": d["meta"]["cos_zenith"][m]}
 
 
-def plane_residuals(fits, rows):
+def plane_residuals(d, rows):
     """Per species: mean and sd per plane of log E_k minus the curve, and their plane-to-plane correlation."""
-    X = fits["X"][rows]
+    X = d["X"][rows]
     out = {}
     for s in SPECIES_NAMES:
-        E = fits[f"{s}.E"][rows]
-        th = fits[f"{s}.{m2.NAME}.theta"][rows]
+        th = d[s]["theta"][rows]
         with np.errstate(all="ignore"):
-            curve = fits[f"{s}.{m2.NAME}.ln_n"][rows][:, None] + fam.FAMILIES[m2.NAME].shape(X, *[th[:, i, None] for i in range(3)])
-            r = np.where(E > 0, np.log(np.where(E > 0, E, 1.0)), np.nan) - curve
+            curve = d[s]["ln_n"][rows][:, None] + longitudinal.shape(X, *[th[:, i, None] for i in range(3)])
+            r = longitudinal.log_energy(d[s]["E"][rows]) - curve
         r[~np.isfinite(r)] = np.nan
         bias, sd = np.nanmean(r, 0), np.nanstd(r, 0)
         u = (r - bias) / sd
@@ -40,14 +56,14 @@ def plane_residuals(fits, rows):
     return out
 
 
-def fit(tr, fits, c):
-    """Fit the sampler for class c."""
-    t = class_rows(tr, c)
+def fit(d, c):
+    """Fit the sampler for class c on the output of load()."""
+    t = class_rows(d, c)
     design = cp.Design(t["l"], t["u"])
     D = design(t["l"], t["u"])
     margins = [cp.Margin("jsu").fit(D, t["X"][:, j]) for j in range(t["X"].shape[1])]
     C = cp.corr(cp.normal_scores(margins, D, t["X"]))
-    return {"design": design, "margins": margins, "C": C, "planes": plane_residuals(fits, t["rows"]),
+    return {"design": design, "margins": margins, "C": C, "planes": plane_residuals(d, t["rows"]),
             "n_train": len(t["rows"])}
 
 
@@ -62,9 +78,9 @@ def to_profiles(Zlat, l, X):
     out = {}
     for i, s in enumerate(SPECIES_NAMES):
         z, start = species_block(Zlat, i)
-        xmax, L, R, ln_nmax = latent.from_latent(z, l)
+        xmax, L, R, ln_n = longitudinal.from_latent(z, l)
         with np.errstate(all="ignore"):
-            Y = ln_nmax[:, None] + fam.FAMILIES[m2.NAME].shape(X, xmax[:, None], L[:, None], R[:, None])
+            Y = ln_n[:, None] + longitudinal.shape(X, xmax[:, None], L[:, None], R[:, None])
         out[s] = np.where(np.isfinite(Y) & (X >= start[:, None]), Y, np.nan)
     return out
 
@@ -81,19 +97,18 @@ def ends_inside(Zlat, l, X):
     """Rows where any species' curve ends (R < 0) before the last plane."""
     bad = np.zeros(len(l), bool)
     for i in range(len(SPECIES_NAMES)):
-        xmax, L, R, _ = latent.from_latent(species_block(Zlat, i)[0], l)
+        xmax, L, R, _ = longitudinal.from_latent(species_block(Zlat, i)[0], l)
         with np.errstate(divide="ignore", invalid="ignore"):
             bad |= (R < 0) & (xmax - L / R < X[:, -1])
     return bad
 
 
-def sample(model, l, u, X, rng, planes=True, independent=False, return_latent=False):
-    """One draw of the per-plane energies per primary. Curves that end before the last plane are drawn again."""
-    C = cp.block_corr(model["C"], [BLOCK] * len(SPECIES_NAMES)) if independent else model["C"]
-
+def sample(model, l, u, X, rng):
+    """One draw per primary -> (energy per plane per species, the drawn numbers). Curves that end before the last
+    plane are drawn again."""
     def draw(idx):
         D = model["design"](l[idx], u[idx])
-        Z = rng.multivariate_normal(np.zeros(len(C)), C, len(idx))
+        Z = rng.multivariate_normal(np.zeros(len(model["C"])), model["C"], len(idx))
         return np.column_stack([m.ppf(D, special.ndtr(Z[:, j])) for j, m in enumerate(model["margins"])])
 
     lat = draw(np.arange(len(l)))
@@ -110,16 +125,15 @@ def sample(model, l, u, X, rng, planes=True, independent=False, return_latent=Fa
         raise ValueError(f"{bad.sum()} draws still end inside the planes after {MAX_REDRAWS} redraws")
     out = {}
     for s, y in to_profiles(lat, l, X).items():
-        if planes:
-            p = model["planes"][s]
-            y = y + p["bias"] + p["sd"] * ar1(len(l), y.shape[1], p["rho"], rng)
+        p = model["planes"][s]
+        y = y + p["bias"] + p["sd"] * ar1(len(l), y.shape[1], p["rho"], rng)
         out[s] = np.where(np.isfinite(y), np.exp(np.where(np.isfinite(y), y, 0.0)), 0.0)
-    return (out, lat) if return_latent else out
+    return out, lat
 
 
-def check(model, te, c):
-    """On the test file: tail rate of each margin and the log-likelihood the correlations add."""
-    t = class_rows(te, c)
+def check(model, d, c):
+    """On held-out showers: tail rate of each margin and the log-likelihood the correlations add."""
+    t = class_rows(d, c)
     D = model["design"](t["l"], t["u"])
     Z = cp.normal_scores(model["margins"], D, t["X"])
     logc = {"all correlations": cp.gaussian_logc(Z, model["C"]),

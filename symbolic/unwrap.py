@@ -46,13 +46,6 @@ def moved(xy, e, axis_xy):
     return bool(near_share(xy, e, axis_xy) < NEAR_FRACTION and _signature(_top(xy, e, axis_xy), 1).any())
 
 
-def mirror(xy, e, axis_xy):
-    """The same test turned by 180 deg, which nothing produces (a false-positive check)."""
-    if not len(e) or e.sum() <= 0:
-        return False
-    return bool(near_share(xy, e, axis_xy) < NEAR_FRACTION and _signature(_top(xy, e, axis_xy), -1).any())
-
-
 def apply_stride(xy, axis_xy, direction, stride, q_max=Q_MAX):
     """Move each cell back by the multiple of the stride that puts it nearest the axis."""
     h, perp, c = lateral.frame(direction)
