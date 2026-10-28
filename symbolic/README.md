@@ -1,80 +1,116 @@
 # Symbolic shower generator
 
-A replacement for the neural shower chain (PointCountFM + AllShowers) built from a few fitted laws that can each be
-read and checked. It is fitted to CORSIKA (`h5_files_v3`) and judged at detector level through the pipeline kernel.
+A drop-in alternative to the neural shower chain (PointCountFM + AllShowers). Instead of two trained networks it uses
+a handful of fitted formulas, each of which can be printed, read and checked against physics. It is fitted to the
+CORSIKA training showers (`h5_files_v3`) and judged the way the pipeline uses showers: through the detector kernel.
 
-Two parts:
+In one sentence: each shower gets a longitudinal curve that says how much energy reaches each of the 24 planes, and
+within each plane the energy is spread over rings around the shower axis by a few more fitted laws.
 
-1. **Energy per plane** (`longitudinal`, `copula`, `sampler`). Each species gets a Gaisser-Hillas curve in width and
-   asymmetry plus a start depth. These numbers get Johnson SU distributions that depend linearly on log10 E and
-   cos zenith, joined by one Gaussian copula per class. A per-plane correction with AR(1) noise is added on top.
-2. **Cells within each plane** (`annuli`, `generator`). Rings of radius about the shower axis, with laws for the cell
-   count, its split over the rings, the energy per cell, one random concentration number per plane (AR(1) along the
-   shower) and an arrival delay per ring. Cells sit at a random angle within their ring, so every shower is centred
-   on its axis.
+## How it works
 
-The CORSIKA files carry a preprocessing defect: a cell-key overflow moved 17-25% of shower-planes 0.7-4 km South.
-`unwrap` repairs it on read.
+The generator draws a shower for a primary (energy, direction, EM or hadronic class) in two steps.
 
-## Files
+1. Energy per plane (`longitudinal.py`, `copula.py`, `sampler.py`). Each species (electron, muon, photon) follows a
+   Gaisser-Hillas curve written in width L and asymmetry R, plus a start depth before which the planes are empty. Its
+   five numbers are drawn from Johnson SU distributions whose parameters are linear in log10 E and cos zenith, and the
+   15 numbers of the three species are correlated through one Gaussian copula per class. A fixed correction and
+   AR(1) noise per plane add what the smooth curve misses.
+2. Cells within each plane (`annuli.py`, `generator.py`). The plane's energy is split over 20 rings of radius around
+   the shower axis (10 m wide at the core, widening to 9 km, plus one open outer ring). Fitted laws give the number of cells, how they split over the rings, the energy per
+   cell in each ring, one random "concentration" number per plane (correlated plane to plane along the shower) and an
+   arrival delay per ring. Cells are placed at a random angle within their ring, so every shower is centred on its
+   axis.
 
-| file | what it does |
-|---|---|
-| `atmosphere.py`, `lateral.py`, `planes.py` | slant depth of the planes, in-plane geometry, energy per plane of CORSIKA files and clouds |
-| `sources.py` | paths of the CORSIKA files and the pinned neural chain |
-| `unwrap.py` | the repair of the cell-key overflow |
-| `longitudinal.py`, `fit_profiles.py` | the profile curve and its fit to every shower |
-| `copula.py`, `sampler.py` | the law of the profile numbers and the energy-per-plane sampler |
-| `annuli.py`, `generator.py` | ring profiles of CORSIKA, the in-plane laws and the cloud draw |
-| `chain.py` | the neural chain at the same test primaries, for comparison (GPU) |
-| `score.py`, `detector.py` | energy per plane scored against CORSIKA; the detector-level check (GPU) |
+All laws are fitted separately per species and class, with the same code for every one of them.
 
-## Pipeline
+The CORSIKA files have a preprocessing defect: a cell-key overflow moved 17-25% of shower-planes 0.7-4 km South of
+where they belong. `unwrap.py` repairs every shower when it is read (exact for e/gamma, approximate for muons, with a
+detector-level effect under 0.3%), so all fits and comparisons use repaired CORSIKA.
 
-Every stage writes into one output folder `OUT`. CPU stages run on `test` or `shared`; parts already on disk are
-skipped, so arrays can use `serial_requeue`.
+## Running it
+
+Run from the repository root with the `tambo` environment, one script per stage. Every stage writes into one output
+folder `OUT`; array stages skip parts already on disk, so they can run on `serial_requeue` and be requeued safely.
 
 ```bash
 P="python -u symbolic"
-# energy per plane
-$P/fit_profiles.py --out $OUT --stage slice                        # CPU: 10,000 training showers + the test file
-$P/fit_profiles.py --out $OUT --stage part --n-parts 26 --part $i  # CPU array, i = 0..25
+
+# 1. energy per plane: fit the curve to every shower
+$P/fit_profiles.py --out $OUT --stage slice                        # CPU, 16 cores ~12 min: 10,000 training showers + test file
+$P/fit_profiles.py --out $OUT --stage part --n-parts 26 --part $i  # CPU array, i = 0..25, ~10 min each
 $P/fit_profiles.py --out $OUT --stage merge --n-parts 26
-# cells within each plane
-$P/annuli.py --out $OUT --stage hist --n-parts 10 --part $i        # CPU array, i = 0..9
+
+# 2. cells within each plane: ring profiles of CORSIKA, then the laws
+$P/annuli.py --out $OUT --stage hist --n-parts 10 --part $i        # CPU array, i = 0..9, ~5 min each
 $P/annuli.py --out $OUT --stage merge --n-parts 10
-$P/generator.py --out $OUT --stage fit                             # CPU, ~20 min -> OUT/generator/model.npz
-$P/generator.py --out $OUT --stage draw                            # one cloud per scored test primary
-$P/generator.py --out $OUT --stage draw --oracle                   # CORSIKA's own plane energies (in-plane laws alone)
-# comparison with the neural chain and CORSIKA
-$P/chain.py --out $OUT --stage draws --first 0 --last 7            # GPU
-$P/chain.py --out $OUT --stage clouds                              # GPU
-$P/score.py --out $OUT                                             # CPU
+$P/generator.py --out $OUT --stage fit                             # CPU ~20 min -> OUT/generator/model.npz
+
+# 3. draw showers at the 1,000 scored test primaries
+$P/generator.py --out $OUT --stage draw                            # -> OUT/generator/clouds.npz
+$P/generator.py --out $OUT --stage draw --oracle                   # same, with CORSIKA's own energy per plane
+
+# 4. compare with CORSIKA and the neural chain
+$P/chain.py --out $OUT --stage draws --first 0 --last 7            # GPU, neural chain energy per plane, 8 draws
+$P/chain.py --out $OUT --stage clouds                              # GPU, neural chain full clouds of draw 0
+$P/score.py --out $OUT                                             # CPU, energy per plane against CORSIKA
 $P/detector.py --root $OUT --clouds generator/clouds.npz --chain chain/clouds_draw00.npz --out generator/check \
-    --heldout <run folder>/v6_run_00/cashed_showers_tau_dual_heldout.pt   # GPU, ~5 min
+    --heldout <run folder>/v6_run_00/cashed_showers_tau_dual_heldout.pt   # GPU ~5 min
 ```
 
-The scored test primaries are 500 per class (`chain.primaries`). `--heldout` must name a run whose held-out corpus
-has its `_positions.pt` file next to it; run 12 (`12_10pct_mean_analytic`) has one, run 13 does not. Self-tests:
-`python tests/analysis/test_symbolic.py`.
+`--heldout` places the showers at real decay vertices and must name a run whose held-out corpus has its
+`_positions.pt` file next to it: run 12 (`12_10pct_mean_analytic`) has one, run 13 does not. The scored primaries are
+500 per class drawn once with a fixed seed (`chain.primaries`), the same for every model.
 
-## Where it stands
+Self-tests (CPU, about two minutes): `python tests/analysis/test_symbolic.py`.
 
-1,000 test primaries against repaired CORSIKA. "Oracle" uses CORSIKA's own plane energies. The numbers are from
-`/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic/generator/model_clean.npz`; the code
-here fits the same model on 0.02% more planes (planes are no longer dropped when an NKG fit fails to converge).
+## Outputs
+
+| folder in `OUT` | contents |
+|---|---|
+| `profiles/` | `fits_slice.npz`, `fits_test.npz`, `fits_train.npz`: energy per plane, plane depths and the fitted curve of every shower |
+| `annuli/` | `annuli.npz`: energy, cell count and delay per ring for every shower and plane of the slice |
+| `generator/` | `model.npz` (all fitted laws), `clouds*.npz` (drawn showers), `check/` (detector results) |
+| `chain/` | the neural chain's draws at the same primaries |
+| `score/` | energy score of the energy per plane, and a figure of median profiles |
+
+Each stage also writes a `results.json` with the git commit, host and job id, and all but `detector.py` a `run.log`
+(under `<folder>/logs/<stage>/`, or `score/run/`).
+
+A drawn cloud file holds, per species, `<species>.points` with shape (showers, cells, 5) and columns
+[x, y, plane, energy, time]: x and y are ground East and North offsets [m] from the injection point, plane is 0-23,
+energy is in GeV and time is in seconds from injection. This is the same layout as the CORSIKA files and the neural
+chain, padded with zero rows. `<species>.E` holds the energy per plane and `rows` the CORSIKA test rows drawn.
+
+## Results
+
+1,000 test primaries (500 EM, 500 hadronic), each compared with its own repaired CORSIKA shower. "Oracle" feeds the
+generator CORSIKA's real energy per plane, which isolates the in-plane laws.
 
 | | symbolic | symbolic, oracle | neural chain |
 |---|---|---|---|
-| energy per plane, energy score vs the neural chain (EM / hadronic) | -0.24 / -0.23 (better) | | 0 |
+| energy per plane: energy score minus the neural chain's (EM / hadronic; negative is better) | -0.24 / -0.23 | | 0 |
 | shower centred on its axis | yes | yes | 150-900 m off |
-| deposited energy, median per-event ratio (EM / hadronic) | 0.97 / 0.62 | 1.00 / 0.96 | 0.51 / 0.32 |
-| leading-edge time shift, median | 0 ns | 0 ns | -37 / -70 ns |
-| lit detectors, relative (EM / hadronic) | +7.8% / +20.6% | +8.3% / +13.6% | +1.5% / +24.2% |
+| deposited energy: median per-event ratio to CORSIKA (EM / hadronic) | 0.97 / 0.62 | 1.00 / 0.96 | 0.51 / 0.32 |
+| arrival time at the detectors: median shift from CORSIKA | 0 ns | 0 ns | -37 / -70 ns |
+| detectors lit: relative to CORSIKA (EM / hadronic) | +7.8% / +20.6% | +8.3% / +13.6% | +1.5% / +24.2% |
 
-Within 200 m of the axis the symbolic model lights the same detectors as CORSIKA; its excess sits beyond 200 m, where
-detectors are near threshold and the model spreads the same energy more evenly than real planes do. The neural
-chain's small EM total is a cancellation: it misses detectors near the axis (its showers are off axis) and adds
-detectors far out.
+Near the axis (within 200 m) the symbolic model lights the same detectors as CORSIKA. Its excess sits farther out,
+where detectors are close to threshold and the model spreads energy more evenly than real planes do. The neural
+chain's small EM number is two errors cancelling: its showers are off axis, so it misses detectors near the axis and
+lights extra ones far out.
 
-Open: the hadronic excess has two parts, the sampled plane energies (about 8 points) and the in-plane laws (about 7).
+These numbers come from `model_clean.npz` in `/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic`.
+The code on this branch reproduces its inputs exactly and fits the same laws on 0.02% more planes (earlier code
+dropped planes whose NKG fit did not converge).
+
+## Known limits
+
+- Hadronic showers light too many detectors (+20.6%) and deposit too little energy (0.62). The oracle row shows most of
+  this comes from the sampled energy per plane rather than from the in-plane laws.
+- One concentration pattern per species does not capture all the plane-to-plane variety of real lateral profiles;
+  this is most of the remaining EM excess far from the axis.
+- The energy-per-plane sampler is fitted on showers with log10 E < 6.125 [GeV]: the training file thins out above
+  that, so higher primaries are an extrapolation.
+- Showers can only be drawn at rows of the CORSIKA test file (`generator.py --stage draw`); there is no function yet
+  that takes an arbitrary list of primaries.
