@@ -1,13 +1,4 @@
-"""Geometry within a plane and the NKG radial law.
-
-Frame: stored cells are CELL x CELL squares in ground (East, North) from the injection point; plane k's axis point is
-(k + 1) x 500 m x direction (horizontal part). A ground offset g has in-plane coordinates a = g . perp (across track)
-and b = g . h / |cos zenith| (along track), with h the horizontal travel direction and perp = h turned by 90 deg.
-
-Radial law (NKG): density f(r) = C(s) / r_s^2 (r / r_s)^(s - 2) (1 + r / r_s)^(s - 4.5), normalised to 1 in the plane,
-containment H(r) = I_{x / (1 + x)}(s, 4.5 - 2 s), x = r / r_s, and r_s = r50 / x_median(s) (r50 holds half the
-energy). The Moliere radius at the plane, r_M,ref = X_M / air density, sets the scale.
-"""
+"""Geometry within a plane (stored ground cells -> in-plane coordinates about the axis) and the NKG radial profile."""
 import numpy as np
 from scipy import special
 
@@ -29,7 +20,7 @@ def frame(direction):
 
 
 def to_plane(g, h, perp, c):
-    """(..., 2) ground offsets from the axis point -> (..., 2) in-plane (a, b)."""
+    """Ground offsets from the axis point -> in-plane (across track, along track); the plane is squashed by |cos z|."""
     return np.stack([g @ perp, g @ h / c], -1)
 
 
@@ -40,7 +31,7 @@ def r_m_ref(k, cos_zenith):
 
 
 def q(r, r_s, s):
-    """1 - containment within radius r: I_{1 / (1 + x)}(4.5 - 2 s, s), x = r / r_s."""
+    """Share of the NKG profile beyond radius r."""
     return special.betainc(4.5 - 2 * s, s, r_s / (r_s + r))
 
 

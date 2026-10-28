@@ -1,13 +1,6 @@
-"""The sampler (symbolic/sampler.py) scored against CORSIKA per primary, together with the generator.
+"""Scores the per-plane energy sampler against CORSIKA, paired per test primary with the neural generator.
 
-Primaries and generator draws: DRAWS, the neural generator's plane energies at the test primaries with
-log10 E < sampler.TOP, M draws each. Every model gets M draws per primary. Observable: y = log10(1 + E_k) on planes 2 to 24 of each species (plane 1
-is empty in most CORSIKA showers and the curve has no onset; its empty fraction is reported instead). Energy score per
-primary, unbiased form
-  ES = mean_j |X_j - y| - sum_{j != k} |X_j - X_k| / (2 M (M - 1)),
-lower is better; per species (23 planes) and for the three species together (69). Models are compared paired, per
-primary, against the generator. Sampler variants: curve only (no plane correction or noise); species independent.
-Also the sampler's held-out check on the test file (sampler.check).
+Metric: energy score (lower is better) of log10(1 + E_k) on planes 2-24, per species and for all three together.
 """
 import argparse
 import glob
@@ -37,7 +30,7 @@ def obs(E):
 
 
 def energy_score(Xs, y):
-    """Xs (n, M, d) draws, y (n, d) observation -> (n,) unbiased energy score."""
+    """Unbiased energy score per primary of M draws Xs (n, M, d) against the observation y (n, d)."""
     M = Xs.shape[1]
     t1 = np.linalg.norm(Xs - y[:, None], axis=2).mean(1)
     pair = np.linalg.norm(Xs[:, :, None] - Xs[:, None], axis=3)
@@ -61,7 +54,7 @@ def load_draws():
 
 
 def load_train(args, log):
-    """m2.load_latent output and the matching fit arrays (same row selection) of the training file."""
+    """Profile numbers and fit arrays of the training showers."""
     path = os.path.join(args.out, m2.FOLDER, "fit", "fits_train_full.npz")
     tr = m2.load_latent(path, log)
     z = np.load(path)

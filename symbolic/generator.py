@@ -1,30 +1,11 @@
-"""Symbolic shower generator: per-plane energies from the phase-1 sampler, cells within each plane from annulus laws.
+"""Symbolic shower generator: energy per plane from the sampler, then cells within each plane from ring laws.
 
-In-plane laws, per species and class, fitted to repaired CORSIKA (annuli.py on M1's training slice), all on the stored
-picture (cap and radius cut included, which is what the detector is compared against). x = annuli.features(age,
-log10 E, cos z, ln E_k, r_M,ref) with age = 3 X / (X + 2 Xmax) clipped to AGE_RANGE.
-  shares   the stored cell count per annulus of in-plane radius (annuli.EDGES) as a multinomial-logit law,
-           log share_j = x . B_j, fitted to every plane's shares (each plane weight 1).
-  cell     ln(energy per cell in annulus j / the plane's energy per cell) = x . C_j, least squares weighted by the
-           cell count. Energy and count are tied per annulus: separately fitted energy and count shares disagree
-           annulus by annulus and make bright cells that over-light the detector.
-  pattern  the cell law's residuals across annuli as one pattern times one number per plane, AR(1) along a shower's
-           planes (planes vary in how concentrated they are around the laws). Weighted rank-1 least squares, weights
-           the cell counts, planes with >= PATTERN_MIN_ANN occupied annuli; the fit has several optima, so it starts
-           from PATTERN_STARTS points and keeps the best training fit.
-  count    ln(cells on the plane) = x . c, plus Gaussian noise (held-out residual sd).
-  delay    median cell delay after the light travel time, per annulus (median over the training planes).
-A draw for a primary (log10 E, direction, class): the sampler's E_k and Xmax per species; per plane with E_k > 0 the
-cell count, its split over the annuli (multinomial on the count shares), cells uniform in area within their annulus
-at a uniform angle in the plane, each cell's energy from the cell law and the plane's pattern number, all scaled to
-sum to E_k, time = light travel time + the annulus delay. Cells in the native cloud format [x, y, plane, energy, time]
-(ground offsets from the injection point).
+Per plane: a cell count, its split over rings about the axis, an energy per cell in each ring, one random
+concentration number per plane (AR(1) along the shower) and a fixed arrival delay per ring. Cells are placed at a
+random angle within their ring. All laws are linear in annuli.features, per species and class.
 
-Stages:
-  fit    the laws, with held-out checks (share per annulus observed / law by |cos z| band, cell-law residuals,
-         pattern variance removed) -> generator/MODEL
-  draw   one cloud per primary of the scored test set (ROWS) -> generator/clouds[_oracle].npz; --oracle: CORSIKA's own
-         plane energies and Xmax instead of the sampler's (isolates the in-plane laws)
+Stages: fit (laws -> generator/MODEL), draw (one cloud per scored test primary; --oracle uses CORSIKA's own plane
+energies to test the in-plane laws alone).
 """
 import argparse
 import os
@@ -42,23 +23,23 @@ from modules.constants import N_PLANES, SPECIES_NAMES
 from symbolic import annuli, atmosphere, latent, lateral, m1, m2, sampler, score
 
 FOLDER = "generator"
-ROWS = os.path.join("chain", "clouds_draw00.npz")   # the scored test primaries (their "rows"), shared with the chain
+ROWS = os.path.join("chain", "clouds_draw00.npz")   # the scored test primaries, shared with the neural chain
 AGE_RANGE = (0.2, 2.5)
-R_OPEN = 1.4                 # the open last annulus is drawn up to R_OPEN x its inner edge
-MIN_CELL_PLANES = 50         # planes with cells in an annulus needed to fit its cell-energy law
-PATTERN_MIN_ANN = 4          # occupied annuli a plane needs to enter the pattern fit
+R_OPEN = 1.4                 # the open last ring is drawn up to R_OPEN x its inner edge
+MIN_CELL_PLANES = 50
+PATTERN_MIN_ANN = 4
 PATTERN_ITERS = 300
-PATTERN_STARTS = 8           # the leading 3 singular vectors, a constant pattern, 4 random ones
+PATTERN_STARTS = 8
 
 
 def age(X, xmax):
-    """Longitudinal age clipped to AGE_RANGE; 1 (the maximum) where Xmax is unknown (an unfit CORSIKA profile)."""
+    """Shower age 3X / (X + 2 Xmax), clipped; 1 where Xmax is unknown."""
     with np.errstate(invalid="ignore"):
         return np.where(np.isfinite(xmax), np.clip(3 * X / (X + 2 * xmax), *AGE_RANGE), 1.0)
 
 
 def fit_shares(x, w):
-    """Multinomial-logit coefficients (n_feat, n_bin) for plane shares w (rows sum to 1); the first bin is the base."""
+    """Multinomial-logit law for how a plane's cells split over the rings."""
     n_f, n_b = x.shape[1], w.shape[1]
 
     def f(b):
@@ -73,15 +54,13 @@ def fit_shares(x, w):
 
 
 def cell_target(e_ann, n_ann):
-    """ln(energy per cell in each annulus / the plane's energy per cell); nan where an annulus has no cells."""
+    """ln(energy per cell in each ring / the plane's energy per cell)."""
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.log(e_ann / n_ann) - np.log(e_ann.sum(1) / n_ann.sum(1))[:, None]
 
 
 def fit_cell_energy(x, e_ann, n_ann, train, test):
-    """Per annulus j, cell_target = x . C_j by least squares weighted by the cell count, on the planes with cells in j;
-    an annulus with fewer than MIN_CELL_PLANES planes takes the coefficients of the annulus inside it. Returns C
-    (n_feat, n_bin) and the held-out residual [mean, sd] per annulus."""
+    """Per ring, a linear law for the energy per cell (weighted by cell count) and its held-out residual."""
     y = cell_target(e_ann, n_ann)
     C, held = np.zeros((x.shape[1], annuli.N_BIN)), []
     for j in range(annuli.N_BIN):
@@ -116,8 +95,8 @@ def lag1(a, unit, plane):
 
 
 def fit_pattern(r, w, rng):
-    """Weighted rank-1 least squares r ~ a g by alternating least squares from PATTERN_STARTS starts (the leading
-    singular vectors, a constant, random), keeping the best training fit; g scaled so that a has unit variance."""
+    """One pattern g across rings, r ~ a g with one number a per plane; best of several starts (the fit has local
+    optima). Scaled so that a has unit variance."""
     starts = list(np.linalg.svd(r[:: max(1, len(r) // 20000)], full_matrices=False)[2][:3])
     starts += [np.ones(r.shape[1])] + list(rng.normal(size=(PATTERN_STARTS - len(starts) - 1, r.shape[1])))
     best = None
@@ -160,7 +139,6 @@ def stage_fit(out, args, log):
             c_n = np.linalg.lstsq(x[train], ln_n[train], rcond=None)[0]
             res_n = (ln_n - x @ c_n)[test]
             r["ln cells held-out R2, sd"] = [round(float(1 - res_n.var() / ln_n[test].var()), 3), round(float(res_n.std()), 3)]
-            # the cell law's residual pattern across annuli, one number per plane
             w = t["n_ann"] * (t["n_ann"] > 0)
             res_e = np.where(w > 0, cell_target(t["e_ann"], t["n_ann"]) - x @ C, 0.0)
             enough = (w > 0).sum(1) >= PATTERN_MIN_ANN
@@ -185,10 +163,10 @@ def stage_fit(out, args, log):
 
 
 def plane_cells(k, d, e_k, x, law, rng, a):
-    """Cells [x, y, plane, energy, time] of one plane; a: the plane's pattern number."""
+    """Cells [x, y, plane, energy, time] of one plane."""
     n = max(1, int(round(np.exp(x @ law["count"] + law["count_sd"] * rng.normal()))))
     counts = rng.multinomial(n, softmax(x @ law["N"]))
-    w = counts * np.exp(x @ law["cell"] + a * law["cell_mode"])     # energy per annulus = cells x energy per cell
+    w = counts * np.exp(x @ law["cell"] + a * law["cell_mode"])
     e_ann = e_k * w / w.sum()
     j = np.repeat(np.arange(len(counts)), counts)
     lo, hi = annuli.EDGES[j], annuli.EDGES[j + 1]
@@ -212,7 +190,7 @@ def stage_draw(out, args, log):
     rng = np.random.default_rng(args.seed)
     E = {s: np.zeros((len(rows), N_PLANES)) for s in SPECIES_NAMES}
     xmax = {s: np.zeros(len(rows)) for s in SPECIES_NAMES}
-    if args.oracle:      # each primary's own CORSIKA plane energies and fitted Xmax: isolates the in-plane laws
+    if args.oracle:
         for s in SPECIES_NAMES:
             E[s], xmax[s] = zt[f"{s}.E"][rows].astype(np.float64), zt[f"{s}.{m2.NAME}.xmax"][rows]
     else:

@@ -1,9 +1,5 @@
-"""The per-shower latent of a Gaisser-Hillas profile fit in width and asymmetry, and the measurements of its
-conditional distribution.
-
-z = (log10 Emax/E, Xmax, ln L, R): Emax the peak energy per plane, E the primary energy, L the width, R the asymmetry
-(R = 0 the Gaussian limit). gh4lr_signed lets R be negative; gh4lr keeps R >= 0, so its fits pile up at R = 0.
-"""
+"""The four numbers per shower and species from a profile fit, z = (log10 Emax/E, Xmax, ln L, R), and summaries of
+their distribution."""
 import numpy as np
 from scipy import stats
 
@@ -28,9 +24,7 @@ def from_latent(z, log10_e):
 
 
 def start_depth(E, X, rng):
-    """Depth [g/cm2] where a species' profile starts. Its leading empty planes say only that the start lies beyond the
-    last of them (or the injection point) and before the first plane with energy; placed uniformly in that interval.
-    NaN when every plane is empty."""
+    """Depth where the profile starts: uniform between the last leading empty plane and the first lit one."""
     lit = E >= E_EMPTY
     n0, rows = np.argmax(lit, 1), np.arange(len(E))
     lo = np.where(n0 > 0, X[rows, np.maximum(n0 - 1, 0)], 0.0)
@@ -39,9 +33,7 @@ def start_depth(E, X, rng):
 
 
 def flags(f, X, Y):
-    """Masks: unfit; fit on a parameter bound (L, Xmax, or R at the cap that keeps the profile's start before the first
-    fitted plane or its end beyond the last); peak before the first plane (before) or beyond the last (after), outside
-    either way; R in the Gaussian limit (a valid shape, reported only). Y is log energy (NaN = empty plane)."""
+    """Per-shower masks: unfit, on a parameter bound, peak before / after / outside the planes, R near 0."""
     xmax, L, R = f["theta"][:, 0], f["theta"][:, 1], f["theta"][:, 2]
     unfit = ~np.isfinite(f["ln_n"])
     first = np.where(np.isfinite(Y), X, np.inf).min(1)

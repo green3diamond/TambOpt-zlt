@@ -1,10 +1,7 @@
-"""M1: can a few numbers per shower describe CORSIKA's plane-by-plane energies, and does the generator reproduce them?
+"""Profile fits of the energy per plane, every candidate shape, on a training slice, the CORSIKA test file and the
+neural generator's showers. Picks the shape and writes fits_train.npz / fits_test.npz, which later steps read.
 
-Stages:
-  fit   (CPU) per-plane energies and slant depths; per-shower profile fits for every family on a training slice (family
-        choice and go verdict), on the CORSIKA test file and on the generator's showers at the same test primaries;
-        structure metrics, physics checks, generator against CORSIKA.
-  pcfm  (CPU) PointCountFM at the test primaries with and without the pipeline's anti-clip re-roll; cap rates.
+Stages: fit (CPU), pcfm (PointCountFM cell totals against the cap; diagnostic).
 """
 import argparse
 import json
@@ -53,7 +50,7 @@ def rows_for(split, limit, seed):
 
 
 def generated(rows, test_meta, log):
-    """The Step 3 generator showers at the given test rows (one draw per CORSIKA test primary, anti-clip re-roll on)."""
+    """Per-plane energies of the neural generator's showers at the given test rows."""
     g = np.load(os.path.join(GEN_DIR, "generated_match.npz"))
     n_matched = int(np.sum(g["repeat_of"] == -1))
     if n_matched != _n_rows("test") or not np.array_equal(g["rows"][:n_matched], np.arange(n_matched)):
@@ -74,7 +71,7 @@ def generated(rows, test_meta, log):
 
 
 def gate_profiles(data, log):
-    """Per-plane energies of the test and generated showers must equal the profiles Step 3 stored for the same rows."""
+    """Gate: per-plane energies must equal the ones stored by data_lane/conditional.py for the same rows."""
     rows = data["test"]["meta"]["rows"]
     ref = {"test": np.load(os.path.join(GEN_DIR, "corsika_test.npz")), "generated": np.load(os.path.join(GEN_DIR, "generated_match.npz"))}
     for name, r in ref.items():
@@ -85,7 +82,7 @@ def gate_profiles(data, log):
 
 
 def gate_cap_rates(s, cor, gen, log10_e, log):
-    """Full test set only: CORSIKA and generated cap rates must reproduce Step 3 (rows with log10 E <= 6.25)."""
+    """Gate: cap rates must equal the ones stored by data_lane/conditional.py (full test set only)."""
     with open(os.path.join(GEN_DIR, "compare", "results.json")) as f:
         ref = json.load(f)["cap_rate"][s]
     m = log10_e <= conditional.HIGH
@@ -130,7 +127,7 @@ def inside(f, X):
 
 
 def fit_everything(data, pool, log):
-    """All families on all datasets; gh3 takes lambda = median gh4 lambda of training fits peaking inside the planes."""
+    """Every family on every dataset."""
     fits = {d: {s: {} for s in SPECIES_NAMES} for d in DATASETS}
     for d in DATASETS:
         for s in SPECIES_NAMES:
@@ -187,8 +184,7 @@ def structure_all(data, fits, rng, log):
 
 
 def select(struct, log):
-    """Per species and class, on the training slice: the family with the highest covariance explained among those
-    passing the per-plane test, else the highest median per-plane R2. The go verdict is that family's."""
+    """Best family per species and class on the training slice."""
     sel = {}
     for s in SPECIES_NAMES:
         for cn in CLASS.values():
@@ -209,7 +205,7 @@ def boot(f, *arrays, rng, n=N_BOOT):
 
 
 def physics(data, fits, sel, rng):
-    """Training slice: elongation rate and zenith term of Xmax, Nmax energy slope, Xmax spread and peak-inside fractions."""
+    """Physics checks of the fits: elongation rate, Xmax spread, Nmax energy slope."""
     tr, out = data["train"], {}
     meta, X = tr["meta"], tr["X"]
     l, u = meta["log10_E"] - 5.5, meta["cos_zenith"]
@@ -241,7 +237,7 @@ def physics(data, fits, sel, rng):
 
 
 def generator_vs_corsika(data, fits, sel, rng):
-    """Matched test primaries: conditional covariance of log E_k, and the latent parameters, generator minus CORSIKA."""
+    """Neural generator against CORSIKA at the same test primaries."""
     meta, X = data["test"]["meta"], data["test"]["X"]
     e_bin = np.digitize(meta["log10_E"], E_EDGES) - 1
     out = {}

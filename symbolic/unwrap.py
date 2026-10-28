@@ -1,33 +1,21 @@
-"""Undo the cell-key overflow in the CORSIKA preprocessing (preprocess_showers.py, _cluster_shower_part).
+"""Repairs the CORSIKA files' cell-key overflow, which moved 17-25% of shower-planes km South of the axis.
 
-The preprocessing keys a plane's cells as (ix - x_min) * stride + (iy - y_min) with stride = x range + 2, so a cell with
-iy - y_min >= stride decodes q = floor((iy - y_min) / stride) cells East and q * stride cells South of where it was
-(and merges with any cell already there). The plane's energy is unchanged; its positions are not.
-
-Repair, per plane: a plane is moved when < NEAR_FRACTION of its energy lies within NEAR m of the axis point and one of
-its TOP brightest cells is EAST_RANGE East and more than SOUTH_MIN South. Their shifts give q and stride up to a cell;
-every stride in that window is tried, each cell then takes the q in 0..Q_MAX that puts it nearest the axis in the plane
-(lateral.to_plane), and the stride with the most energy under a SHARP Gaussian about the axis wins (strides read off
-neighbouring q move the core alike and differ by one cell East; ranking by the energy within NEAR first did worse for
-every species). Exact for cells within stride / 2 cells of the axis; farther tail cells may take the wrong q. Planes
-whose core did not move keep any wrapped tail cells (their stride is not observable). Merged cells stay merged.
-Checked on clean planes corrupted with the preprocessing's keying: e/gamma restored; muons approximate (broad planes
-whose brightest cell is often not the core: median plane restored, about a third take a wrong stride), which moves the
-detector response by under 0.3%.
+A moved plane is recognised by its core sitting South of the axis; each cell is shifted back by the multiple of the
+key stride that brings it nearest the axis. Exact for e/gamma, approximate for muons (detector effect < 0.3%).
 """
 import numpy as np
 
 from symbolic import atmosphere, lateral
 
 CELL = lateral.CELL
-NEAR = 50.0                       # m, ground radius about the axis point
+NEAR = 50.0                       # m; a plane with < NEAR_FRACTION of its energy this close to the axis may be moved
 NEAR_FRACTION = 0.5
-EAST_RANGE = (-15.0, 200.0)       # m; q = 1 moves 10 m East, and the brightest cell may sit a cell West of the axis
-SOUTH_MIN = 100.0                 # m; below it South shifts and their mirror occur about equally often (muons)
+EAST_RANGE = (-15.0, 200.0)       # m; where a moved core can sit East of the axis
+SOUTH_MIN = 100.0                 # m; and how far South it must be
 Q_MAX = 40
-STRIDE_SLACK = 15.0               # m, the core's own offset from the axis when reading the stride off its shift
-TOP = 1                           # brightest cells read for the signature (5 raised the muon mirror null 0.25% -> 1.9%)
-SHARP = 10.0                      # m, Gaussian weight about the axis that picks the stride (resolves one cell East)
+STRIDE_SLACK = 15.0               # m
+TOP = 1                           # brightest cells checked
+SHARP = 10.0                      # m; the stride that puts most energy within this of the axis wins
 
 
 def axis_point(k, direction):
@@ -52,21 +40,21 @@ def _signature(off, sign):
 
 
 def moved(xy, e, axis_xy):
-    """True when one of the plane's brightest cells carries the overflow's signature and the core is off the axis."""
+    """True when the plane's core is off the axis in the way the overflow moves it."""
     if not len(e) or e.sum() <= 0:
         return False
     return bool(near_share(xy, e, axis_xy) < NEAR_FRACTION and _signature(_top(xy, e, axis_xy), 1).any())
 
 
 def mirror(xy, e, axis_xy):
-    """The same signature turned by 180 deg: no mechanism produces it (a null for the flag)."""
+    """The same test turned by 180 deg, which nothing produces (a false-positive check)."""
     if not len(e) or e.sum() <= 0:
         return False
     return bool(near_share(xy, e, axis_xy) < NEAR_FRACTION and _signature(_top(xy, e, axis_xy), -1).any())
 
 
 def apply_stride(xy, axis_xy, direction, stride, q_max=Q_MAX):
-    """Each cell moved back by the q in 0..q_max that puts it nearest the axis in the plane; (positions, q)."""
+    """Move each cell back by the multiple of the stride that puts it nearest the axis."""
     h, perp, c = lateral.frame(direction)
     q = np.arange(q_max + 1)
     shift = np.stack([-q * CELL, q * stride * CELL], -1)                         # (Q, 2)
@@ -77,7 +65,7 @@ def apply_stride(xy, axis_xy, direction, stride, q_max=Q_MAX):
 
 
 def strides(xy, e, axis_xy):
-    """Candidate strides from the shifts of the brightest cells that carry the signature."""
+    """Candidate strides read off how far the core moved."""
     out = set()
     for east, north in _top(xy, e, axis_xy)[_signature(_top(xy, e, axis_xy), 1)]:
         q0 = max(1, int(round(east / CELL)))
@@ -89,7 +77,7 @@ def strides(xy, e, axis_xy):
 
 
 def unwrap_plane(xy, e, axis_xy, direction):
-    """(positions, stride): the plane repaired, stride 0 when it was not moved."""
+    """Repaired positions and the stride used (0 = plane untouched)."""
     xy = np.asarray(xy, np.float64)
     if not moved(xy, e, axis_xy):
         return xy, 0
@@ -109,7 +97,7 @@ def centred(xy, e, axis_xy):
 
 
 def unwrap_shower(points, direction, n_planes):
-    """(P, 5) native cloud [x, y, plane, energy, time] -> (repaired copy, stride per plane, 0 = untouched)."""
+    """Repair a cloud [x, y, plane, energy, time] plane by plane -> (repaired copy, stride per plane)."""
     out = np.array(points, np.float64, copy=True)
     s_k = np.zeros(n_planes, np.int64)
     k_all = np.rint(out[:, 2]).astype(int)
@@ -132,7 +120,7 @@ def restore(points, direction, s_k):
 
 
 def encode(xy, e, stride, y_min=None):
-    """The preprocessing's keying with a given stride on cell centres (the overflow, for tests): (positions, energies)."""
+    """Apply the preprocessing's faulty cell keying (to make corrupted planes for the tests)."""
     idx = np.floor(np.asarray(xy, np.float64) / CELL).astype(np.int64)
     x_min = idx[:, 0].min()
     y_min = idx[:, 1].min() if y_min is None else y_min

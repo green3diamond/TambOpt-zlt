@@ -1,10 +1,6 @@
-"""Slant depth of the observation planes in the atmosphere CORSIKA 8 used for the training showers.
+"""Slant depth of the observation planes in the 5-layer USStdBK atmosphere used by the CORSIKA 8 training showers.
 
-`c8_air_shower.cpp` builds `create_5layer_atmosphere(AtmosphereId::USStdBK, ...)` on a sphere of the mean Earth radius;
-the layer table is the USStdBK entry of `corsika/media/CORSIKA7Atmospheres.hpp`. Each of the first four layers is an
-exponential in altitude h above the mean radius, rho = (b / c) exp(-h / c), valid below its upper boundary; the fifth
-is a constant density b / c. The shower starts 2,500 m above the mean radius, and "zenith" is the direction of travel,
-so axes with zenith below 90 deg climb (checked against a raw plane config: zenith 72.93 deg, normal z -0.2936).
+"zenith" is the direction of travel, so an axis with zenith below 90 deg climbs.
 """
 import numpy as np
 

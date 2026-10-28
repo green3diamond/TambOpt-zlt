@@ -1,12 +1,5 @@
-"""Distributional regression of the profile numbers: one margin per number, joined by a Gaussian copula.
-
-Margins. Each number gets a normal (location, log scale) or Johnson SU law (location, log scale, skew gamma, log tail
-delta) whose parameters are linear in (a, b) plus a b, with a, b the standardized log10 E and cos zenith (Design).
-Johnson SU: x = xi + lambda sinh((z - gamma) / delta) with z standard normal, so its normal score is explicit.
-
-Copula. z = Phi^-1(u), u the margin CDF; the scores of all numbers are joined by one correlation matrix. A shower's
-log-likelihood is the sum of the margin log densities plus log c(z) = log N(z; 0, C) - sum log phi(z).
-"""
+"""Conditional law of the profile numbers: a Johnson SU (or normal) margin per number with parameters linear in
+log10 E, cos zenith and their product, joined by one Gaussian copula."""
 import numpy as np
 import torch
 from scipy import stats
@@ -34,7 +27,7 @@ def _t(x):
 
 
 class Margin:
-    """One number: family 'normal' or 'jsu', parameters D @ W. Values are standardized (loc, scale) before fitting."""
+    """The margin of one number, family 'normal' or 'jsu'."""
     N_PAR = {"normal": 2, "jsu": 4}
 
     def __init__(self, family):
@@ -67,7 +60,7 @@ class Margin:
         return log_dg - 0.5 * g * g - 0.5 * LOG_2PI
 
     def fit(self, D, x, max_iter=500):
-        """Maximum likelihood (L-BFGS) on rows D (n, k), values x (n,); Johnson SU starts at delta 2, gamma 0."""
+        """Maximum likelihood with L-BFGS."""
         D, x = _t(D), _t(x)
         self.loc, self.scale = float(x.mean()), float(x.std())
         xs = (x - self.loc) / self.scale
@@ -120,7 +113,7 @@ def normal_scores(margins, D, X):
 
 
 def tail_rate(margin, D, x, q=stats.norm.sf(3)):
-    """Fraction of rows beyond the margin's q and 1 - q quantiles (2 q expected; 0.0027 for 3 sd)."""
+    """Fraction of rows beyond the margin's 3-sigma quantiles (0.0027 if the margin is right)."""
     u = margin.cdf(D, x)
     return float(np.mean((u < q) | (u > 1 - q)))
 
@@ -139,7 +132,7 @@ def gaussian_logc(Z, C):
 
 
 def block_corr(C, sizes):
-    """Keep only the diagonal blocks of the given sizes (numbers of different species independent)."""
+    """Zero the correlations between species."""
     out = np.zeros_like(C)
     for i, n in zip(np.cumsum([0, *sizes[:-1]]), sizes):
         out[i:i + n, i:i + n] = C[i:i + n, i:i + n]

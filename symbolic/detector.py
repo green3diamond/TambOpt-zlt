@@ -1,18 +1,6 @@
-"""Detector-level check of generated showers against repaired CORSIKA (and optionally the deployed neural chain).
-
-Each model's clouds at the same test primaries go through the pipeline kernel (KernelDualLabels) on the grid layout,
-placed at decay vertices matched to the primaries by direction (the held-out corpus' nearest direction). Per class:
-  lit        detectors above LAYOUT_THRESHOLD per event: mean, relative and paired difference to CORSIKA, fraction of
-             events with >= 5 / 10 / 20 lit
-  deposit    median of the per-event ratio of deposited energy to CORSIKA's; 16/50/84% of log10 deposit per event
-  time       leading-edge shift at detectors lit in both (median and 16/84%)
-  distance   lit detectors per event and P(lit) by distance from the shower axis, measured in the kernel's frame: one
-             point per plane on the axis is placed with place_clouds_enu, and a detector's distance is its (North, Up)
-             offset from the axis at its own East position (the kernel blurs in (North, Up) and weights planes by East)
-Clouds are in the native format [x, y, plane, energy, time] (generator.py draw output: "<species>.points", "rows").
-Writes response.npz (energy and time per event and detector, per model) and results.json to OUT.
-Usage: python symbolic/detector.py --root ROOT --clouds GEN.npz --out OUT [--chain CHAIN.npz]   (one GPU; ROOT is
-the output folder of m1.py and generator.py, relative paths are taken inside it)
+"""Detector-level check: generated showers, repaired CORSIKA and optionally the neural chain, through the pipeline
+kernel on the grid layout at the same test primaries. Reports lit detectors, deposited energy and arrival time,
+also by distance from the shower axis. One GPU.
 """
 import argparse
 import json
@@ -62,8 +50,7 @@ def padded(clouds):
 
 
 def vertices(dirs, heldout):
-    """Decay vertices of the held-out corpus' primaries nearest in direction (heldout: the corpus file; its vertices
-    sit next to it as <corpus>_positions.pt)."""
+    """Decay vertices taken from the held-out corpus primary nearest in direction."""
     pos_all = torch.load(os.path.splitext(heldout)[0] + "_positions.pt")
     n_pairs = pos_all.shape[0] // len(SPECIES_NAMES)
     inc = showerdata.load_inc_particles(heldout, start=0, stop=n_pairs)
@@ -98,7 +85,7 @@ def response(per_species, pos, dirs, surface, xy, device):
 
 
 def axis_distance(dirs, pos, det_e, det_n, det_u):
-    """(events, detectors) distance in (North, Up) from the axis at the detector's East position; nan outside the planes."""
+    """Distance of each detector from the shower axis in the kernel's frame (NaN outside the planes)."""
     k = np.arange(N_PLANES)
     axis = np.zeros((len(dirs), N_PLANES, 5), np.float32)
     axis[:, :, :2] = ((k + 1) * atmosphere.PLANE_SPACING)[None, :, None] * dirs[:, None, :2]

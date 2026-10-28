@@ -1,32 +1,19 @@
-"""The sampler of per-plane energies: the profile numbers' conditional law, then the curve, then the planes.
-
-Fitted per class on training showers clean in all three species with log10 E < TOP (the training file's top energy
-bin is a depleted sub-sample and is left out):
-  numbers  the four numbers of each species (m2.NAME latent) and its start depth (latent.start_depth: where the
-           profile begins; planes before it are empty), a Johnson SU margin each, parameters linear in (log10 E,
-           cos zenith) plus their product; one Gaussian correlation matrix of all 15 normal scores.
-  planes   log E_k about the curve, per species and class from the training fits: a fixed correction per plane (the
-           mean residual, what the curve misses on average) and noise with an sd per plane and one lag-1
-           correlation along the planes (AR(1)).
-A draw: z ~ N(0, C) -> margins -> each species' curve at the primary's plane depths -> + correction + noise; planes
-before the species' start depth empty.
-The numbers are drawn from their law truncated to physical profiles: a draw whose curve ends (R < 0, at xmax + L/|R|)
-before the last plane is drawn again, as the fits never end inside the planes.
-"""
+"""Draws the energy per plane for a primary: 5 numbers per species (profile + start depth) from the copula, the
+profile curve at the plane depths, then a per-plane correction and AR(1) noise. Fitted per class."""
 import numpy as np
 from scipy import special
 
 from modules.constants import SPECIES_NAMES
 from symbolic import copula as cp, families as fam, latent, m2
 
-TOP = 6.125
-MIN_PAIR = 1000            # showers with both planes for a lag-1 correlation to count
+TOP = 6.125                # log10 E; the training file's top bin is under-filled and left out
+MIN_PAIR = 1000
 MAX_REDRAWS = 100
-BLOCK = len(latent.NAMES[m2.NAME]) + 1     # numbers per species in the joint latent: the profile, then the start
+BLOCK = len(latent.NAMES[m2.NAME]) + 1     # numbers per species: the profile, then the start depth
 
 
 def class_rows(d, c, top=TOP):
-    """Rows (of m2.load_latent output) of class c, clean in every species, below `top`: joint latent and conditions."""
+    """Showers of class c with a clean fit in every species: their joint numbers and conditions."""
     m = ((d["meta"]["labels"] == c) & (d["meta"]["log10_E"] < top)
          & np.all([d[s]["clean"] & np.isfinite(d[s]["start"]) for s in SPECIES_NAMES], 0))
     return {"rows": np.nonzero(m)[0],
@@ -35,8 +22,7 @@ def class_rows(d, c, top=TOP):
 
 
 def plane_residuals(fits, rows):
-    """Per species: mean (correction) and sd per plane of log E_k minus the curve, and the lag-1 correlation of the
-    standardized residuals averaged over neighbouring plane pairs. `fits` holds X and the species' E and fit arrays."""
+    """Per species: mean and sd per plane of log E_k minus the curve, and their plane-to-plane correlation."""
     X = fits["X"][rows]
     out = {}
     for s in SPECIES_NAMES:
@@ -55,7 +41,7 @@ def plane_residuals(fits, rows):
 
 
 def fit(tr, fits, c):
-    """Sampler for class c from m2.load_latent output `tr` and the matching fit arrays `fits` (same rows)."""
+    """Fit the sampler for class c."""
     t = class_rows(tr, c)
     design = cp.Design(t["l"], t["u"])
     D = design(t["l"], t["u"])
@@ -66,7 +52,7 @@ def fit(tr, fits, c):
 
 
 def species_block(Zlat, i):
-    """Species i's profile numbers (n, 4) and start depth (n,) from a joint latent (n, BLOCK x species)."""
+    """Species i's profile numbers and start depth."""
     b = Zlat[:, BLOCK * i:BLOCK * (i + 1)]
     return b[:, :-1], b[:, -1]
 
@@ -102,9 +88,7 @@ def ends_inside(Zlat, l, X):
 
 
 def sample(model, l, u, X, rng, planes=True, independent=False, return_latent=False):
-    """Per-plane energies (n, K) per species, one draw per primary (l, u, plane depths X). planes=False: the curve
-    only; independent=True: species drawn independently (block-diagonal C), as the pipeline does; return_latent=True:
-    also the drawn joint latent (n, 15) (species_block, then latent.from_latent, gives xmax, L, R, ln_nmax)."""
+    """One draw of the per-plane energies per primary. Curves that end before the last plane are drawn again."""
     C = cp.block_corr(model["C"], [BLOCK] * len(SPECIES_NAMES)) if independent else model["C"]
 
     def draw(idx):
@@ -134,8 +118,7 @@ def sample(model, l, u, X, rng, planes=True, independent=False, return_latent=Fa
 
 
 def check(model, te, c):
-    """Held-out check on the test file: Johnson SU tail rate per number (0.0027 expected) and the log-likelihood per
-    shower the correlations add (Gaussian copula against independent numbers and against independent species)."""
+    """On the test file: tail rate of each margin and the log-likelihood the correlations add."""
     t = class_rows(te, c)
     D = model["design"](t["l"], t["u"])
     Z = cp.normal_scores(model["margins"], D, t["X"])

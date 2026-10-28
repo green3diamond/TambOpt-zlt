@@ -1,9 +1,4 @@
-"""Longitudinal profile families in slant depth X [g/cm2] and their per-shower least-squares fits to log E_k.
-
-Every family is log f(X) = ln_n + shape(X; theta). ln_n enters linearly, so it is profiled out (the residual is
-centred) and the optimiser only sees the shape parameters theta, through an unconstrained transform u -> theta.
-Planes with zero energy are left out of the fit; the model is still evaluated there.
-"""
+"""Longitudinal profile shapes log E(X) = ln_n + shape(X; theta) in slant depth X, and their per-shower fits."""
 import numpy as np
 from scipy.optimize import least_squares
 
@@ -66,7 +61,7 @@ R_SERIES = 1e-4        # below this |R z|, the R -> 0 series replaces log1p (can
 
 
 def _gh_lr_shape(X, xmax, L, R):
-    """Gaisser-Hillas in width L and asymmetry R (X0 = xmax - L/R, lambda = L R); R = 0 is the Gaussian limit."""
+    """Gaisser-Hillas in width L and asymmetry R; R = 0 is the Gaussian limit."""
     z = (X - xmax) / L
     t = R * z
     small = np.abs(t) < R_SERIES
@@ -77,8 +72,7 @@ def _gh_lr_shape(X, xmax, L, R):
 
 
 def r_caps(xmax, L, xfirst, xlast):
-    """Largest |R| for each sign of R: R > 0 keeps the profile's start (xmax - L/R) before the first fitted plane,
-    R < 0 keeps its end (xmax + L/|R|) beyond the last one."""
+    """Largest |R| for each sign that keeps the curve's start before the first plane and its end after the last."""
     ahead, behind = np.asarray(xmax - xfirst, np.float64), np.asarray(xlast - xmax, np.float64)
     with np.errstate(divide="ignore"):
         pos = np.where(ahead > 0, np.minimum(R_MAX, L / np.where(ahead > 0, ahead, 1.0)), R_MAX)
@@ -87,9 +81,7 @@ def r_caps(xmax, L, xfirst, xlast):
 
 
 def gaisser_hillas_lr(signed=False):
-    """theta = (xmax, L, R). u = (xmax - xref, ln L, v) with R = v * cap (r_caps), so neither the start nor the end of
-    the profile falls inside the fitted planes. gh4lr keeps R >= 0; gh4lr_signed lets R be negative (skewed the other
-    way), so the R -> 0 limit is not a boundary. `extra` is the depth of the last fitted plane (uses_last)."""
+    """theta = (xmax, L, R). gh4lr keeps R >= 0; gh4lr_signed (the one in use) also allows R < 0."""
     def to_theta(u, xref, extra):
         xmax, L = xref + u[0], np.exp(u[1])
         pos, neg = r_caps(xmax, L, xref, extra)
@@ -153,8 +145,7 @@ N_THETA = 3
 
 
 def fit_one(fam, X, y, extra=None):
-    """Fit one shower. X (K,) increasing depths, y (K,) log energy with NaN for empty planes.
-    Returns (ln_n, theta, mse, n_fit) or None if too few planes."""
+    """Fit one shower's log energies y (NaN = empty plane) at depths X -> (ln_n, theta, mse, n_fit), or None."""
     ok = np.isfinite(y)
     Xf, yf = X[ok], y[ok]
     if len(yf) < fam.n_par + 2:
@@ -182,7 +173,7 @@ def fit_one(fam, X, y, extra=None):
 
 
 def fit_block(args):
-    """Worker: fit family `name` to rows of Y (n, K) at depths X (n, K); `extra` is per-row (gh3 fixed lambda) or None."""
+    """Pool worker: fit family `name` to every row of Y."""
     name, X, Y, extra = args
     fam = FAMILIES[name]
     n = len(Y)
@@ -201,7 +192,7 @@ def fit_block(args):
 
 
 def evaluate(name, fit, X):
-    """(n, K) model log energy at depths X from the output of fit_block; -inf where the shape vanishes, NaN where unfit."""
+    """Fitted log energy at depths X (-inf where the curve is zero, NaN where unfit)."""
     fam = FAMILIES[name]
     k = len(fam.theta_names)
     out = np.full(X.shape, np.nan)

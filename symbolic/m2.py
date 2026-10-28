@@ -1,19 +1,7 @@
-"""M2: a profile fit to every CORSIKA training shower, and the conditional distribution of its parameters.
+"""The chosen profile shape (Gaisser-Hillas in width and asymmetry) fitted to every CORSIKA training shower.
 
-One curve for every species (NAME): Gaisser-Hillas in width and asymmetry with R allowed to be negative, so no fit
-sits on an R = 0 boundary.
-
-Stages:
-  part   (CPU, one array task) a contiguous slice of the training rows: per-plane energies, cell counts, slant depths
-         and the profile fit for every species. Written atomically; a part already on disk is checked and skipped, so a
-         requeued task does no repeated work.
-  merge  (CPU) all parts into one file. Gates: the parts cover every training row exactly once; on M1's training
-         slice the energies equal M1's exactly and the fits agree to 1e-6. Summary of fit coverage per species and class.
-  latent (CPU) step 2: the four fitted numbers of each species as a latent (symbolic/latent.py), training range only. Per
-         species and class: fits on a bound or peaking outside the planes; quadratic trend in (log10 E, cos zenith)
-         against binned means; spread against energy and zenith; tails. Per class, the numbers of the three species
-         jointly: held-out Gaussian log-likelihood of a full, energy-binned, species-independent and diagonal
-         covariance. Trends and covariances are fitted on the training file and scored on the test file.
+Stages: part (CPU array; parts already on disk are skipped), merge (checks against m1's fits), latent (summaries of
+the fitted numbers' distribution; diagnostic).
 """
 import argparse
 import os
@@ -33,12 +21,12 @@ from symbolic import atmosphere, latent, m1, planes
 FOLDER = "m2"
 NAME = "gh4lr_signed"
 SIZES = [len(latent.NAMES[NAME])] * len(SPECIES_NAMES)          # latent numbers per species
-MIN_BIN_ROWS = 60             # energy bins with fewer showers in all three species fall back to the full covariance
+MIN_BIN_ROWS = 60
 FIT_RTOL = 1e-6
-MAX_FIT_MISMATCH = 1e-3       # fraction of M1 rows allowed to differ beyond FIT_RTOL (another local minimum)
-LOG10_E_MAX = 6.25            # CORSIKA training is effectively cut here (data lane census)
-E_EDGES = m1.E_EDGES          # 5.00 to 6.25 in steps of 0.25
-N_COS_CELLS = 6               # cos zenith cells (training quantiles) for the binned-mean reference
+MAX_FIT_MISMATCH = 1e-3       # share of m1 rows allowed to land in another local minimum
+LOG10_E_MAX = 6.25            # the training showers end here
+E_EDGES = m1.E_EDGES
+N_COS_CELLS = 6
 FIG_E = np.arange(5.0, 6.2501, 0.125)
 
 
@@ -92,7 +80,7 @@ def stage_part(out, args, log):
 
 
 def gate_m1(merged, m1_fits, log):
-    """On M1's training slice: energies equal exactly, profile parameters agree to FIT_RTOL."""
+    """Gate: on m1's training slice the energies match exactly and the fits to FIT_RTOL."""
     z = np.load(m1_fits)
     r = z["meta.rows"]
     r = r[r < len(merged["meta.rows"])]
@@ -156,10 +144,8 @@ def stage_merge(out, args, log):
 
 
 def load_latent(path, log):
-    """Latent, flags and conditions of every species from a fit file, restricted to log10 E <= LOG10_E_MAX.
-    Clean: fitted, not on a bound, and the peak within the planes. The profile numbers are defined only there: with the
-    peak before the first plane or beyond the last, the planes fix the curve but not Xmax, and such fits widen the
-    margins and distort the correlations shared by every shower."""
+    """Profile numbers and flags per species from a fit file. Clean = fitted, off the bounds, peak within the planes
+    (outside them Xmax is not determined)."""
     z = np.load(path)
     keep = z["meta.log10_E"] <= LOG10_E_MAX
     meta = {k: z[f"meta.{k}"][keep] for k in ("log10_E", "cos_zenith", "labels")}
@@ -178,7 +164,7 @@ def load_latent(path, log):
 
 
 def species_class(tr, te, s, c, log):
-    """One species and class: flag fractions, trend against binned means (scored on test), spread, tails."""
+    """Summaries for one species and class: flags, trend, spread, tails."""
     mt, mv = tr["meta"], te["meta"]
     a = (mt["labels"] == c) & tr[s]["clean"]
     b = (mv["labels"] == c) & te[s]["clean"]
@@ -212,7 +198,7 @@ def joint_labels():
 
 
 def joint(tr, te, per, c, log):
-    """The numbers of the three species together: correlation, and held-out log-likelihood of four covariances."""
+    """The three species together: correlations and held-out log-likelihood."""
     def stacked(d):
         m = (d["meta"]["labels"] == c) & np.all([d[s]["clean"] for s in SPECIES_NAMES], 0)
         R = np.hstack([latent.residuals(d[s]["Z"][m], d["meta"]["log10_E"][m], d["meta"]["cos_zenith"][m],

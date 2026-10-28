@@ -1,20 +1,7 @@
-"""Route B in-plane model, data side: per shower, species and plane of repaired CORSIKA (symbolic/unwrap.py), the stored
-energy and the stored cell count per annulus of in-plane radius about the axis, the median arrival delay per annulus
-(cell time minus the light travel time to the plane), and NKG fits to the energy and to the count profile.
+"""Per shower, species and plane of repaired CORSIKA: energy, cell count and median arrival delay in rings of radius
+about the shower axis, plus an NKG fit to each profile. The generator's in-plane laws are fitted to these.
 
-The detector needs no more than this (a CORSIKA ablation through the pipeline kernel): cells at their own radius and a
-random angle, each annulus's energy shared equally among its cells, keep lit detectors within 2-4%, deposits within
-0.3% and the leading edge unchanged. A generator then needs an energy profile, a count profile and the count per plane.
-
-NKG fit of a profile w_j (energy or count per annulus, j over EDGES up to the plane's largest stored radius r_hi):
-annulus shares q(r_j) - q(r_j+1) of lateral.q, normalised within [0, r_hi] (the radius cut and the cap leave the rest
-unseen), fitted by the multinomial likelihood in (ln(r50 / r_M,ref), s) within lateral's bounds.
-
-Stages:
-  hist   (CPU, one array task) a contiguous slice of M1's training rows (slice_rows), every species. Atomic parts.
-  merge  the parts in row order; a summary of the fits.
-  laws   NKG fit quality per annulus; per species and class the plane numbers linear in features (one Gaussian
-         residual covariance), held-out R2; the energy profile's s against the longitudinal age.
+Stages: hist (CPU array, one slice of the training showers per task), merge, laws (NKG fit quality, diagnostic).
 """
 import argparse
 import os
@@ -44,7 +31,7 @@ FIT = ("ln_r50", "s", "ok")
 
 
 def slice_rows(out, limit):
-    """M1's training rows; a smoke run takes `limit` of them evenly spread (the file is sorted by class)."""
+    """The training showers of the profile fits (m1); a smoke run takes `limit` of them evenly spread."""
     rows = np.load(os.path.join(out, m1.FOLDER, "fit", "fits_train.npz"))["meta.rows"]
     return rows[np.linspace(0, len(rows) - 1, limit).astype(int)] if limit else rows
 
@@ -66,7 +53,7 @@ def nkg_shares(edges, ln_r50, s, r_ref):
 
 
 def fit_profile(w, r_hi, r_ref):
-    """(ln(r50 / r_ref), s, converged) of the NKG shares that best match the profile w, normalised within r_hi."""
+    """NKG fit (ln(r50 / r_ref), s, converged) to a ring profile w, seen out to radius r_hi."""
     edges = np.minimum(EDGES, r_hi)
     n = int(np.searchsorted(EDGES, r_hi, side="left"))      # annuli that reach into [0, r_hi]
     edges, w = edges[:n + 1], w[:n] / w[:n].sum()
@@ -164,15 +151,14 @@ def stage_merge(out, args, log):
 
 
 def features(age, log10_e, cos_z, ln_ek, r_ref):
-    """Law design: (1, age, age^2, log10 E - 5.5, |cos z|, ln |cos z| (the stored picture stretches as 1 / |cos z| along
-    track), ln E_k - its typical value, ln(r_M,ref / 100 m) (the Moliere radius at the plane))."""
+    """Inputs of every in-plane law: age, age^2, log10 E, |cos z|, ln |cos z|, plane energy, Moliere radius."""
     c = np.maximum(np.abs(cos_z), 1e-3)
     return np.column_stack([np.ones_like(age), age, age ** 2, log10_e - 5.5, c, np.log(c), ln_ek - 10.0,
                             np.log(r_ref / 100.0)])
 
 
 def law_table(out, args):
-    """Per species, one row per fitted plane: law numbers, features, class, shower index, and the profile data."""
+    """Per species, one row per usable plane: its ring profiles and law inputs."""
     z = dict(np.load(os.path.join(out, "annuli.npz")))
     m1f = np.load(os.path.join(args.out, m1.FOLDER, "fit", "fits_train.npz"))
     if not np.array_equal(m1f["meta.rows"], z["meta.rows"]):
@@ -221,8 +207,7 @@ COS_BANDS = (0.0, 0.1, 0.3, 1.01)
 
 
 def stage_laws(out, args, log):
-    """Fit quality of the NKG profiles; per species and class the laws of the plane numbers (least squares on 80% of
-    the showers, R2 and residual sd on the other 20%), the residual covariance, and s(E) against the age."""
+    """NKG fit quality and linear laws for the NKG numbers (held-out R2)."""
     tab = law_table(out, args)
     res, laws = {"annulus edges [m]": EDGES[:-1].tolist()}, {}
     for s, t in tab.items():

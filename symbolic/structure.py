@@ -1,8 +1,4 @@
-"""How much of the plane-by-plane structure a fitted profile carries, at fixed primary energy and zenith.
-
-The condition trend is removed per plane by least squares on a quadratic in (log10 E, cos zenith), so what remains is
-the shower-to-shower variation the latent z has to explain. Empty planes are missing values (NaN) throughout.
-"""
+"""How well fitted profiles reproduce the plane-to-plane spread of showers at fixed energy and zenith (family choice)."""
 import numpy as np
 
 R2_GO = 0.75            # per-plane: model residual RMS at most half the conditional shower-to-shower spread
