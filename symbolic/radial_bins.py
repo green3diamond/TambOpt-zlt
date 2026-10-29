@@ -136,13 +136,15 @@ def stage_run(out, args, log):
     curves, laws = {}, {}
     kl = lambda o, p: float(np.median(np.sum(o * (np.log(o + radial.EPS) - np.log(p + radial.EPS)), 1)))
     for s, d in data.items():
+        if args.species and s != args.species:
+            continue
         q = ring_shares(d["obs"], M)
         for c, cn in planes.CLASS.items():
             m = d["label"] == c
             test = m & (d["i"] % 5 == 0)
             train = m & ~test
             B0, _ = generator.fit_shares(d["x"][train], q[train])
-            B, opt = fit_direct(d["x"][train], d["obs"][train], M, B0)
+            B, opt = fit_direct(d["x"][train], d["obs"][train], M, B0, args.max_iter)
             law = window(across(softmax(d["x"][test] @ B, axis=1), M))
             law0 = window(across(softmax(d["x"][test] @ B0, axis=1), M))
             fit = window(across(q[test], M))
@@ -151,6 +153,7 @@ def stage_run(out, args, log):
             w_law, w_fit = radial.w1(radial.pooled(law), radial.pooled(obs)), radial.w1(radial.pooled(fit),
                                                                                        radial.pooled(obs))
             r = {"planes": int(m.sum()), "held-out planes": int(test.sum()), "law converged": bool(opt.success),
+                 "iterations": int(opt.nit), "final loss": float(opt.fun),
                  "W1 law / per-plane rings / split-half noise": [w_law, w_fit, scale],
                  "W1 law fitted to per-plane rings (start)": radial.w1(radial.pooled(law0), radial.pooled(obs)),
                  "median per-plane KL law / rings": [kl(obs, law), kl(obs, fit)],
@@ -172,8 +175,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--max-iter", type=int, default=2000)
+    ap.add_argument("--species", choices=SPECIES_NAMES, help="one species only")
+    ap.add_argument("--name", default="run", help="output folder under radial_bins/")
     args = ap.parse_args()
-    out, log = logs.start(os.path.join(FOLDER, "run"), args)
+    out, log = logs.start(os.path.join(FOLDER, args.name), args)
     logs.save(out, stage_run(out, args, log), args, log)
 
 
