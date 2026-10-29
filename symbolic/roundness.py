@@ -9,6 +9,11 @@ within windows about the axis (the radius cut and the cap act far out and not sy
 split-half noise.
 
 Rule (fixed before the run): PASS for e/gamma if W1(A, B) <= 2 x split-half noise in the 300 m window.
+
+--permutations N: a null made from the data themselves. Under roundness A and B are exchangeable, so swapping them in
+randomly chosen shower-planes leaves W1 statistically unchanged; N such swaps give the W1 a round shower would show at
+this sample size and sparsity. Rule (fixed before that run): round if the observed W1 in the 300 m window is within
+the 95th percentile of the swapped ones (p > 0.05).
 """
 import argparse
 import os
@@ -43,7 +48,7 @@ def offsets(cells, d, rng):
     A = t[:, 0] + (u1 @ h) / c
     B = t[:, 1] + u2 @ perp
     w = cells[:, 3] / np.bincount(k, cells[:, 3], k.max() + 1)[k]
-    return A, B, w
+    return A, B, w, k
 
 
 def w1(x, y, wx, wy, window):
@@ -57,7 +62,7 @@ def tables(clouds, dirs, rng):
     for s in SPECIES_NAMES:
         parts = [(i, *offsets(c[c[:, 3] > 0], dirs[i], rng)) for i, c in enumerate(clouds[s]) if np.any(c[:, 3] > 0)]
         out[s] = {"i": np.concatenate([np.full(len(p[1]), p[0]) for p in parts]),
-                  **{k: np.concatenate([p[j] for p in parts]) for j, k in ((1, "A"), (2, "B"), (3, "w"))}}
+                  **{k: np.concatenate([p[j] for p in parts]) for j, k in ((1, "A"), (2, "B"), (3, "w"), (4, "k"))}}
     return out
 
 
@@ -70,6 +75,19 @@ def split_half(t, members, rng):
         for w in WINDOWS:
             vals[w].append(w1(t["B"][m], t["B"][~m], t["w"][m], t["w"][~m], w))
     return {w: float(np.mean(v) / np.sqrt(2)) for w, v in vals.items()}
+
+
+def permutation_p(t, window, n_perm, rng):
+    """Observed W1(A, B) and the share of plane-wise A/B swaps that give at least as large a W1."""
+    obs = w1(t["A"], t["B"], t["w"], t["w"], window)
+    unit = np.unique(t["i"] * 64 + t["k"], return_inverse=True)[1].ravel()
+    null = []
+    for _ in range(n_perm):
+        swap = rng.random(unit.max() + 1)[unit] < 0.5
+        A, B = np.where(swap, t["B"], t["A"]), np.where(swap, t["A"], t["B"])
+        null.append(w1(A, B, t["w"], t["w"], window))
+    null = np.array(null)
+    return obs, float((null >= obs).mean()), float(np.percentile(null, 95))
 
 
 def fig_profiles(tab, lab):
@@ -116,6 +134,12 @@ def stage_run(out, args, log):
             d = {w: w1(sub["A"], sub["B"], sub["w"], sub["w"], w) for w in WINDOWS}
             r = {"n_showers": len(members), "W1 across vs along": d, "split-half noise": scale,
                  "ratio": {w: d[w] / scale[w] for w in WINDOWS}}
+            if args.permutations:
+                obs, p, q95 = permutation_p(sub, RULE_WINDOW, args.permutations, rng)
+                r["permutation"] = {"W1": obs, "p": p, "null 95th percentile": q95,
+                                    "verdict": "ROUND" if p > 0.05 else "NOT ROUND"}
+                log.info("%-8s %-8s permutation test at %d m: W1 %.4f, null 95%% %.4f, p %.3f -> %s", s, cn,
+                         RULE_WINDOW, obs, q95, p, r["permutation"]["verdict"])
             if s != "muon":
                 r["verdict"] = "PASS" if d[RULE_WINDOW] <= 2 * scale[RULE_WINDOW] else "FAIL"
             res["results"][f"{s} {cn}"] = r
@@ -130,8 +154,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
+    ap.add_argument("--permutations", type=int, default=0, help="plane-wise A/B swaps for the permutation null")
+    ap.add_argument("--name", default="run", help="output folder under roundness/")
     args = ap.parse_args()
-    out, log = logs.start(os.path.join(FOLDER, "run"), args)
+    out, log = logs.start(os.path.join(FOLDER, args.name), args)
     logs.save(out, stage_run(out, args, log), args, log)
 
 
