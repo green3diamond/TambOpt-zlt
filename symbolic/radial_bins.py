@@ -5,7 +5,9 @@ radius (flat density within a ring), inferred from the exact across-track profil
 across-track bins through a fixed matrix (round density, 10 m cell rounding at a random grid angle), and each plane's
 ring shares are the non-negative mixture weights that best explain its across-track shares (EM updates). Laws: a
 multinomial logit of the ring shares in annuli.features (with the longitudinal age), per species and class, one form
-for every species.
+for every species, fitted directly to the measured across-track shares of all training planes (likelihood of the
+observed shares under the law's projected shares), started from the law fitted to the per-plane ring shares. The
+direct fit is what sparse planes (a few muons) need: inverting such a plane alone smears each particle inward.
 
 Rule (fixed before the run): on held-out planes the law's pooled across-track profile inside radial.WINDOW is within
 2 x split-half noise (energy-weighted Wasserstein-1 on log10(1 + |t1| / m), every plane weighted equally).
@@ -19,6 +21,7 @@ sys.path.insert(0, REPO)
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.optimize import minimize
 from scipy.special import softmax
 
 from symbolic import logs
@@ -67,6 +70,23 @@ def across(q, M):
     """Across-track shares of ring shares q, normalised within OUTER."""
     p = q @ (M / M.sum(1, keepdims=True))
     return p / p.sum(1, keepdims=True)
+
+
+def fit_direct(x, obs, M, B0, max_iter=2000):
+    """Multinomial-logit ring law fitted to observed across-track shares through the projection M."""
+    Mn = M / M.sum(1, keepdims=True)
+    n_f, n_r = x.shape[1], M.shape[0]
+
+    def f(b):
+        B = np.column_stack([np.zeros(n_f), b.reshape(n_f, n_r - 1)])
+        q = softmax(x @ B, axis=1)
+        p = np.maximum(q @ Mn, radial.EPS)
+        g = -(obs / p) @ Mn.T                                         # dL/dq per plane
+        geta = q * (g - (q * g).sum(1, keepdims=True))                # through the softmax
+        return -np.sum(obs * np.log(p)) / len(x), (x.T @ geta)[:, 1:].ravel() / len(x)
+
+    res = minimize(f, B0[:, 1:].ravel(), jac=True, method="L-BFGS-B", options={"maxiter": max_iter})
+    return np.column_stack([np.zeros(n_f), res.x.reshape(n_f, n_r - 1)]), res
 
 
 def window(p):
@@ -121,8 +141,10 @@ def stage_run(out, args, log):
             m = d["label"] == c
             test = m & (d["i"] % 5 == 0)
             train = m & ~test
-            B, opt = generator.fit_shares(d["x"][train], q[train])
+            B0, _ = generator.fit_shares(d["x"][train], q[train])
+            B, opt = fit_direct(d["x"][train], d["obs"][train], M, B0)
             law = window(across(softmax(d["x"][test] @ B, axis=1), M))
+            law0 = window(across(softmax(d["x"][test] @ B0, axis=1), M))
             fit = window(across(q[test], M))
             obs = window(d["obs"][test])
             scale = radial.split_half(obs, d["i"][test], rng)
@@ -130,6 +152,7 @@ def stage_run(out, args, log):
                                                                                        radial.pooled(obs))
             r = {"planes": int(m.sum()), "held-out planes": int(test.sum()), "law converged": bool(opt.success),
                  "W1 law / per-plane rings / split-half noise": [w_law, w_fit, scale],
+                 "W1 law fitted to per-plane rings (start)": radial.w1(radial.pooled(law0), radial.pooled(obs)),
                  "median per-plane KL law / rings": [kl(obs, law), kl(obs, fit)],
                  "mean ring shares (held out) data / law": [q[test].mean(0).round(4).tolist(),
                                                             softmax(d["x"][test] @ B, axis=1).mean(0).round(4).tolist()],
@@ -137,8 +160,9 @@ def stage_run(out, args, log):
             res["results"][f"{s} {cn}"] = r
             curves[(s, cn)] = (radial.pooled(obs), radial.pooled(fit), radial.pooled(law))
             laws[f"{s}.{cn}.rings"] = B
-            log.info("%-8s %-8s planes %6d | W1 law %.4f rings %.4f noise %.4f | KL law %.4f rings %.4f | %s", s, cn,
-                     m.sum(), w_law, w_fit, scale, *r["median per-plane KL law / rings"], r["verdict"])
+            log.info("%-8s %-8s planes %6d | W1 law %.4f (start %.4f) rings %.4f noise %.4f | KL law %.4f rings %.4f "
+                     "| %s", s, cn, m.sum(), w_law, r["W1 law fitted to per-plane rings (start)"], w_fit, scale,
+                     *r["median per-plane KL law / rings"], r["verdict"])
     np.savez(os.path.join(out, "ring_laws.npz"), rings=RINGS, **laws)
     logs.save_fig(fig_profiles(curves), out, "profiles", log)
     return res

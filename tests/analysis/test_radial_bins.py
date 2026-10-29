@@ -58,6 +58,22 @@ def test_a_needle_core_is_reproduced_in_the_first_bins():
     assert np.max(np.abs(pred[:2] - obs.mean(0)[:2])) < 0.005
 
 
+def test_direct_law_fit_handles_sparse_planes():
+    rng = np.random.default_rng(10)
+    M = rb.ring_matrix()
+    q_true = np.r_[0.02, 0.02, 0.04, 0.07, 0.10, 0.10, 0.10, 0.12, 0.12, 0.10, 0.08, 0.06, 0.04, 0.02, 0.01, 0.0]
+    q_true = q_true / q_true.sum()
+    obs = toy_obs(rng, q_true, n_showers=3000, n=4)          # a few particles per plane, like EM muons
+    x = np.ones((len(obs), 1))
+    B0, _ = rb.generator.fit_shares(x, rb.ring_shares(obs, M))
+    B, res = rb.fit_direct(x, obs, M, B0)
+    target = obs.mean(0)
+    err_direct = np.abs(rb.across(rb.softmax(x[:1] @ B, axis=1), M)[0] - target).max()
+    err_start = np.abs(rb.across(rb.softmax(x[:1] @ B0, axis=1), M)[0] - target).max()
+    print(f"      sparse planes: projected max error direct {err_direct:.4f}, through per-plane inversion {err_start:.4f}")
+    assert res.success and err_direct < 0.005 and err_start > 2 * err_direct
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
