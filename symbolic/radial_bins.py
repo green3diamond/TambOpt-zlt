@@ -95,7 +95,8 @@ def window(p):
 
 
 def plane_table(root):
-    """Per species: across-track shares inside OUTER, features (with the longitudinal age), class and shower."""
+    """Per species: across-track shares inside OUTER, features (with the longitudinal age), class, shower, plane and
+    cells inside OUTER."""
     tab = annuli.table(root, "across")
     fs = np.load(os.path.join(root, fit_profiles.SLICE))
     out = {}
@@ -105,7 +106,8 @@ def plane_table(root):
         age_long = generator.age(fs["X"][t["i"], t["k"]], fs[f"{s}.xmax"][t["i"]])
         x = annuli.features(age_long, fs["meta.log10_E"][t["i"]], fs["meta.cos_zenith"][t["i"]],
                             np.log(t["e_ann"].sum(1)), t["r_ref"])
-        out[s] = {"obs": (e / e.sum(1, keepdims=True))[ok], "x": x[ok], "label": t["label"][ok], "i": t["i"][ok]}
+        out[s] = {"obs": (e / e.sum(1, keepdims=True))[ok], "x": x[ok], "label": t["label"][ok], "i": t["i"][ok],
+                  "k": t["k"][ok], "n": t["n_ann"][:, :N_BIN].sum(1)[ok]}
     return out
 
 
