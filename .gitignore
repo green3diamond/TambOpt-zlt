@@ -30,3 +30,13 @@ plots/paper_figures/
 
 # GPU health-gate consecutive-failure counter (slurm/run_all_script_batch.sh)
 .gpu_gate_fails
+
+# AllShowers-flow-matching-surrogate (copied from ~/AllShowers): training runs, samples
+# and logs are large and live outside git
+AllShowers-flow-matching-surrogate/results/
+AllShowers-flow-matching-surrogate/logs/*
+!AllShowers-flow-matching-surrogate/logs/.gitkeep
+AllShowers-flow-matching-surrogate/*.egg-info/
+AllShowers-flow-matching-surrogate/PointCountFM/results/
+AllShowers-flow-matching-surrogate/PointCountFM/plots/
+AllShowers-flow-matching-surrogate/PointCountFM/*.egg-info/
