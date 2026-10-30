@@ -53,6 +53,18 @@ def test_permutation_null_on_sparse_planes():
     assert p[1.0] > 0.05 and p[1.5] < 0.01, p
 
 
+def test_window_option_and_one_species_figure():
+    """The --window path: round sparse toys stay round in a 100 m window; the figure draws one species alone."""
+    rng = np.random.default_rng(13)
+    A, B, w, k, i = offsets_of(rng, 1.0, n_showers=300, n=60)
+    p = roundness.permutation_p({"A": A, "B": B, "w": w, "k": k, "i": i}, 100.0, 200, rng)[1]
+    print(f"      sparse round planes, 100 m window: p {p:.3f}")
+    assert p > 0.05, p
+    tab = {"muon": {"i": i, "A": A, "B": B, "w": w, "k": k}}
+    fig = roundness.fig_profiles(tab, np.arange(i.max() + 1) % 2)
+    assert len(fig.axes) == 2, len(fig.axes)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

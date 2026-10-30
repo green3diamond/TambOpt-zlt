@@ -13,7 +13,8 @@ Rule (fixed before the run): PASS for e/gamma if W1(A, B) <= 2 x split-half nois
 --permutations N: a null made from the data themselves. Under roundness A and B are exchangeable, so swapping them in
 randomly chosen shower-planes leaves W1 statistically unchanged; N such swaps give the W1 a round shower would show at
 this sample size and sparsity. Rule (fixed before that run): round if the observed W1 in the 300 m window is within
-the 95th percentile of the swapped ones (p > 0.05).
+the 95th percentile of the swapped ones (p > 0.05). --window W runs the same test in a W m window (100 m stays inside
+the region the radius cut does not touch); --species runs one species, and results are saved after every group.
 """
 import argparse
 import os
@@ -56,10 +57,10 @@ def w1(x, y, wx, wy, window):
     return float(stats.wasserstein_distance(np.log10(1 + np.abs(x[mx])), np.log10(1 + np.abs(y[my])), wx[mx], wy[my]))
 
 
-def tables(clouds, dirs, rng):
+def tables(clouds, dirs, rng, species=SPECIES_NAMES):
     """Per species: shower index, A, B, weight of every cell."""
     out = {}
-    for s in SPECIES_NAMES:
+    for s in species:
         parts = [(i, *offsets(c[c[:, 3] > 0], dirs[i], rng)) for i, c in enumerate(clouds[s]) if np.any(c[:, 3] > 0)]
         out[s] = {"i": np.concatenate([np.full(len(p[1]), p[0]) for p in parts]),
                   **{k: np.concatenate([p[j] for p in parts]) for j, k in ((1, "A"), (2, "B"), (3, "w"), (4, "k"))}}
@@ -92,9 +93,9 @@ def permutation_p(t, window, n_perm, rng):
 
 def fig_profiles(tab, lab):
     bins = np.logspace(0, 3.3, 34)
-    fig, axes = plt.subplots(2, 3, figsize=(7.6, 4.4), sharex=True, sharey=True)
+    fig, axes = plt.subplots(2, len(tab), figsize=(7.6, 4.4), sharex=True, sharey=True, squeeze=False)
     for r, (c, cn) in enumerate(planes.CLASS.items()):
-        for j, s in enumerate(SPECIES_NAMES):
+        for j, s in enumerate(tab):
             ax, t = axes[r, j], tab[s]
             m = lab[t["i"]] == c
             for key, col, name in (("A", "black", "across track"), ("B", "#2a78d6", "along track")):
@@ -122,9 +123,11 @@ def stage_run(out, args, log):
              (lab == 1).sum())
     clouds = suite.corsika_clouds(rows, dirs, args.workers)
     rng = np.random.default_rng(args.seed)
-    tab = tables(clouds, dirs, rng)
-    res = {"n_showers": len(rows), "cos_min": COS_MIN, "rule": __doc__.split("Rule")[1].strip(), "results": {}}
-    for s in SPECIES_NAMES:
+    species = [args.species] if args.species else SPECIES_NAMES
+    tab = tables(clouds, dirs, rng, species)
+    res = {"n_showers": len(rows), "cos_min": COS_MIN, "permutation window": args.window,
+           "rule": __doc__.split("Rule")[1].strip(), "results": {}}
+    for s in species:
         for c, cn in planes.CLASS.items():
             t = tab[s]
             m = lab[t["i"]] == c
@@ -135,18 +138,18 @@ def stage_run(out, args, log):
             r = {"n_showers": len(members), "W1 across vs along": d, "split-half noise": scale,
                  "ratio": {w: d[w] / scale[w] for w in WINDOWS}}
             if args.permutations:
-                obs, p, q95 = permutation_p(sub, RULE_WINDOW, args.permutations, rng)
+                obs, p, q95 = permutation_p(sub, args.window, args.permutations, rng)
                 r["permutation"] = {"W1": obs, "p": p, "null 95th percentile": q95,
                                     "verdict": "ROUND" if p > 0.05 else "NOT ROUND"}
                 log.info("%-8s %-8s permutation test at %d m: W1 %.4f, null 95%% %.4f, p %.3f -> %s", s, cn,
-                         RULE_WINDOW, obs, q95, p, r["permutation"]["verdict"])
+                         args.window, obs, q95, p, r["permutation"]["verdict"])
             if s != "muon":
                 r["verdict"] = "PASS" if d[RULE_WINDOW] <= 2 * scale[RULE_WINDOW] else "FAIL"
             res["results"][f"{s} {cn}"] = r
             log.info("%-8s %-8s n %4d | W1 / noise per window %s %s", s, cn, len(members),
                      {int(w): f"{d[w]:.4f}/{scale[w]:.4f}" for w in WINDOWS}, r.get("verdict", ""))
+            logs.save(out, res, args, log)
     logs.save_fig(fig_profiles(tab, lab), out, "across_vs_along", log)
-    return res
 
 
 def main():
@@ -155,10 +158,12 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--permutations", type=int, default=0, help="plane-wise A/B swaps for the permutation null")
+    ap.add_argument("--window", type=float, default=RULE_WINDOW, help="window [m] of the permutation test")
+    ap.add_argument("--species", choices=SPECIES_NAMES, help="one species only")
     ap.add_argument("--name", default="run", help="output folder under roundness/")
     args = ap.parse_args()
     out, log = logs.start(os.path.join(FOLDER, args.name), args)
-    logs.save(out, stage_run(out, args, log), args, log)
+    stage_run(out, args, log)
 
 
 if __name__ == "__main__":
