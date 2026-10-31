@@ -328,20 +328,22 @@ def stage_run(out, args, log):
            "trait steps max": Z_STEPS,
            "rule": __doc__.split("Rule")[1].strip(), "results": {}}
     for c, cn in planes.CLASS.items():
-        laws = {s: np.load(os.path.join(args.out, radial_bins.FOLDER, f"conv_{s}", "ring_laws.npz"))[f"{s}.{cn}.rings"]
+        if cn not in args.cls:
+            continue
+        laws ={s: np.load(os.path.join(args.out, radial_bins.FOLDER, f"conv_{s}", "ring_laws.npz"))[f"{s}.{cn}.rings"]
                 for s in SPECIES_NAMES}
         t = tensors(data, laws, c)
         test = t["i"] % 5 == 0
         tr, te = take(t, ~test), take(t, test)
         res["results"][cn] = {"showers train / held out": [int((~test).sum()), int(test.sum())]}
-        for K in range(K_MAX + 1):
+        for K in args.k:
             model, info = fit(K, tr, M, args.seed)
             r = {**info, **judge(model, te, M, rng)}
             res["results"][cn][f"K={K}"] = r
             torch.save({"state": model.state_dict(), "K": K}, os.path.join(out, f"traits_{cn}_K{K}.pt"))
             log.info("%-8s K=%d epochs %d | %s | %s", cn, K, info["epochs"], summary_line(r), r["verdict"])
             logs.save(out, res, args, log)
-        passing = [K for K in range(K_MAX + 1) if res["results"][cn][f"K={K}"]["verdict"] == "PASS"]
+        passing = [K for K in sorted(args.k) if res["results"][cn][f"K={K}"]["verdict"] == "PASS"]
         res["results"][cn]["smallest passing K"] = passing[0] if passing else None
         log.info("%-8s smallest passing K: %s", cn, res["results"][cn]["smallest passing K"])
         logs.save(out, res, args, log)
@@ -352,6 +354,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--name", default="run", help="output folder under traits/")
+    ap.add_argument("--k", type=int, nargs="+", default=list(range(K_MAX + 1)), help="numbers of traits to fit")
+    ap.add_argument("--cls", nargs="+", choices=list(planes.CLASS.values()), default=list(planes.CLASS.values()))
     args = ap.parse_args()
     out, log = logs.start(os.path.join(FOLDER, args.name), args)
     stage_run(out, args, log)
