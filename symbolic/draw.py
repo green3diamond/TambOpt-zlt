@@ -4,9 +4,9 @@ scored primaries (chain.primaries), in the suite's cloud format.
 Per primary and species: plane energies E_k and Xmax from the Part-1 sampler (one draw, fixed seed); per plane with
 energy, inputs annuli.features; then, with the laws of particles.py (fitted on the v2 raw showers):
   1. energy before the cut   E_k / stored share (stored law)
-  2. ring energies           shares from the rings law with the plane-to-plane variety: --variety width (the law
-                             stretched in radius by the width law, AR(1) along the planes) or k0 (K=0 plane noise of
-                             traits.py on the logits of the rings inside 1100 m)
+  2. ring energies           shares from the rings law with the plane-to-plane variety: --variety width
+                             (default: the law stretched in radius by the width law, AR(1) along the planes) or k0
+                             (K=0 plane noise of traits.py on the logits of the rings inside 1100 m)
   3. particles per ring      Poisson(ring energy / mean particle energy (mean_energy law)), at most ring / E_MIN
   4. particle energies       E_MIN each plus the ring's excess split by Burr XII draws (spread law): the ring energy
                              is exact and no particle falls under CORSIKA's threshold
@@ -237,7 +237,7 @@ def main():
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--clouds", default="clouds.npz", help="merge stage: output file name")
-    ap.add_argument("--variety", choices=("k0", "width"), default="k0", help="draw stage: plane-to-plane variety")
+    ap.add_argument("--variety", choices=("width", "k0"), default="width", help="draw stage: plane-to-plane variety")
     args = ap.parse_args()
     out, log = logs.start(os.path.join(FOLDER, args.name), args)
     stage = {"energies": stage_energies, "draw": stage_draw, "merge": stage_merge}[args.stage]
