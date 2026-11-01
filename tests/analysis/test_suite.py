@@ -69,6 +69,18 @@ def test_shifted_source_stands_out_and_a_fresh_draw_does_not():
     assert len(same["cells"]["vs CORSIKA"]["per_plane"]) == 24
 
 
+def test_verdict_judges_rows_against_the_chain():
+    row = lambda w: {"vs CORSIKA": {"pooled": w}}
+    names = (*suite.CELL_OBS, *suite.PLANE_OBS)
+    r = {"symbolic": {**{n: row(0.1) for n in names}, "classifier AUC": {"vs CORSIKA": 0.45}},
+         "neural chain": {**{n: row(0.2) for n in names}, "classifier AUC": {"vs CORSIKA": 0.70}}}
+    r["symbolic"]["cells"] = row(0.3)
+    v = suite.verdict(r)
+    assert v["abs_t1"]["verdict"] == "PASS" and v["cells"]["verdict"] == "FAIL"
+    assert v["lead_time"]["verdict"] == v["mean_time"]["verdict"] == "reported"
+    assert v["classifier AUC"]["verdict"] == "PASS" and np.isclose(v["classifier AUC"]["symbolic"], 0.05)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

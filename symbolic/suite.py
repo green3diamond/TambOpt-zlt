@@ -10,7 +10,12 @@ repaired CORSIKA per species and class by Wasserstein-1 on:
   mean_time    energy-weighted mean cell time per plane minus the axis light time [ns]
 pooled over planes, by plane group about each shower's own peak plane (early, peak, late) and per plane index; plus a
 classifier two-sample AUC on per-plane summary vectors. Scale: the same numbers between two random halves of the
-CORSIKA primaries, divided by sqrt(2) to match two full samples (mean of SPLITS splits).
+CORSIKA primaries, divided by sqrt(2) to match two full samples (mean of SPLITS splits). Every number is computed
+separately for steep (|cos z| >= GRAZE) and grazing primaries.
+
+Rule (fixed before the 2.4 run, user 10-31), per species, class and zenith band: a row PASSES when the symbolic
+source's pooled W1 to CORSIKA is at most the neural chain's (classifier: |AUC - 0.5| at most the chain's); rows
+JUDGED are judged, the time rows are reported only.
 """
 import argparse
 import os
@@ -37,6 +42,9 @@ CELL_OBS = ("abs_t1", "cell_energy")
 PLANE_OBS = ("cells", "centre", "lead_time", "mean_time")
 GROUPS = ("early", "peak", "late")
 PEAK_HALF = 2                 # planes within this of a shower's peak plane form its "peak" group
+GRAZE = 0.1                   # |cos z| below this: grazing (the in-plane frame is unresolved there)
+BANDS = {"steep": lambda u: np.abs(u) >= GRAZE, "grazing": lambda u: np.abs(u) < GRAZE}
+JUDGED = ("abs_t1", "cell_energy", "cells", "centre", "classifier AUC")
 SPLITS = 5
 CLF_EPOCHS = 300
 NS = 1e9
@@ -190,6 +198,20 @@ def compare(ref, other):
     return res
 
 
+def verdict(r):
+    """Per row: the symbolic and chain numbers (pooled W1, or |AUC - 0.5|) and PASS / FAIL / reported."""
+    out = {}
+    for name in (*CELL_OBS, *PLANE_OBS, "classifier AUC"):
+        v = {src: r[src][name]["vs CORSIKA"] if name == "classifier AUC" else r[src][name]["vs CORSIKA"]["pooled"]
+             for src in SOURCES}
+        if name == "classifier AUC":
+            v = {src: abs(a - 0.5) for src, a in v.items()}
+        judged = name in JUDGED and None not in v.values()
+        v["verdict"] = ("PASS" if v["symbolic"] <= v["neural chain"] else "FAIL") if judged else "reported"
+        out[name] = v
+    return out
+
+
 def split_half(ref, n_showers, members, rng):
     """Split-half scale of every metric among the CORSIKA primaries `members` (one species and class)."""
     oa = observables(*ref["tables"])
@@ -242,20 +264,21 @@ def fig_t1(data, labels):
 
 
 def fig_ratio(res):
-    """Pooled W1 over the split-half scale, per observable, species and class."""
+    """Pooled W1 over the split-half scale, per observable, species, class and zenith band."""
     names = (*CELL_OBS, *PLANE_OBS)
     fig, axes = plt.subplots(1, len(names), figsize=(3.2 * len(names), 3.4), sharey=True)
-    keys = [(s, cn) for cn in planes.CLASS.values() for s in SPECIES_NAMES]
+    keys = [(s, cn, b) for cn in planes.CLASS.values() for s in SPECIES_NAMES for b in BANDS]
     x = np.arange(len(keys))
+    ratio = lambda a, b: np.nan if a is None or not b else a / b
     for ax, name in zip(axes, names):
         for o, src in enumerate(SOURCES):
-            v = [res[s][cn][src][name]["vs CORSIKA"]["pooled"] / res[s][cn]["split-half scale"][name]["pooled"]
-                 for s, cn in keys]
+            v = [ratio(res[s][cn][b][src][name]["vs CORSIKA"]["pooled"],
+                       res[s][cn][b]["split-half scale"][name]["pooled"]) for s, cn, b in keys]
             ax.scatter(x + 0.15 * (o - 0.5), v, color=COLORS[src], s=18, label=src)
         ax.axhline(1, color="gray", lw=0.8, ls="--")
         ax.set_yscale("log")
         ax.set_xticks(x)
-        ax.set_xticklabels([f"{s[:2]} {cn[:3]}" for s, cn in keys], rotation=60, fontsize=7)
+        ax.set_xticklabels([f"{s[:2]} {cn[:3]} {b[:4]}" for s, cn, b in keys], rotation=60, fontsize=6)
         ax.set_title(name, fontsize=9)
     axes[0].set_ylabel("W1 / split-half scale", fontsize=8)
     axes[0].legend(fontsize=7)
@@ -279,19 +302,21 @@ def stage_run(out, args, log):
     res = {s: {} for s in SPECIES_NAMES}
     for s in SPECIES_NAMES:
         for c, cn in planes.CLASS.items():
-            keep = lab == c
-            sub = {src: {"tables": select(*d[s], keep)} for src, d in data.items()}
-            for v in sub.values():
-                v["features"] = plane_features(v["tables"][1], l, u)
-            r = {"split-half scale": split_half(sub["CORSIKA"], n, np.nonzero(keep)[0], rng)}
-            for src in SOURCES:
-                r[src] = compare(sub["CORSIKA"], sub[src])
-            res[s][cn] = r
-            log.info("%s %s pooled W1 vs CORSIKA (split-half scale): %s | AUC symbolic %.3f chain %.3f halves %.3f", s, cn,
-                     {name: [round(r[src][name]["vs CORSIKA"]["pooled"], 4) for src in SOURCES]
-                      + [round(r["split-half scale"][name]["pooled"], 4)] for name in (*CELL_OBS, *PLANE_OBS)},
-                     r["symbolic"]["classifier AUC"]["vs CORSIKA"], r["neural chain"]["classifier AUC"]["vs CORSIKA"],
-                     r["split-half scale"]["classifier AUC"]["pooled"])
+            res[s][cn] = {}
+            for band, sel in BANDS.items():
+                keep = (lab == c) & sel(u)
+                sub = {src: {"tables": select(*d[s], keep)} for src, d in data.items()}
+                for v in sub.values():
+                    v["features"] = plane_features(v["tables"][1], l, u)
+                r = {"primaries": int(keep.sum()), "split-half scale": split_half(sub["CORSIKA"], n, np.nonzero(keep)[0],
+                                                                                   rng)}
+                for src in SOURCES:
+                    r[src] = compare(sub["CORSIKA"], sub[src])
+                r["verdict"] = verdict(r)
+                res[s][cn][band] = r
+                log.info("%s %s %s (%d primaries) | %s", s, cn, band, keep.sum(), " | ".join(
+                    f"{name} {v['symbolic']:.4g} vs {v['neural chain']:.4g} {v['verdict']}"
+                    for name, v in r["verdict"].items() if v["symbolic"] is not None and v["neural chain"] is not None))
     logs.save_fig(fig_t1(data, lab), out, "abs_t1_peak", log)
     logs.save_fig(fig_ratio(res), out, "w1_over_scale", log)
     return {"n_primaries": n, "sources": {"CORSIKA": "h5 test files, repaired (unwrap)", **SOURCES},
