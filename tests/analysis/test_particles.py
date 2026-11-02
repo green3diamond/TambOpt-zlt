@@ -128,18 +128,36 @@ def test_stretch_moves_energy_outward_and_widths_are_recovered():
     wide = particles.stretch(q, 0.5)
     assert np.isclose(wide.sum(), 1.0) and (np.cumsum(wide)[:-1] <= np.cumsum(q)[:-1] + 1e-9).all()
     truth = np.array([-0.8, -0.2, 0.0, 0.3, 1.1])
-    got = particles.plane_widths(np.array([particles.stretch(q, v) for v in truth]), np.tile(q, (len(truth), 1)))
-    assert np.allclose(got, truth, atol=0.011)
+    got, tau = particles.plane_shapes(np.array([particles.stretch(q, v) for v in truth]), np.tile(q, (len(truth), 1)),
+                                      tilt=False)
+    assert np.allclose(got, truth, atol=0.011) and not tau.any()
 
 
-def test_width_law_recovers_slope_and_memory():
+def test_tilt_keeps_the_half_energy_radius_and_shapes_are_recovered():
+    q = np.diff(np.r_[0.0, 1 - (1 + particles.EDGES[1:-1] / 100.0) ** -1.5, 1.0])    # broad: no clipping at 9 km
+    half = lambda p: np.interp(0.5, np.cumsum(p)[:-1], np.log10(particles.EDGES[1:-1]))
+    steep = particles.stretch(q, 0.0, 1.5)
+    assert abs(half(steep) - half(q)) < 0.02 and steep[:3].sum() < q[:3].sum()     # less energy in the inner rings
+    truth = [(-0.4, 0.8), (0.0, -0.6), (0.3, 0.0), (0.7, 1.2)]
+    true = np.array([particles.stretch(q, a, b) for a, b in truth])
+    lam, tau = particles.plane_shapes(true, np.tile(q, (4, 1)))
+    back = np.array([particles.stretch(q, a, b) for a, b in zip(lam, tau)])
+    rms = lambda p: np.sqrt(((particles.cum_logodds(p) - particles.cum_logodds(true)) ** 2).mean(1))
+    width_only = np.array([particles.stretch(q, a) for a in lam])
+    tilted = [0, 1, 3]
+    assert (rms(back)[tilted] < 0.85 * rms(width_only)[tilted]).all()       # the tilt carries part of the rest (in sequence)
+    assert abs(lam[2] - 0.3) < 0.011 and abs(tau[2]) < 0.02 and rms(back)[2] < 1e-3      # untilted: exact
+    assert (np.sign(tau[[0, 1, 3]]) == [1, -1, 1]).all()
+
+
+def test_ar1_law_recovers_slope_and_memory():
     rng = np.random.default_rng(10)
     unit, k = np.repeat(np.arange(60), 24), np.tile(np.arange(24), 60)
     x = np.column_stack([np.ones(len(unit)), rng.normal(size=(len(unit), 2))])
     e = np.concatenate([0.15 * particles_ar1(rng, 0.8) for _ in range(60)])
     lam = x @ np.array([-0.3, 0.4, 0.0]) + e
     test = particles.split_showers(unit, np.full(len(unit), "EM"), rng.uniform(5, 6, 60))
-    w, res = particles.width_law(x, lam, unit, k, test)
+    w, res = particles.ar1_law(x, lam, unit, k, test)
     assert np.allclose(w[:3], [-0.3, 0.4, 0.0], atol=0.03) and abs(w[3] - 0.15) < 0.02 and abs(w[4] - 0.8) < 0.05
     assert res["held-out R2"] > 0.8
 

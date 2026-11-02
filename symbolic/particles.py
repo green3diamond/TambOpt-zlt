@@ -15,9 +15,10 @@ fit_profiles). Laws per species and class, one form for every species:
   kept, stored     share of the plane's energy kept by the radius cut / stored after the cap (fractional logit)
   rings            shares of the plane's energy in all 23 rings before the cut (multinomial logit): the ring law
                    the draw generates particles from (the 2.3 law describes cut and capped planes, C0 below)
-  width            each plane's ring profile is the rings law stretched in radius by lam (fitted per plane on the
-                   cumulative log-odds); log10 lam ridge-linear in the features plus an AR(1) residual along the
-                   shower's planes: [beta..., residual sd, lag-1 rho] (the plane-to-plane variety)
+  width, shape     the plane-to-plane variety: each plane's ring profile is the rings law stretched in radius by lam
+                   (width), or stretched and tilted by tau about its half-energy radius (shape: steeper or flatter),
+                   both fitted per plane on the cumulative log-odds; each number ridge-linear in the features plus an
+                   AR(1) residual along the shower's planes: [beta..., residual sd, lag-1 rho] per number
   mean_energy      ln mean particle energy per ring, before the cut (ridge-linear, one law per ring)
   lead, delay      log10(1 + delay / ns) of the ring's earliest and mean time, delay = time minus the axis light time
 Check C0 (descriptive): the ring law of 2.3 (radial_bins) against the true ring shares inside OUTER, before and after
@@ -316,34 +317,52 @@ def stretch_logodds(y, log_lam):
     return np.where(at > lr[-1], y[-1] + (y[-1] - y[-2]) / (lr[-1] - lr[-2]) * (at - lr[-1]), v)
 
 
-def stretch(q, log_lam):
-    """Ring shares of profile q stretched in radius by 10^log_lam."""
-    c = np.maximum.accumulate(1 / (1 + np.exp(-stretch_logodds(cum_logodds(q), log_lam)[0])))
+def tilt_axis(Y):
+    """log10 r minus each profile's half-energy radius (where its cumulative log-odds crosses 0), rows of Y."""
+    lr = np.log10(EDGES[1:-1])
+    j = np.clip(np.argmax(Y >= 0, 1), 1, len(lr) - 1)
+    j = np.where((Y >= 0).any(1), j, len(lr) - 1)
+    y0, y1 = Y[np.arange(len(Y)), j - 1], Y[np.arange(len(Y)), j]
+    f = np.clip(np.divide(-y0, y1 - y0, out=np.zeros(len(Y)), where=y1 > y0), 0.0, 1.0)
+    return lr[None, :] - (lr[j - 1] + f * (lr[j] - lr[j - 1]))[:, None]
+
+
+def stretch(q, log_lam, tau=0.0):
+    """Ring shares of profile q stretched in radius by 10^log_lam and tilted by tau about its half-energy radius
+    (tau x (log10 r - log10 r_half) added to the cumulative log-odds: steeper or flatter, same half-energy radius)."""
+    Y = stretch_logodds(cum_logodds(q), log_lam)
+    c = np.maximum.accumulate(1 / (1 + np.exp(-(Y + tau * tilt_axis(Y))[0])))
     return np.diff(np.r_[0.0, c, 1.0])
 
 
-def plane_widths(q_true, q_law):
-    """Per plane, log10 of the stretch of its law profile that best matches the true profile (least squares on the
-    cumulative log-odds, grid LOG_LAM)."""
-    y = cum_logodds(q_true)
-    return np.array([LOG_LAM[((stretch_logodds(yl, LOG_LAM) - yt) ** 2).sum(1).argmin()]
-                     for yl, yt in zip(cum_logodds(q_law), y)])
+def plane_shapes(q_true, q_law, tilt=True):
+    """Per plane, the log10 stretch (grid LOG_LAM) of its law profile that best matches the true profile on the
+    cumulative log-odds, then the tilt of what the stretch leaves (least squares) -> (log10 lam, tau). In sequence,
+    because fitted jointly the two trade off almost perfectly (residual correlation 0.82-0.99) and wander along that
+    ridge; tilt=False gives tau = 0."""
+    lam, tau = np.empty(len(q_true)), np.zeros(len(q_true))
+    for p, (yl, yt) in enumerate(zip(cum_logodds(q_law), cum_logodds(q_true))):
+        Y = stretch_logodds(yl, LOG_LAM)
+        b = ((yt[None, :] - Y) ** 2).sum(1).argmin()
+        lam[p] = LOG_LAM[b]
+        if tilt:
+            g = tilt_axis(Y[b:b + 1])[0]
+            tau[p] = g @ (yt - Y[b]) / max(g @ g, 1e-12)
+    return lam, tau
 
 
-def width_law(x, lam, unit, k, test):
-    """log10 width ridge-linear in the features, AR(1) residual along a shower's planes -> (law on every plane:
-    [beta..., sd, rho], results: held-out R2 of the training-half law, residual sd, rho, grid-edge share)."""
-    e = lam - x @ ridge(x[~test], lam[~test])
-    r2 = 1 - np.var(e[test]) / np.var(lam[test])
-    beta = ridge(x, lam)
-    e = lam - x @ beta
+def ar1_law(x, v, unit, k, test):
+    """A per-plane number ridge-linear in the features, AR(1) residual along a shower's planes -> (law on every plane:
+    [beta..., sd, rho], results: held-out R2 of the training-half law, residual sd, rho, mean / sd of the number)."""
+    e = v - x @ ridge(x[~test], v[~test])
+    r2 = 1 - np.var(e[test]) / np.var(v[test])
+    beta = ridge(x, v)
+    e = v - x @ beta
     by = dict(zip(zip(unit, k), e))
-    pairs = np.array([(v, by[(u, p + 1)]) for (u, p), v in by.items() if (u, p + 1) in by])
+    pairs = np.array([(a, by[(u, p + 1)]) for (u, p), a in by.items() if (u, p + 1) in by])
     rho = float(np.corrcoef(pairs.T)[0, 1])
-    edge = float(np.mean((lam <= LOG_LAM[0] + 1e-9) | (lam >= LOG_LAM[-1] - 1e-9)))
     return np.r_[beta, e.std(), rho], {"held-out R2": float(r2), "residual sd": float(e.std()), "rho": rho,
-                                       "log10 width mean / sd": [float(lam.mean()), float(lam.std())],
-                                       "at grid edge": edge}
+                                       "mean / sd": [float(v.mean()), float(v.std())]}
 
 
 def ring_check(x, r, B):
@@ -527,10 +546,18 @@ def stage_fit(out, args, log):
                 if name == "rings":
                     q = predict(kind, r["x"][m], Bl)[:, :OUTER]
                     pooled[(s, cn)]["v2 law"] = (q / q.sum(1, keepdims=True)).mean(0)
-                    lam = plane_widths(r["ring_energy"][m] / r["E_total"][m, None], predict(kind, r["x"][m], Bl))
-                    laws[f"{s}.{cn}.width"], res["laws"][f"{s} {cn} width"] = width_law(
-                        r["x"][m], lam, r["i"][m], r["k"][m], test[m])
-                    log.info("law %-8s %-8s width        %s", s, cn, json.dumps(res["laws"][f"{s} {cn} width"]))
+                    true, law_q = r["ring_energy"][m] / r["E_total"][m, None], predict(kind, r["x"][m], Bl)
+                    rows = (r["x"][m], r["i"][m], r["k"][m], test[m])
+                    lam, _ = plane_shapes(true, law_q, tilt=False)
+                    laws[f"{s}.{cn}.width"], res["laws"][f"{s} {cn} width"] = ar1_law(rows[0], lam, *rows[1:])
+                    lam, tau = plane_shapes(true, law_q)
+                    (w_l, r_l), (w_t, r_t) = ar1_law(rows[0], lam, *rows[1:]), ar1_law(rows[0], tau, *rows[1:])
+                    e_l, e_t = lam - rows[0] @ w_l[:-2], tau - rows[0] @ w_t[:-2]
+                    laws[f"{s}.{cn}.shape"] = np.r_[w_l, w_t]
+                    res["laws"][f"{s} {cn} shape"] = {"width": r_l, "tilt": r_t,
+                                                      "residual corr width-tilt": float(np.corrcoef(e_l, e_t)[0, 1])}
+                    for w in ("width", "shape"):
+                        log.info("law %-8s %-8s %-12s %s", s, cn, w, json.dumps(res["laws"][f"{s} {cn} {w}"]))
                 if kind == "share":
                     log.info("law %-8s %-8s %-12s planes %4d showers %2d | bias %+.4f se %.4f R2 %.3f | %s", s, cn,
                              name, rr["planes"], rr["showers"], rr.get("bias", np.nan), rr.get("se", np.nan),

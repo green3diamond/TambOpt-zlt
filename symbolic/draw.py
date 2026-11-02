@@ -5,7 +5,8 @@ Per primary and species: plane energies E_k and Xmax from the Part-1 sampler (on
 energy, inputs annuli.features; then, with the laws of particles.py (fitted on the v2 raw showers):
   1. energy before the cut   E_k / stored share (stored law)
   2. ring energies           shares from the rings law with the plane-to-plane variety: --variety width
-                             (default: the law stretched in radius by the width law, AR(1) along the planes) or k0
+                             (default: the law stretched in radius by the width law, AR(1) along the planes), shape
+                             (stretched and tilted by the shape law, two AR(1) numbers per plane) or k0
                              (K=0 plane noise of traits.py on the logits of the rings inside 1100 m)
   3. particles per ring      Poisson(ring energy / mean particle energy (mean_energy law)), at most ring / E_MIN
   4. particle energies       E_MIN each plus the ring's excess split by Burr XII draws (spread law): the ring energy
@@ -40,7 +41,7 @@ from symbolic import annuli, atmosphere, chain, fit_profiles, generator, lateral
 FOLDER = os.path.join("particles", "draw")
 LAWS = os.path.join("particles", "fit_v2", "particle_laws.npz")
 NOISE = os.path.join("traits", "run_{0}_K0", "traits_{0}_K0.pt")
-LAW_NAMES = ("stored", "rings", "width", "mean_energy", "lead", "delay", "spread")
+LAW_NAMES = ("stored", "rings", "width", "shape", "mean_energy", "lead", "delay", "spread")
 
 
 def fill_rings(B):
@@ -89,14 +90,14 @@ def noise(net, x, s, rng):
     return h
 
 
-def plane_particles(rng, k, x, e_k, law, s, off=None, log_lam=None):
+def plane_particles(rng, k, x, e_k, law, s, off=None, log_lam=None, tilt=0.0):
     """Particles (n, 5) [plane k, across, along, energy, time] of one plane before the preprocessing; the variety is
-    either K=0 logit offsets `off` or the plane's log10 width `log_lam`."""
+    either K=0 logit offsets `off` or the plane's log10 width `log_lam` and tilt `tilt`."""
     e_tot = e_k / softmax(x @ law["stored"])[0]
     logit = x @ law["rings"]
     if off is not None:
         logit[: particles.OUTER] += off
-    shares = softmax(logit) if log_lam is None else particles.stretch(softmax(logit), log_lam)
+    shares = softmax(logit) if log_lam is None else particles.stretch(softmax(logit), log_lam, tilt)
     lead = np.maximum(10.0 ** (law["lead"] @ x) - 1, 0.0)
     tau = np.maximum(10.0 ** (law["delay"] @ x) - 1 - lead, 0.0)
     return ring_particles(rng, k, e_tot * shares, np.exp(law["mean_energy"] @ x), law["spread"],
@@ -135,9 +136,12 @@ def shower(job):
             off = noise(nets[cn], x, s, rng)
             p = [plane_particles(rng, k, x[a], E[s][k], law, s, off=off[a]) for a, k in enumerate(ks)]
         else:
-            w = law["width"]
-            ll = x @ w[:-2] + w[-2] * sampler.ar1(1, N_PLANES, w[-1], rng)[0][ks]
-            p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a]) for a, k in enumerate(ks)]
+            w = law[variety]
+            sample = lambda v: x @ v[:-2] + v[-2] * sampler.ar1(1, N_PLANES, v[-1], rng)[0][ks]
+            ll = sample(w[: len(w) // 2] if variety == "shape" else w)
+            tt = sample(w[len(w) // 2:]) if variety == "shape" else np.zeros(len(ks))
+            p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a], tilt=tt[a])
+                 for a, k in enumerate(ks)]
         p = np.concatenate(p) if p else np.zeros((0, 5))
         n_part += len(p)
         cells = render.render(p, d, sources.CAP[s]) if len(p) else np.zeros((0, 5))
@@ -237,7 +241,8 @@ def main():
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--clouds", default="clouds.npz", help="merge stage: output file name")
-    ap.add_argument("--variety", choices=("width", "k0"), default="width", help="draw stage: plane-to-plane variety")
+    ap.add_argument("--variety", choices=("width", "shape", "k0"), default="width",
+                    help="draw stage: plane-to-plane variety")
     args = ap.parse_args()
     out, log = logs.start(os.path.join(FOLDER, args.name), args)
     stage = {"energies": stage_energies, "draw": stage_draw, "merge": stage_merge}[args.stage]
