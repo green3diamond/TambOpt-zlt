@@ -7,6 +7,9 @@ Stages:
          linear ridge laws on the same folds. Size chosen per group: the smallest within TOLERANCE of the best
          out-of-fold RMSE. Score: mean over the GATED groups of the RMS of the steep zone gaps (ZONES), a gap being the
          mean over a zone's planes of (mean prediction - median target).
+  common (tambo env) one form for all groups, a tanh along the shower plus linear terms (FORMS), constants per group,
+         scored across the same folds.
+  law    (tambo env) the chosen form on every shower with C inside the planes, its spread along the shower and memory.
 Inputs to the formulas: VARIABLES; age, log10 E - 5.5, |cos z|, ln plane energy - 10 and ln Moliere radius are annuli.features.
 """
 import argparse
@@ -40,6 +43,15 @@ MAX_SIZE = 20
 N_ITER = 300
 TIMEOUT = 3000                                        # s, one search
 MARGIN = 600                                          # s beyond TIMEOUT before a search process counts as stuck
+FORMS = {"tanh(ln k)": (1, []), "tanh(ln X)": (2, []), "tanh(ln k) + l, age": (1, [3, 0]),
+         "tanh(ln k) + all": (1, [0, 3, 4, 5, 6])}     # column of VARIABLES inside the tanh, columns added linearly
+TANH_B = (0.5, 1.0, 2.0, 4.0)
+TANH_C = (0.2, 0.4, 0.6, 0.8)                         # quantiles of the input inside the tanh
+COMMON_TOLERANCE = 0.02
+COMMON_SCORE = 0.075
+LAW = "width_law.npz"
+N_PLANE = 24
+SPREAD_RATIO = 1.5                                    # max / min spread across ZONES above which it varies with the plane
 
 
 def zone_gaps(pred, y, k):
@@ -136,6 +148,124 @@ def run_search(job):
     return group, f, time.time() - t0
 
 
+def tanh_basis(p, L, B, C):
+    return np.column_stack([np.tanh(B * (p - C)), np.ones(len(p)), L])
+
+
+def fit_tanh(p, L, y, c_range=(-np.inf, np.inf)):
+    """A tanh(B (p - C)) + D + L e by least squares: A, D, e solved exactly for each (B, C), which are searched on a grid
+    and then refined, C kept inside c_range -> [B, C, A, D, e...]."""
+    from scipy.optimize import minimize
+
+    def basis(theta):
+        return tanh_basis(p, L, theta[0], np.clip(theta[1], *c_range))
+
+    def loss(theta):
+        b = basis(theta)
+        return ((y - b @ np.linalg.lstsq(b, y, rcond=None)[0]) ** 2).sum()
+
+    start = min(((B, C) for B in TANH_B for C in np.quantile(p, TANH_C)), key=loss)
+    best = minimize(loss, start, method="Nelder-Mead", options={"xatol": 1e-3, "fatol": 1e-6, "maxiter": 2000}).x
+    return np.r_[best[0], np.clip(best[1], *c_range), np.linalg.lstsq(basis(best), y, rcond=None)[0]]
+
+
+def fit_spread(p, e):
+    """ln sd = a + b p of residuals e by maximum likelihood -> (a, b)."""
+    from scipy.optimize import minimize
+
+    def nll(t):
+        s = t[0] + t[1] * p
+        return (s + 0.5 * e ** 2 * np.exp(-2 * s)).sum()
+
+    return minimize(nll, [np.log(e.std()), 0.0], method="BFGS").x
+
+
+def lag_one(v, unit, k):
+    """Correlation of v on adjacent planes of one shower."""
+    by = dict(zip(zip(unit.tolist(), k.tolist()), v))
+    return float(np.corrcoef(np.array([(a, by[(u, p + 1)]) for (u, p), a in by.items() if (u, p + 1) in by]).T)[0, 1])
+
+
+def law_mean(w, k, l, age):
+    """Mean log10 width of planes k (0-based), w = [B, C, A, D, E, F, a, b, rho]."""
+    return tanh_predict(w[:6], np.log(k + 1.0), np.column_stack([l, age]))
+
+
+def law_sd(w, k):
+    return np.exp(w[6] + w[7] * np.log(k + 1.0))
+
+
+def stage_law(args, log):
+    groups = [f"{s} {c}" for s in SPECIES for c in CLASSES]
+    data = {g: group_data(args, g) for g in groups}
+    theta, resid, ratio, zones = {}, {}, {}, {}
+    for g, d in data.items():
+        theta[g] = fit_tanh(d["v"][:, 1], d["v"][:, [3, 0]], d["y"], (0.0, np.log(N_PLANE)))
+        resid[g] = d["y"] - tanh_predict(theta[g], d["v"][:, 1], d["v"][:, [3, 0]])
+        zones[g] = [float(resid[g][(d["k"] >= lo) & (d["k"] < hi)].std()) for lo, hi in ZONES.values()]
+        ratio[g] = max(zones[g]) / min(zones[g])
+    varying = any(ratio[g] > SPREAD_RATIO for g in GATED)
+    log.info("spread by zone %s | varying along the shower: %s", json.dumps({g: np.round(z, 3).tolist() for g, z in zones.items()}), varying)
+    laws, res = {}, {"varying": bool(varying), "zones": zones, "groups": {}}
+    for g, d in data.items():
+        p, e = d["v"][:, 1], resid[g]
+        a, b = fit_spread(p, e) if varying else (np.log(e.std()), 0.0)
+        rho = lag_one(e * np.exp(-(a + b * p)), d["i"], d["k"])
+        laws[g.replace(" ", ".")] = np.r_[theta[g], a, b, rho]
+        res["groups"][g] = dict(zip(("B", "C", "A", "D", "E", "F", "a", "b", "rho"), laws[g.replace(" ", ".")].tolist()))
+        log.info("%-18s %s | sd planes 1 / 12 / 24: %s", g, " ".join(f"{n} {v:.3f}" for n, v in res["groups"][g].items()),
+                 np.round(np.exp(a + b * np.log([1, 12, 24])), 3).tolist())
+    np.savez(os.path.join(args.out, args.name, LAW), **laws)
+    return res
+
+
+def tanh_predict(theta, p, L):
+    return tanh_basis(p, L, theta[0], theta[1]) @ theta[2:]
+
+
+def choose_form(rows, sizes):
+    """The fewest numbers within COMMON_TOLERANCE of the best mean RMSE. rows: {form: mean RMSE}, sizes: {form: numbers}."""
+    best = min(rows.values())
+    return min((f for f, v in rows.items() if v <= best * (1 + COMMON_TOLERANCE)), key=lambda f: sizes[f])
+
+
+def stage_common(args, log):
+    groups = [f"{s} {c}" for s in SPECIES for c in CLASSES]
+    data = {g: group_data(args, g) for g in groups}
+    res, mean_rmse, gated_rmse, score = {}, {}, {}, {}
+    for name, (pos, linear) in FORMS.items():
+        rows = {}
+        for g in groups:
+            d = data[g]
+            p, L, y, fold = d["v"][:, pos], d["v"][:, linear], d["y"], d["fold"]
+            pred = np.empty(len(y))
+            for f in (0, 1):
+                a, b = fold == f, fold != f
+                pred[b] = tanh_predict(fit_tanh(p[a], L[a], y[a]), p[b], L[b])
+            theta = fit_tanh(p, L, y)
+            rows[g] = {**summary(pred, y, d["k"], d["steep"]), "constants": theta.tolist()}
+            log.info("%-18s %-22s RMSE %.3f | gaps %+.2f %+.2f %+.2f | RMS %.3f | B %.2f C %.2f A %.2f D %.2f", g, name,
+                     rows[g]["rmse"], *rows[g]["gaps"], rows[g]["rms gap"], *theta[:4])
+        res[name] = rows
+        mean_rmse[name] = float(np.mean([q["rmse"] for q in rows.values()]))
+        gated_rmse[name] = float(np.mean([rows[g]["rmse"] for g in GATED]))
+        score[name] = float(np.mean([rows[g]["rms gap"] for g in GATED]))
+    linear = {g: summary(out_of_fold(np.column_stack([data[g]["x"], data[g]["v"][:, 1]]), data[g]["y"], data[g]["fold"]),
+                         data[g]["y"], data[g]["k"], data[g]["steep"]) for g in groups}
+    reference = {"rmse e/gamma": float(np.mean([linear[g]["rmse"] for g in GATED])),
+                 "score": float(np.mean([linear[g]["rms gap"] for g in GATED]))}
+    chosen = choose_form(mean_rmse, {f: 4 + len(FORMS[f][1]) for f in FORMS})
+    stands = score[chosen] <= COMMON_SCORE and gated_rmse[chosen] <= reference["rmse e/gamma"]
+    out = {"forms": res, "mean rmse": mean_rmse, "rmse e/gamma": gated_rmse, "score": score, "linear comparison": reference,
+           "chosen": chosen, "stands": bool(stands)}
+    for f in FORMS:
+        log.info("%-22s mean RMSE %.4f | e/gamma RMSE %.4f | score %.3f", f, mean_rmse[f], gated_rmse[f], score[f])
+    log.info("linear comparison %s | chosen %s | stands %s", json.dumps(reference), chosen, stands)
+    with open(os.path.join(args.out, args.name, "common.json"), "w") as h:
+        json.dump(out, h, indent=1)
+    return out
+
+
 def stage_table(args, log):
     from scipy.special import softmax
     from symbolic import atmosphere, particles
@@ -200,7 +330,7 @@ def stage_fit(args, log):
 def main():
     from symbolic import logs
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=("table", "fit", "search"))
+    ap.add_argument("stage", choices=("table", "fit", "search", "common", "law"))
     ap.add_argument("--out", default=FOLDER)
     ap.add_argument("--name", default="sr_width")
     ap.add_argument("--groups", help="fit stage: comma-separated groups, default all")
@@ -213,6 +343,12 @@ def main():
         stage_table(args, logs.start("sr_width_table", args)[1])
     elif args.stage == "search":
         stage_search(args)
+    elif args.stage == "common":
+        stage_common(args, logs.start(args.name + "_common", args)[1])
+    elif args.stage == "law":
+        log = logs.start(args.name + "_law", args)[1]
+        with open(os.path.join(args.out, args.name, "law.json"), "w") as h:
+            json.dump(stage_law(args, log), h, indent=1)
     else:
         args.run, log = logs.start(args.name, args)
         logs.save(args.run, stage_fit(args, log), args, log)
