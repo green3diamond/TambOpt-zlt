@@ -65,6 +65,26 @@ def test_merge_folds_scores_only_judged_planes():
     assert rings_sr.choose({5: {"rmse": 0.104}, 9: {"rmse": 0.100}, 20: {"rmse": 0.2}}) == 5
 
 
+def test_fractional_logit_recovers_known_coefficients():
+    rng = np.random.default_rng(1)
+    v = np.column_stack([rng.uniform(0.3, 2, 300), rng.uniform(0, 3.2, 300), rng.normal(0, 0.3, 300), rng.uniform(0, 1, 300),
+                         rng.normal(0, 1, 300), rng.normal(0, 1, 300)])
+    X, _ = rings_sr.expand(v, np.zeros((300, 22)))
+    D = rings_sr.design("b", X)
+    beta = np.array([-3.0, 1.2, 0.05, -0.8, 0.4, 0.2, 0.1])
+    f = 1 / (1 + np.exp(-D @ beta))
+    assert np.allclose(rings_sr.fit_fractional(D, f), beta, atol=1e-3)
+    assert rings_sr.form_profile("b", beta, v).shape == (300, 22)
+    for form, n in rings_sr.FORM_NUMBERS.items():
+        assert rings_sr.design(form, X).shape[1] == n
+
+
+def test_plane_inputs_order():
+    x = np.tile(np.arange(8.0), (2, 1))
+    v = rings_sr.plane_inputs(x, np.array([0, 3]))
+    assert np.allclose(v[1], [1.0, np.log(4.0), 3.0, 4.0, 6.0, 7.0])
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

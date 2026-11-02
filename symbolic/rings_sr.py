@@ -7,6 +7,9 @@ Stages:
          laws, the reference.
   fit    (symbolic env, PySR) per group and fold, a formula search on the fold's training showers, scored on its judged
          showers against the reference. Size chosen per group: the smallest within TOLERANCE of the best out-of-fold RMSE.
+  common (tambo env) one form for all groups, linear in terms of ln r and the inputs (FORMS), fractional logit fit to F at
+         the edges, scored across the same folds.
+  law    (tambo env) the chosen form on the judged showers and its plane-to-plane stretch: [beta..., a, b, rho].
 Inputs to the formulas: VARIABLES; age, log10 E - 5.5, |cos z|, ln plane energy - 10 and ln Moliere radius are
 annuli.features.
 """
@@ -43,6 +46,10 @@ N_ROWS = 4000
 BATCH = 500
 TIMEOUT = 3000                                        # s, one search
 MARGIN = 600                                          # s beyond TIMEOUT before a search process counts as stuck
+LAW = "profile_law.npz"
+N_PLANE = 24
+FORMS = ("a", "b", "c", "d", "e")
+FORM_NUMBERS = {"a": 6, "b": 7, "c": 8, "d": 8, "e": 8}
 
 
 def to_shares(y):
@@ -60,6 +67,40 @@ def measures(y, true_y, ok, shares):
     return {"kl": float(np.median(kl)), "rmse": float(np.sqrt(e[ok].mean())),
             "rmse band": float(np.sqrt(e[ok & BAND[None, :]].mean())),
             "not monotonic": float((np.diff(y, axis=1) < 0).any(1).mean())}
+
+
+def plane_inputs(x, k):
+    """VARIABLES after ln r, from annuli.features rows of planes k (0-based)."""
+    return np.column_stack([x[:, 1], np.log(k + 1.0), x[:, 3], x[:, 4], x[:, 6], x[:, 7]])
+
+
+def design(form, X):
+    """Terms of form on rows X = [ln r, age, ln k, l, c, ln Ek, ln rm]."""
+    lr, age, lk, l, _, le, _ = X.T
+    terms = [np.ones(len(X)), lr, lr ** 2, lk, l, age]
+    if form != "a":
+        terms.append(le)
+    terms += {"a": [], "b": [], "c": [lr * lk], "d": [np.tanh(lr)], "e": [lr ** 3]}[form]
+    return np.column_stack(terms)
+
+
+def fit_fractional(D, f, n_iter=50, ridge=1e-6):
+    """Coefficients of a logit link fitted to shares f by Newton steps on the binomial likelihood."""
+    b = np.zeros(D.shape[1])
+    for _ in range(n_iter):
+        eta = np.clip(D @ b, -30, 30)
+        p = 1 / (1 + np.exp(-eta))
+        w = np.maximum(p * (1 - p), 1e-10)
+        step = np.linalg.solve((D * w[:, None]).T @ D + ridge * np.eye(D.shape[1]), D.T @ (f - p) - ridge * b)
+        b = b + step
+        if np.abs(step).max() < 1e-8:
+            break
+    return b
+
+
+def form_profile(form, beta, v):
+    """logit F at the edges, planes x edges."""
+    return (design(form, expand(v)) @ beta).reshape(-1, len(EDGES))
 
 
 def expand(v, y=None):
@@ -92,11 +133,22 @@ def merge_folds(found, fold, y, ok, shares):
 
 def group_data(args, group):
     t = np.load(os.path.join(args.out, TABLE))
-    return {w: t[f"{group.replace(' ', '.')}.{w}"] for w in ("v", "y", "shares", "ref", "fold", "k")}
+    return {w: t[f"{group.replace(' ', '.')}.{w}"] for w in ("v", "y", "shares", "ref", "fold", "k", "i")}
 
 
 def found_path(run, group, f):
     return os.path.join(run, "found", f"{group.replace(' ', '_')}_fold{f}.pkl")
+
+
+def regressor(run, run_id, seed, iterations):
+    from pysr import PySRRegressor
+    return PySRRegressor(niterations=iterations, binary_operators=["+", "-", "*", "/"],
+                         unary_operators=["exp", "log", "square", "sqrt", "tanh"], maxsize=MAX_SIZE,
+                         nested_constraints={"exp": {"exp": 0, "log": 0}, "log": {"exp": 0, "log": 0},
+                                             "tanh": {"tanh": 0}},
+                         batching=True, batch_size=BATCH, output_directory=os.path.join(run, "pysr"), run_id=run_id,
+                         random_state=seed, deterministic=True, parallelism="serial", progress=False, verbosity=0,
+                         timeout_in_seconds=TIMEOUT, model_selection="best")
 
 
 def stage_search(args):
@@ -108,15 +160,7 @@ def stage_search(args):
     X, y = expand(d["v"][train], d["y"][train])
     keep = np.flatnonzero(np.abs(y) < LIMIT)
     keep = np.random.default_rng(f).choice(keep, min(N_ROWS, len(keep)), replace=False)
-    from pysr import PySRRegressor
-    model = PySRRegressor(niterations=args.iterations, binary_operators=["+", "-", "*", "/"],
-                          unary_operators=["exp", "log", "square", "sqrt", "tanh"], maxsize=MAX_SIZE,
-                          nested_constraints={"exp": {"exp": 0, "log": 0}, "log": {"exp": 0, "log": 0},
-                                              "tanh": {"tanh": 0}},
-                          batching=True, batch_size=BATCH, output_directory=os.path.join(run, "pysr"),
-                          run_id=f"{group.replace(' ', '_')}_fold{f}", random_state=f, deterministic=True,
-                          parallelism="serial", progress=False, verbosity=0, timeout_in_seconds=TIMEOUT,
-                          model_selection="best")
+    model = regressor(run, f"{group.replace(' ', '_')}_fold{f}", f, args.iterations)
     model.fit(X[keep], y[keep], variable_names=VARIABLES)
     test = expand(d["v"][judged])
     found = {}
@@ -164,7 +208,7 @@ def stage_table(args, log):
             x, k = r["x"][m], r["k"][m]
             shares = r["ring_energy"][m] / r["E_total"][m, None]
             fold = shower_fold[r["i"][m]]
-            v = np.column_stack([x[:, list(FEATURE_COLUMNS[:1])], np.log(k + 1.0), x[:, list(FEATURE_COLUMNS[1:])]])
+            v = plane_inputs(x, k)
             ref = np.full((len(k), len(EDGES)), np.nan)
             for f in (0, 1):
                 j = np.flatnonzero(fold == f)
@@ -174,9 +218,61 @@ def stage_table(args, log):
             if not np.isfinite(v).all():
                 raise ValueError(f"{s} {cn}: inputs not finite")
             out.update({f"{s}.{cn}.{w}": q for w, q in (("v", v), ("y", particles.cum_logodds(shares)), ("shares", shares),
-                                                       ("ref", ref), ("fold", fold), ("k", k))})
+                                                       ("ref", ref), ("fold", fold), ("k", k), ("i", r["i"][m]))})
             log.info("%-8s %-8s planes %4d judged %4d", s, cn, m.sum(), (fold >= 0).sum())
     np.savez(os.path.join(args.out, TABLE), **out)
+
+
+def stage_common(args, log):
+    groups = [f"{s} {c}" for s in SPECIES for c in CLASSES]
+    data = {g: group_data(args, g) for g in groups}
+    res, kl = {}, {}
+    for form in FORMS:
+        res[form], ratios = {}, []
+        for g, d in data.items():
+            y, ok, shares, fold = d["y"], np.abs(d["y"]) < LIMIT, d["shares"], d["fold"]
+            pred = np.empty(y.shape)
+            for f in (0, 1):
+                X, l = expand(d["v"][fold != f], y[fold != f])
+                beta = fit_fractional(design(form, X), 1 / (1 + np.exp(-l)))
+                pred[fold == f] = form_profile(form, beta, d["v"][fold == f])
+            j = fold >= 0
+            q = measures(pred[j], y[j], ok[j], shares[j])
+            ref = measures(d["ref"][j], y[j], ok[j], shares[j])
+            res[form][g] = {**q, "reference kl": ref["kl"], "reference rmse band": ref["rmse band"]}
+            log.info("%-2s %-18s KL %.4f (reference %.4f) RMSE %.3f band %.3f (reference %.3f) not monotonic %.3f", form, g,
+                     q["kl"], ref["kl"], q["rmse"], q["rmse band"], ref["rmse band"], q["not monotonic"])
+            if g in GATED:
+                ratios.append(q["kl"] / ref["kl"])
+        kl[form] = float(np.mean(ratios))
+    best = min(kl.values())
+    chosen = min((f for f in FORMS if kl[f] <= best * (1 + TOLERANCE)), key=lambda f: (FORM_NUMBERS[f], f))
+    log.info("KL ratio to the reference, mean over e/gamma %s | chosen %s", json.dumps(kl), chosen)
+    with open(os.path.join(args.out, args.name, "common.json"), "w") as h:
+        json.dump({"forms": res, "kl ratio": kl, "chosen": chosen}, h, indent=1)
+
+
+def stage_law(args, log):
+    """The chosen form on the judged showers, then each plane's stretch against it on the BAND edges."""
+    from symbolic import particles, width_sr
+    with open(os.path.join(args.out, args.name, "common.json")) as h:
+        form = json.load(h)["chosen"]
+    laws = {"form": form}
+    for g in (f"{s} {c}" for s in SPECIES for c in CLASSES):
+        d = group_data(args, g)
+        j = d["fold"] >= 0
+        X, l = expand(d["v"][j], d["y"][j])
+        beta = fit_fractional(design(form, X), 1 / (1 + np.exp(-l)))
+        base = to_shares(form_profile(form, beta, d["v"][j]))
+        lam = particles.plane_shapes(d["shares"][j], base, tilt=False, edges=particles.BAND)[0]
+        lk = np.log(d["k"][j] + 1.0)
+        e = lam - lam.mean()
+        a, b = width_sr.fit_spread(lk, e)
+        rho = width_sr.lag_one(e * np.exp(-(a + b * lk)), d["i"][j], d["k"][j])
+        laws[g.replace(" ", ".")] = np.r_[beta, a, b, rho]
+        log.info("%-18s form %s beta %s | mean stretch %+.3f sd planes 1 / 12 / 24 %s rho %.3f", g, form, np.round(beta, 3).tolist(),
+                 lam.mean(), np.round(np.exp(a + b * np.log([1, 12, 24])), 3).tolist(), rho)
+    np.savez(os.path.join(args.out, args.name, LAW), **laws)
 
 
 def stage_fit(args, log):
@@ -212,7 +308,7 @@ def stage_fit(args, log):
 def main():
     from symbolic import logs
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=("table", "fit", "search"))
+    ap.add_argument("stage", choices=("table", "fit", "search", "common", "law"))
     ap.add_argument("--out", default=FOLDER)
     ap.add_argument("--name", default="sr_rings")
     ap.add_argument("--groups", help="fit stage: comma-separated groups, default all")
@@ -225,6 +321,9 @@ def main():
         stage_table(args, logs.start("sr_rings_table", args)[1])
     elif args.stage == "search":
         stage_search(args)
+    elif args.stage in ("common", "law"):
+        os.makedirs(os.path.join(args.out, args.name), exist_ok=True)
+        {"common": stage_common, "law": stage_law}[args.stage](args, logs.start(f"{args.name}_{args.stage}", args)[1])
     else:
         args.run, log = logs.start(args.name, args)
         logs.save(args.run, stage_fit(args, log), args, log)
