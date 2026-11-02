@@ -1,5 +1,5 @@
 """Per-shower traits of the in-plane shape: a noise-input network trained against CORSIKA, to be distilled into
-formulas afterwards (study_plan.md Part 2; user 10-30).
+formulas afterwards (study_plan.md Part 2).
 
 The variety candidates (variety.py) all failed: the shape varies mostly as a trait of the whole shower, shared by
 electrons and photons, which no plane-wise form produces. Here a plane's ring shares are softmax(x B + A(z, x,

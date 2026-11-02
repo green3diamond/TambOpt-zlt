@@ -1,13 +1,13 @@
-"""Particle laws (study_plan.md 2.4 step 2): what turns a plane's ring energies into particles, from Hamza's raw v2
+"""Particle laws (study_plan.md 2.4 step 2): what turns a plane's ring energies into particles, from the raw
 showers (every particle of every plane, 1, 2, 5 m inner rings).
 
-Stage A, tables (Hamza's env python, which has pyarrow; one shower per call): the raw particles in our frame about
+Stage A, tables (an env python with pyarrow; one shower per call): the raw particles in our frame about
 the axis, rendered with the OLD data's caps (sources.CAP), so each shower gets the cells it would have had in
 h5_files_v3. Saved per shower and species, per plane: energy of all particles, of those kept by the radius cut, and
-stored after the cap; per plane and ring (Hamza's 23 rings of in-plane radius; our 16 rings are his first 16):
-energy and particle count before and after the cut, Hamza's ring_tmin and ring_tmean, and the histogram of
+stored after the cap; per plane and ring (the raw files' 23 rings of in-plane radius; our 16 rings are their first 16):
+energy and particle count before and after the cut, the raw files' ring_tmin and ring_tmean, and the histogram of
 log10(E / ring mean energy) over the ring's particles before the cut. Check (gate): our ring energies and counts
-before the cut equal Hamza's plane_stats (counts exactly, energy to float32 summing).
+before the cut equal the raw files' plane_stats (counts exactly, energy to float32 summing).
 
 Stage B, fit (tambo env): one row per plane with >= annuli.MIN_CELLS particles and stored energy; inputs
 annuli.features with the longitudinal age from the plane's own species (Xmax fitted to its stored plane energies, as
@@ -52,7 +52,7 @@ RAW = "/n/netscratch/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_tes
 FOLDER = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic_trim/particles"
 N_PLANE = 24
 EDGES = np.array([0.0, 1, 2, 5, 10, 20, 30, 50, 70, 100, 140, 200, 280, 400, 560, 800, 1100, 1600, 2300, 3200,
-                  4500, 6400, 9000, np.inf])                # m, in-plane radius (Hamza's ring_edges, lower edges)
+                  4500, 6400, 9000, np.inf])                # m, in-plane radius (the raw files' ring_edges, lower edges)
 N_RING = len(EDGES) - 1
 HIST = np.linspace(-6.0, 4.0, 101)                           # log10(E / ring mean); outside values go to the end bins
 PDG = {"electron": (11, -11), "muon": (13, -13), "photon": (22,)}
@@ -91,7 +91,7 @@ def raw_planes(sim, pdg):
 
 
 def read_shower(sim, species):
-    """Direction, energy, Hamza's plane_stats, and the particles: (n, 5) [plane k, across, along, energy, time] in
+    """Direction, energy, plane_stats, and the particles: (n, 5) [plane k, across, along, energy, time] in
     our frame about the axis, plus their in-plane radius from the raw local coordinates."""
     h5 = glob.glob(os.path.join(sim, f"*_{sources.CORSIKA_NAME[species]}.h5"))[0]
     with h5py.File(h5, "r") as f:
@@ -140,7 +140,7 @@ def tables(p, r, d, n_max):
 
 
 def check(tab, stats):
-    """Our ring energies and counts before the cut against Hamza's plane_stats."""
+    """Our ring energies and counts before the cut against the raw files' plane_stats."""
     rel = lambda a, b: float(np.max(np.abs(a - b) / np.maximum(np.abs(b), 1e-30), initial=0.0))
     res = {"ring count diff": int(np.abs(tab["ring_count"] - stats["ring_count"]).max()),
            "ring energy rel": rel(tab["ring_energy"], stats["ring_energy"]),

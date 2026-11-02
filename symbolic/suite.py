@@ -13,7 +13,7 @@ classifier two-sample AUC on per-plane summary vectors. Scale: the same numbers 
 CORSIKA primaries, divided by sqrt(2) to match two full samples (mean of SPLITS splits). Every number is computed
 separately for steep (|cos z| >= GRAZE) and grazing primaries.
 
-Rule (fixed before the 2.4 run, user 10-31), per species, class and zenith band: a row PASSES when the symbolic
+Rule (fixed before the 2.4 run), per species, class and zenith band: a row PASSES when the symbolic
 source's pooled W1 to CORSIKA is at most the neural chain's (classifier: |AUC - 0.5| at most the chain's); rows
 JUDGED are judged, the time rows are reported only.
 """
