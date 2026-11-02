@@ -23,7 +23,6 @@ Everything outside `lib/` is an entry point run by path
 | file | driven by |
 |---|---|
 | `02_nn_target_vs_pred.py` | `slurm/run_plots.sh`; also called at the end of Steps 2 and 3 |
-| `aleatoric_floor.py` | `slurm/run_floor_calculation.sh` |
 
 ## `layouts/`
 

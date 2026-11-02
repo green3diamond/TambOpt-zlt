@@ -75,7 +75,7 @@ HIT_DEPOSIT_MIN = 1e-3     # GeV of one cell x kernel weight (not a particle cou
 # Gaussian widens to its k-th nearest in-plane neighbour distance, floored at
 # SIGMA_SPATIAL, and is area-normalised. AllShowers points are macro-particles, so
 # at sigma=10 a detector between sparse points otherwise reads ~0 because of how
-# the generator sampled the shower. None = the fixed-sigma kernel. Measured on
+# the generator sampled the shower. Always on (an int). Measured on
 # run 14 (docs/sigma10-stage2-collapse.md, Measurement 5): k=8 lowers the E
 # aleatoric floor 0.650 -> 0.529. Enters the labels at Stage 1, so changing it
 # requires a Stage-1 rebuild, and every kernel caller (Step 1, true-utility
@@ -88,27 +88,12 @@ KERNEL_INTERP_K = 8
 # hundreds of metres from where the particles are).
 KERNEL_INTERP_MAX = float(os.environ.get("TAMBOPT_KERNEL_BW_MAX", "50"))
 
-# Kernel frame (run 18 on). "shower": each shower is placed in its own frame,
-# with detectors mapped into it per shower (dataset_builder.place_clouds_shower /
-# compute_labels_batch(frames=...)). The frame's coordinates:
-#   - t1: horizontal, perpendicular to the heading; exact from the native x/y.
-#   - t2: perpendicular to the axis, roughly vertical. C8 never recorded it;
-#     it is filled when KERNEL_CIRCULAR.
-#   - depth along the axis: C8 plane l sits at (l + 1) * C8_PLANE_DX.
-# "global": runs <= 17, with North-Up transverse and 500 m East slabs as depth.
-# Changing any of these requires a Stage-1 rebuild and new width caches.
-KERNEL_FRAME = os.environ.get("TAMBOPT_KERNEL_FRAME", "shower")
-# Carry each point's time along the axis at c to the detector's depth, so arrival
-# times are not quantized in steps of one plane (500 m / c ~ 1.67 us).
-KERNEL_T_INTERP = True
-# Transverse shape in the shower frame (C8 recorded only t1, the horizontal offset):
-#   "ring": circularly symmetric showers. Each point is a ring of radius |t1| around
-#           the axis with its energy spread evenly around it; detectors are read by
-#           their distance from the axis (GetCounts_planeaware(ring=True)). Run 18.
-#   "pair": t2 = the t1 of a randomly paired point in the same (event, species, layer).
-#   "line": t2 = 0 (every layer a line).
-KERNEL_TRANSVERSE = "ring"
-KERNEL_CIRCULAR = KERNEL_TRANSVERSE != "line"     # kept for older callers/logs
+# Kernel (run 18 on, the only one since 2026-11-02): each shower is placed in its own frame
+# (dataset_builder.place_clouds_shower) and every point is a ring of radius |t1| around the axis
+# (C8 recorded only t1, the horizontal transverse offset); detectors are read by their distance
+# from the axis and their depth along it (C8 plane l sits at (l + 1) * C8_PLANE_DX). Point times
+# are carried along the axis at c to the detector's depth (no 500 m / c ~ 1.67 us steps).
+# Runs <= 17 used a global frame (North-Up transverse, 500 m East slabs), now removed.
 C8_PLANE_DX = 500.0               # spacing of the C8 ObservationPlanes along the axis [m]
 # Event ids of held-out showers in the circular-t2 hash (main-corpus ids are the
 # row index within a species block), so the two corpora never share a pairing.

@@ -38,7 +38,7 @@ from modules.constants import (
     DUAL_SHOWER_CACHE_PATH, DATASET_FRACTION, NUM_SHOWERS, SPECIES_NAMES,
     TRAINING_DATASET_FOLDER, FNN_FOLDER, LOG_E_MIN, LOG_E_MAX,
 )
-from modules.data.dataset_builder import compute_labels_batch, place_clouds, _load_corpus_metadata
+from modules.data.dataset_builder import compute_labels_batch, place_clouds_shower, _load_corpus_metadata
 from modules.showers.kernel import adaptive_bandwidths
 from modules.surrogates import combine_species_outputs
 from modules.layouts import LearnableXY
@@ -97,14 +97,13 @@ class MainPool:
             self.bw = [np.load(p, mmap_mode="r") for p in paths]
 
     def clouds(self, s, a, b, with_frames=False):
-        """Species s, events [a, b), placed per KERNEL_FRAME. Event ids (the
-        circular-t2 seed) are the row within the species block, as in Stage 1."""
+        """Species s, events [a, b), placed in the shower frame. Event ids are the row within the species
+        block, as in Stage 1."""
         m = self.meta
         pts = showerdata.load(DUAL_SHOWER_CACHE_PATH, start=s * m.per_sp + a,
                               stop=s * m.per_sp + b).points
         c = torch.as_tensor(pts, dtype=torch.float32)
-        fr = place_clouds(c, m.positions[a:b], m.dirs[a:b], event_ids=torch.arange(a, b),
-                          species=s, east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
+        fr = place_clouds_shower(c, m.positions[a:b], m.dirs[a:b], event_ids=torch.arange(a, b), species=s)
         return (c, fr) if with_frames else c
 
     def load_prim(self, a, b):

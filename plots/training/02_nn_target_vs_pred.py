@@ -544,7 +544,7 @@ def _render_fnn_scatter(fnn, primary, xy, E_true, T_true, val_idx, output_path,
 
 # Shared by every recon render: (label, axis lo, axis hi) per primary channel.
 # dir_x/dir_y are direction cosines and span [-1, 1]; dir_z spans [-0.5, 0.5]
-# (half the others' -- see place_clouds_enu / the v6 primary encoding for why).
+# (half the others' -- see the v6 primary encoding for why).
 # log_e_norm's TARGET is bounded to [0, 1] BY CONSTRUCTION (encode_primary's
 # (log10(E) - LOG_E_MIN)/(LOG_E_MAX - LOG_E_MIN)), so its window is [0, 1] too --
 # unlike dir_x/y/z, [0, 1] is log_e_norm's real physical range, not an

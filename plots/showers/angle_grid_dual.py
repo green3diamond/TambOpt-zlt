@@ -24,7 +24,7 @@ Each mode writes an energy figure and a companion ``_time`` figure:
   3d : shower_angle_grid_3d_<species>.png   + _time   (color = energy / color = time)
 
 2D-only: ``--mountain`` overlays the detector footprint (North/Up). Showers are
-drawn in their native frame; the pipeline's placement lives in place_clouds_enu.
+drawn in their native frame; the pipeline's placement lives in place_clouds_shower.
 
 These models are heavy and use flex_attention — run on GPU. PointCountFM
 (`compiled.pt`) is forced to CPU (TorchScript device-baked), same as the

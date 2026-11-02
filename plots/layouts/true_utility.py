@@ -45,7 +45,7 @@ import torch
 
 import modules  # noqa: F401 — package import; keeps modules on the path
 import showerdata
-from modules.data import compute_labels_batch, place_clouds
+from modules.data import compute_labels_batch, place_clouds_shower
 from modules.surrogates import encode_primary
 from modules.surrogates import combine_species_outputs
 from modules.geometry import SurfaceUpMap
@@ -203,7 +203,7 @@ def load_events(n_events, device, mountain, select=None, start=0):
     The heldout corpus is species-major -- event i is at rows i, n_pairs+i,
     2*n_pairs+i ... one per entry of constants.SPECIES_NAMES, all sharing the
     primary and so the same decay vertex + direction. Placement uses the
-    pipeline's C8 `place_clouds_enu` at the real vertex.
+    pipeline's `place_clouds_shower` at the real vertex.
 
     `select`: optional callable (positions (B, 3) ENU, unit dirs (B, 3)) -> bool
     (B,): only those of the first `n_events` events are kept (dropped like the
@@ -235,8 +235,7 @@ def load_events(n_events, device, mountain, select=None, start=0):
             HELDOUT_SHOWER_CACHE_PATH, start=lo, stop=lo + B)
         c = torch.as_tensor(sub.points, dtype=torch.float32)
         bad |= ~torch.isfinite(c).all(dim=(1, 2))       # before placement (see below)
-        fr = place_clouds(c, pos, dirs, event_ids=event_ids, species=s_i,
-                          east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
+        fr = place_clouds_shower(c, pos, dirs, event_ids=event_ids, species=s_i)
         frames = fr if frames is None else frames
         species_clouds.append(c)
 

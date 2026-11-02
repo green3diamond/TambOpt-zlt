@@ -4,12 +4,11 @@ draws each one — nothing here recomputes a plot from scratch.
 
 Three sources, three ways of reusing them:
 
-* `geometry_plots.py` — the five malata/tau notebook figures, already lifted
+* `geometry_plots.py` — the three malata/tau notebook figures, already lifted
   out of `notebooks/malata_tau_geometry.ipynb` and
   `notebooks/explore_trigger_counts.ipynb` into functions parametrized by
   figsize + fontsize. This script only supplies the data (replicating the
-  notebooks' own setup cells — see `load_malata_context` /
-  `load_trigger_context` below, each commented with its source cell) and the
+  notebooks' own setup cell — see `load_malata_context` below) and the
   paper-scaled fontsizes.
 * `02_plot_nn_target_vs_pred.py` (Deepsets conditional density / calibration /
   recon scatter) — filename starts with a digit so it's loaded by path, same
@@ -95,8 +94,6 @@ FIGURE_SPECS = {
     "mountain_3d":                    0.8,
     "tau_arrival_directions":         1.0,
     "showers_overlaid_mountain":      1.0,
-    "cross_check_placement_closure":  1.0,
-    "detector_patterns_representative": 1.0,
     "fnn_conditional_electron":       1.0,
     "fnn_conditional_muon":           1.0,
     # The paper uses the CONDITIONAL density (P(pred|target) with the mean and
@@ -196,9 +193,8 @@ def load_malata_context():
     with h5py.File(TAU_WHOLESKY_PATH, "r") as f:
         tdir = f["direction"][...]
 
-    # section 9's `rod(i)` -- places shower i via the pipeline's own
-    # place_clouds_enu, exactly as 01_build_dataset_northeast.py does.
-    from modules.data import place_clouds_enu, cloud_to_enu
+    # section 9's `rod(i)`: a schematic rod of points along shower i's axis, drawn in
+    # ENU at its decay vertex (C8 plane l at (l + 1) x 500 m along the axis).
     NLAY, PER, SIG = N_PLANES, 30, 20.0
     _lay = np.repeat(np.arange(NLAY), PER).astype(np.float32)
     _rng_rod = np.random.default_rng(0)
@@ -207,17 +203,10 @@ def load_malata_context():
         p = np.array([tE_e[i], tN_n[i], tU_u[i]], dtype=np.float32)
         d = (tdir[:, i] / np.linalg.norm(tdir[:, i])).astype(np.float32)
         s = _lay * LAYER_EAST_DX
-        cloud = np.zeros((1, _lay.size, 5), np.float32)
-        cloud[0, :, 0] = s * d[0] + rng.normal(0, SIG, _lay.size)
-        cloud[0, :, 1] = s * d[1] + rng.normal(0, SIG, _lay.size)
-        cloud[0, :, 2] = _lay
-        cloud[0, :, 3] = 1.0
-        cloud[0, :, 4] = 1.0
-        placed = place_clouds_enu(torch.from_numpy(cloud),
-                                  torch.from_numpy(p).view(1, 3),
-                                  torch.from_numpy(d).view(1, 3),
-                                  east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
-        return cloud_to_enu(placed[0])
+        east = p[0] + s * d[0] + rng.normal(0, SIG, _lay.size)
+        north = p[1] + s * d[1] + rng.normal(0, SIG, _lay.size)
+        up = p[2] + (_lay + 1.0) * LAYER_EAST_DX * d[2]
+        return np.stack([east, north, up], axis=1)
 
     return dict(tris=tris, tri_up=tri_up, layouts=layouts, det_up=det_up,
                mE=mE, mN=mN, mU=mU, on_terr=on_terr, tE_e=tE_e, tN_n=tN_n, tU_u=tU_u,
@@ -225,187 +214,8 @@ def load_malata_context():
                TAU_WHOLESKY_PATH=TAU_WHOLESKY_PATH)
 
 
-def load_trigger_context(n_showers_nb=300, n_seeds=15, seed_pick=7):
-    """notebooks/explore_trigger_counts.ipynb cells 0+2+4+6+8 (real showers
-    screened on a default grid layout, placement-closure geometry, and a
-    representative-shower trigger-count sweep). n_showers_nb/n_seeds match the
-    notebook's own N_SHOWERS_NB=300 / N_SEEDS=15 defaults."""
-    import pandas as pd
-    import showerdata
-    from modules.data import compute_labels_batch, place_clouds_enu, cloud_to_enu
-    from modules.layouts.strategies import _STRATEGIES, _STRATEGY_FNS
-    from modules.geometry import SurfaceUpMap
-    from modules.geometry import load_tr_mountain
-    from modules.optimize import LAYOUT_THRESHOLD
-    from modules.constants import (
-        GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
-        EAST_ENTRY, LAYER_EAST_DX, N_PLANES, N_DETECTORS,
-        DUAL_SHOWER_CACHE_PATH, DUAL_POSITIONS_PATH, DUAL_SPECIES_IDS_PATH)
-
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mountain = load_tr_mountain(GEOMETRY_PATH_RESOLVED, GEOMETRY_GROUP, DET_KEY,
-                                east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX, n_planes=N_PLANES)
-    surface = SurfaceUpMap.from_mountain(mountain, grid_h=256, grid_w=256).to(DEVICE)
-    mE_np, mN_np, mU_np = (mountain.centroids_ENU[:, i] for i in range(3))
-
-    positions_all = torch.load(DUAL_POSITIONS_PATH)
-    species_all = torch.load(DUAL_SPECIES_IDS_PATH)
-    n_pairs = int((species_all == 0).sum())
-    sl = slice(0, min(n_showers_nb, n_pairs))
-    sub = showerdata.load(DUAL_SHOWER_CACHE_PATH, start=sl.start, stop=sl.stop)
-    points = torch.as_tensor(sub.points, dtype=torch.float32)
-    dirs = torch.as_tensor(sub.directions, dtype=torch.float32)
-    energs = torch.as_tensor(sub.energies, dtype=torch.float32).reshape(-1)
-    del sub
-    positions = positions_all[sl.start:sl.stop].float()
-
-    bad = ~torch.isfinite(points).all(dim=-1)
-    if int(bad.sum()):
-        points[bad] = 0.0
-    dirs_u = dirs / dirs.norm(dim=1, keepdim=True).clamp(min=1e-12)
-    points = place_clouds_enu(points, positions, dirs_u,
-                              east_entry=EAST_ENTRY, layer_east_dx=LAYER_EAST_DX)
-
-    # cell 2: screen every loaded shower on one default grid layout.
-    rng_scan = np.random.default_rng(42)
-    fn_grid = _STRATEGY_FNS["layout_grid"]
-    e_scan, n_scan = fn_grid(mountain, n_det=N_DETECTORS, rng=rng_scan)
-    e_scan = e_scan.float().to(DEVICE); n_scan = n_scan.float().to(DEVICE)
-
-    scan_records = []
-    for s in range(points.shape[0]):
-        E, _ = compute_labels_batch(points[s:s + 1].to(DEVICE), e_scan, n_scan, surface)
-        E0 = E[0]
-        theta = float(torch.arccos(dirs_u[s, 2].clamp(-1.0, 1.0)).item())
-        phi = float(torch.atan2(dirs_u[s, 1], dirs_u[s, 0]).item())
-        scan_records.append(dict(
-            shower=s, E=float(energs[s].item()), theta_deg=math.degrees(theta),
-            phi_deg=math.degrees(phi) % 360.0,
-            n_trig=int((E0 > LAYOUT_THRESHOLD).sum().item()),
-            n_nonzero=int((E0 > 0).sum().item()),
-            e_sum=float(E0.sum().item()), e_max=float(E0.max().item())))
-    df_scan = pd.DataFrame(scan_records)
-
-    # cell 4: placement closure (axis crossing test + axis->detector distance).
-    P_dec = positions.numpy()
-    D_dir = dirs_u.numpy()
-    L_ROD = (N_PLANES - 1) * LAYER_EAST_DX
-    t_ = np.linspace(0.0, L_ROD, 600)
-    q_ = P_dec[:, None, :] + t_[None, :, None] * D_dir[:, None, :]
-    axis_crosses = ((q_[..., 0] >= mE_np.min()) & (q_[..., 0] <= mE_np.max()) &
-                    (q_[..., 1] >= mN_np.min()) & (q_[..., 1] <= mN_np.max())).any(axis=1)
-    up_scan = surface(n_scan, e_scan).detach().cpu().numpy()
-    DET = np.stack([e_scan.cpu().numpy(), n_scan.cpu().numpy(), up_scan], axis=1)
-    v_ = DET[None, :, :] - P_dec[:, None, :]
-    s_ = np.einsum("ijk,ik->ij", v_, D_dir)
-    perp_ = np.linalg.norm(v_ - np.clip(s_, 0.0, L_ROD)[:, :, None] * D_dir[:, None, :], axis=2)
-    axis_dist = perp_.min(axis=1)
-    df_scan["axis_crosses"] = axis_crosses
-    df_scan["axis_dist_m"] = axis_dist
-
-    # cell 6: pick 6 representative showers spanning energy x zenith.
-    df_hit = df_scan[df_scan["e_sum"] > 0].copy()
-    df_hit["logE"] = np.log10(df_hit["E"])
-    _qE = min(3, df_hit["logE"].nunique())
-    _qth = min(2, df_hit["theta_deg"].nunique())
-    df_hit["E_bin"] = pd.qcut(df_hit["logE"], q=_qE,
-                              labels=["Elow", "Emid", "Ehigh"][:_qE], duplicates="drop")
-    df_hit["theta_bin"] = pd.qcut(df_hit["theta_deg"], q=_qth,
-                                  labels=["vert", "horiz"][:_qth], duplicates="drop")
-    selected = []
-    for E_b in df_hit["E_bin"].cat.categories:
-        for th_b in df_hit["theta_bin"].cat.categories:
-            sub = df_hit[(df_hit["E_bin"] == E_b) & (df_hit["theta_bin"] == th_b)]
-            if not len(sub):
-                continue
-            pick = sub.sort_values("e_sum", ascending=False).iloc[0]
-            selected.append(dict(shower=int(pick["shower"]), E=float(pick["E"]),
-                                 theta_deg=float(pick["theta_deg"]), phi_deg=float(pick["phi_deg"]),
-                                 n_trig_default=int(pick["n_trig"]), e_sum=float(pick["e_sum"]),
-                                 tag=f"{E_b}/{th_b}"))
-    df_show = pd.DataFrame(selected)
-
-    # cell 8: per (shower, strategy), N_SEEDS reinitializations -> trigger counts.
-    records = []
-    layouts_cache = {}
-    for _, row in df_show.iterrows():
-        s = int(row["shower"])
-        cloud = points[s:s + 1].to(DEVICE)
-        for s_idx, (s_name, fn_name, kwargs) in enumerate(_STRATEGIES):
-            fn = _STRATEGY_FNS[fn_name]
-            for seed in range(n_seeds):
-                rng = np.random.default_rng(1000 * s_idx + seed)
-                e_det, n_det_xy = fn(mountain, n_det=N_DETECTORS, rng=rng, **kwargs)
-                e_det = e_det.float().to(DEVICE); n_det_xy = n_det_xy.float().to(DEVICE)
-                E, _ = compute_labels_batch(cloud, e_det, n_det_xy, surface)
-                n_trig = int((E[0] > LAYOUT_THRESHOLD).sum().item())
-                e_sum = float(E.sum().item())
-                records.append(dict(shower=s, tag=row["tag"], strategy=s_name, seed=seed,
-                                    n_trig=n_trig, e_sum=e_sum, E_prim=row["E"],
-                                    theta_deg=row["theta_deg"], phi_deg=row["phi_deg"]))
-                layouts_cache[(s, s_name, seed)] = (E[0].cpu().numpy(),
-                                                    e_det.cpu().numpy(), n_det_xy.cpu().numpy())
-    df = pd.DataFrame(records)
-
-    return dict(mE_np=mE_np, mN_np=mN_np, mU_np=mU_np, DET=DET, P_dec=P_dec, D_dir=D_dir,
-               L_ROD=L_ROD, points=points, energs=energs, axis_dist=axis_dist,
-               df_scan=df_scan, axis_crosses=axis_crosses, cloud_to_enu=cloud_to_enu,
-               df=df, df_show=df_show, layouts_cache=layouts_cache,
-               mountain=mountain, surface=surface, LAYOUT_THRESHOLD=LAYOUT_THRESHOLD,
-               DEVICE=DEVICE)
-
-
-def make_detector_panel(ctx, view_r=1500.0):
-    """explore_trigger_counts.ipynb cell 12's `panel(ax, ...)` closure, using
-    opt_plotting's mountain_enu / draw_detectors_enu_3d exactly as the
-    notebook does (loaded by path there for the same reason it is here)."""
-    optplt = _load_by_path("opt_plotting", "lib/opt_plotting.py")
-    mtn_enu = optplt.mountain_enu(ctx["mountain"])
-    surf_cpu = ctx["surface"].to("cpu")
-    ctr = mtn_enu.mean(axis=0)
-    up_lo, up_hi = mtn_enu[:, 2].min() - 300.0, mtn_enu[:, 2].max() + 300.0
-    cloud_stride, cloud_s, cloud_a = 2, 8, 0.85
-
-    def in_view(P):
-        return ((np.abs(P[:, 0] - ctr[0]) <= view_r) & (np.abs(P[:, 1] - ctr[1]) <= view_r)
-                & (P[:, 2] >= up_lo) & (P[:, 2] <= up_hi))
-
-    def panel(ax, E_arr, e_det, n_det_xy, cloud=None, s=None):
-        ax.scatter(mtn_enu[:, 0], mtn_enu[:, 1], mtn_enu[:, 2], s=3, c="#DDD6C9",
-                  alpha=0.6, depthshade=False, label="mountain")
-        if cloud is not None:
-            P_cloud = ctx["cloud_to_enu"](cloud)
-            P_cloud = P_cloud[in_view(P_cloud)][::cloud_stride]
-            if len(P_cloud):
-                ax.scatter(P_cloud[:, 0], P_cloud[:, 1], P_cloud[:, 2], s=cloud_s,
-                          c="tab:green", alpha=cloud_a, linewidths=0, depthshade=False,
-                          label="shower cloud")
-        if s is not None and in_view(ctx["P_dec"][s][None, :])[0]:
-            ax.scatter(*ctx["P_dec"][s], c="red", s=110, marker="*", depthshade=False,
-                      label="decay vertex")
-        sc, n_live, n_over = optplt.draw_detectors_enu_3d(
-            ax, E_arr, e_det, n_det_xy, surf_cpu,
-            layout_threshold=ctx["LAYOUT_THRESHOLD"], log1p_space=False)
-        ax.set_xlim(ctr[0] - view_r, ctr[0] + view_r)
-        ax.set_ylim(ctr[1] - view_r, ctr[1] + view_r)
-        ax.set_zlim(up_lo, up_hi)
-        ax.set_xlabel("East [m]")
-        ax.set_ylabel("North [m]")
-        ax.set_zlabel("Up [m]")
-        # Reads fs_tick/fs_label from the caller's active rc_context (this
-        # panel is only ever called from inside one) -- fixed labelpad here
-        # previously stayed put while the rc_context scaled fonts up 2-4x for
-        # print, so tick numbers ran into the axis label next to them.
-        gp.tidy_3d_axes(ax)
-        ax.view_init(elev=25, azim=-125)
-        return sc, n_live, n_over
-
-    return panel
-
-
 def make_geometry_figures(outdir, frac_by_name, textwidth_pt):
     malata = load_malata_context()
-    trigger = load_trigger_context()
 
     def pf(target_pt, drawn_w, frac):
         return ps.paper_fontsize(target_pt, drawn_w, frac, textwidth_pt)
@@ -450,48 +260,6 @@ def make_geometry_figures(outdir, frac_by_name, textwidth_pt):
         ps.savefig_paper_formats(fig, os.path.join(outdir, "showers_overlaid_mountain"),
                                  formats=("pdf",))
         plt.close(fig)
-
-    # These two are dense 2x3 / 1x3 grids of small 3D panels: at print size
-    # each panel gets roughly 1/3 of the figure's final width, so every text
-    # element (not just title/legend) uses the smaller GRID_* hierarchy --
-    # ps.paper_rc below takes the same GRID_* targets so axis labels/ticks
-    # stay in proportion instead of falling back to the full-panel sizes.
-    frac = frac_by_name["cross_check_placement_closure"]
-    with matplotlib.rc_context(rc=ps.paper_rc(
-            18, frac, textwidth_pt, title_pt=ps.GRID_TITLE_PT,
-            panel_title_pt=ps.GRID_PANEL_TITLE_PT, label_pt=ps.GRID_LABEL_PT,
-            legend_pt=ps.GRID_LEGEND_PT, tick_pt=ps.GRID_TICK_PT)):
-        fig = gp.plot_placement_closure(
-            trigger["mE_np"], trigger["mN_np"], trigger["mU_np"], trigger["DET"], trigger["P_dec"],
-            trigger["D_dir"], trigger["L_ROD"], trigger["points"], trigger["energs"],
-            trigger["axis_dist"], trigger["df_scan"], trigger["axis_crosses"], trigger["cloud_to_enu"],
-            figsize=(18, 10.5),
-            fs_suptitle=pf(ps.GRID_TITLE_PT, 18, frac),
-            fs_panel_title=pf(ps.GRID_PANEL_TITLE_PT, 18, frac),
-            fs_legend=pf(ps.GRID_LEGEND_PT, 18, frac))
-        ps.savefig_paper(fig, os.path.join(outdir, "cross_check_placement_closure.png"))
-        plt.close(fig)
-
-    frac = frac_by_name["detector_patterns_representative"]
-    # 2 columns (-> 2 rows for 3 panels), not 3 across in one row: each panel
-    # gets noticeably more width, which is what was leaving the colorbar and
-    # its neighbor's tick numbers close enough to collide at 3-per-row.
-    drawn_w = 7.0 * 2
-    with matplotlib.rc_context(rc=ps.paper_rc(
-            drawn_w, frac, textwidth_pt, title_pt=ps.GRID_TITLE_PT,
-            panel_title_pt=ps.GRID_PANEL_TITLE_PT, label_pt=ps.GRID_LABEL_PT,
-            legend_pt=ps.GRID_LEGEND_PT, tick_pt=ps.GRID_TICK_PT)):
-        panel = make_detector_panel(trigger)
-        fig = gp.plot_detector_patterns(
-            panel, trigger["df"], trigger["df_show"], trigger["layouts_cache"], trigger["points"],
-            example_strategy="center_gauss400", layout_threshold=trigger["LAYOUT_THRESHOLD"],
-            figsize_per_panel=(7.0, 6.2), cols_per=2,
-            fs_title=pf(ps.GRID_PANEL_TITLE_PT, drawn_w, frac),
-            fs_legend=pf(ps.GRID_LEGEND_PT, drawn_w, frac))
-        ps.savefig_paper_formats(fig, os.path.join(outdir, "detector_patterns_representative"),
-                                 formats=("pdf",))
-        plt.close(fig)
-
 
 # --------------------------------------------------------------------------- #
 # Group A -- Deepsets surrogate figures, via 02_plot_nn_target_vs_pred.py.
@@ -675,12 +443,6 @@ RESULTS_SECTION = r"""\section{Results}
     \label{fig:shower-over-mountain-global}
 \end{figure}
 
-\begin{figure}
-    \centering
-    \includegraphics[width=\linewidth]{figures/results/detector_patterns_representative.pdf}
-    \caption{Caption}
-    \label{fig:shower-over-mountain-activation}
-\end{figure}
 \subsection{Detector response model}
 
 \begin{figure}
@@ -724,7 +486,6 @@ def write_includegraphics(outdir, frac_by_name):
         decay_location_3d          -> tau_arrival_directions
         mountain_slope              -> mountain_3d
         shower_over_mountain_global -> showers_overlaid_mountain
-        shower_over_mountain_activation -> detector_patterns_representative
         fnn_electron_conditional    -> fnn_conditional_electron
         recon_target_vs_output      -> recon_conditional
         optimized_simple            -> layout_density_activation_{center,grid} composite
@@ -740,7 +501,7 @@ def write_includegraphics(outdir, frac_by_name):
     is a corrected copy of the section text you'd paste into the paper's
     Results section, backed by the files already sitting in `outdir`.
 
-    All ten \\includegraphics targets reference `.pdf` -- see `_savefig_multi`
+    All \\includegraphics targets reference `.pdf` -- see `_savefig_multi`
     in `02_plot_nn_target_vs_pred.py` / the `formats=` plumbing throughout
     this file: every figure the paper includes is written as PDF only."""
     path = os.path.join(outdir, "includegraphics.tex")
@@ -753,9 +514,7 @@ def prune_unused_outputs(outdir):
     """Delete every file in `outdir` that isn't one of RESULTS_SECTION's own
     \\includegraphics targets (all .pdf -- this script writes every figure
     the paper includes as PDF only, no PNG sibling) or includegraphics.tex
-    itself -- e.g. cross_check_placement_closure.png (generated because
-    detector_patterns_representative shares its expensive setup, but not
-    part of the curated Results section) and the individual
+    itself -- e.g. the individual
     layout_density_{k6,activation}_{center,grid} PNGs (intermediates the
     optimized*.pdf composites are pasted from, kept as PNG since compositing
     needs raster input). Self-maintaining: add or remove a figure from

@@ -135,7 +135,7 @@ def axis_distance(e_det, n_det, surface, frames):
     (KernelDualLabels.frames, (B, 12)) and the surface; the kernel's own ring coordinate (detectors_in_frames)."""
     from ..data.dataset_builder import detectors_in_frames
     with torch.no_grad():
-        return detectors_in_frames(e_det, n_det, surface, frames, ring=True)[0].float()
+        return detectors_in_frames(e_det, n_det, surface, frames)[0].float()
 
 
 def axis_distance_rows(xy, surface, frames):

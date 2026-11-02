@@ -165,20 +165,6 @@ def project_en_to_face(surface, east, north, frame):
     return s.reshape(e.shape), u.reshape(e.shape)
 
 
-def cloud_to_face(cloud, frame, east_entry=None, layer_east_dx=None):
-    """A PLACED shower cloud → cliff-face (strike, updip).
-
-    Thin composition of `dataset_builder.cloud_to_enu` (undo the kernel's
-    North/Up/z_cont packing) with `enu_to_face`, so a cloud can be overlaid on the
-    same axes as the mountain and the detectors."""
-    from modules.data import cloud_to_enu
-    from modules.constants import EAST_ENTRY, LAYER_EAST_DX
-    pts = cloud_to_enu(cloud,
-                       east_entry=EAST_ENTRY if east_entry is None else east_entry,
-                       layer_east_dx=LAYER_EAST_DX if layer_east_dx is None else layer_east_dx)
-    return enu_to_face(pts, frame)
-
-
 def det_counts(E, log1p_space: bool = False):
     """Detector labels → RAW counts, the space LAYOUT_THRESHOLD lives in.
 
