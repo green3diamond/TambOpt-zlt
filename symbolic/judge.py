@@ -1,6 +1,7 @@
 """A fair judge of the particle route: correct particles as the target instead of h5_files_v3, whose cell split the
-chain learned. Target: the raw showers through the per-simulation preprocessing with the old caps (particles.py truth). Two sources at those same primaries: the symbolic draw (draw.py, laws fitted without the
-judged showers) and the neural chain (chain.py given).
+chain learned. Target: the raw showers through the per-simulation preprocessing with the old caps (particles.py truth).
+Two sources at those same primaries: the symbolic draw (draw.py, laws fitted without the judged showers) and the neural
+chain (chain.py given).
 
 Stages:
   split  the in-range showers (log10 E < chain.TOP) into two folds: within class and zenith band, alternately in log10 E
@@ -8,6 +9,8 @@ Stages:
          -> particles/judge/{primaries.npz, primaries_fold{f}.npz, skip_fold{f}.txt}
   run    per species, class and zenith band, pooled W1 to the target of suite.observables, each source pooled over its
          DRAWS draws per primary.
+  clouds target and symbolic clouds in the chain's order (primary by primary, DRAWS entries each), for detector.py.
+         -> particles/judge/clouds_{target,symbolic}.npz
 
 Rule (fixed before the run): a row PASSES when the symbolic W1 is at most the chain's (suite.py's rule); it is CLEAR when
 the 95% interval of the difference, resampling primaries (the same resample for both sources), excludes 0. Rows JUDGED
@@ -30,7 +33,7 @@ from scipy import stats
 
 from symbolic import logs
 from modules.constants import N_PLANES, SPECIES_NAMES
-from symbolic import atmosphere, chain, particles, planes, suite
+from symbolic import atmosphere, chain, planes, sources, suite
 
 FOLDER = os.path.join("particles", "judge")
 DRAW = os.path.join("particles", "draw", "judge_fold{}", "clouds.npz")
@@ -266,9 +269,29 @@ def stage_run(out, args, log):
             "judged": int(len(judged)), "results": res}
 
 
+def stage_clouds(out, args, log):
+    z = np.load(os.path.join(args.out, FOLDER, "primaries.npz"))
+    prim = {k: z[k] for k in z.files}
+    rows = np.repeat(prim["rows"], args.draws)
+    if not np.array_equal(np.load(os.path.join(args.out, CHAIN))["rows"], rows):
+        raise ValueError("the chain's clouds are not in the expected order")
+    sym_rows, sym = read_symbolic(args.out, (0, 1))
+    order = np.argsort(sym_rows, kind="stable")
+    if not np.array_equal(sym_rows[order], rows):
+        raise ValueError("the symbolic draws do not cover every primary DRAWS times")
+    target = read_truth(args.out, prim, prim["rows"])
+    for name, per in (("target", {s: [target[s][r] for r in rows] for s in SPECIES_NAMES}),
+                      ("symbolic", {s: [sym[s][j] for j in order] for s in SPECIES_NAMES})):
+        pad = {f"{s}.points": np.stack([np.pad(c, ((0, sources.CAP[s] - len(c)), (0, 0))) for c in per[s]]).astype(np.float32)
+               for s in SPECIES_NAMES}
+        np.savez(os.path.join(args.out, FOLDER, f"clouds_{name}.npz"), rows=rows, **pad)
+        log.info("clouds_%s: %d entries", name, len(rows))
+    return {"entries": int(len(rows))}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=("split", "run"))
+    ap.add_argument("stage", choices=("split", "run", "clouds"))
     ap.add_argument("--out", required=True, help="the symbolic_trim root")
     ap.add_argument("--name", default="run", help="output folder under particles/judge/")
     ap.add_argument("--folds", type=int, nargs="+", default=[0, 1], help="run stage: the folds judged")
@@ -277,8 +300,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     args = ap.parse_args()
-    out, log = logs.start(os.path.join(FOLDER, args.stage if args.stage == "split" else args.name), args)
-    logs.save(out, {"split": stage_split, "run": stage_run}[args.stage](out, args, log), args, log)
+    out, log = logs.start(os.path.join(FOLDER, args.name if args.stage == "run" else args.stage), args)
+    logs.save(out, {"split": stage_split, "run": stage_run, "clouds": stage_clouds}[args.stage](out, args, log), args, log)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 """Detector-level check: generated showers, repaired CORSIKA and optionally the neural chain, through the pipeline's
 kernel and shower-frame placement on the grid layout, at the same test primaries placed at held-out decay vertices.
 Reports lit detectors, deposited energy and arrival time, also by distance from the shower axis, for all events and
-for those at least FIELD_CUT deg from the East-West axis (the run 20 corpus cut). One GPU.
+for those at least FIELD_CUT deg from the East-West axis (the run 20 corpus cut). One GPU. With --primaries and --target
+(judge.py) the primaries, and the reference clouds in place of the CORSIKA test file, come from those files; several
+draws per primary are allowed there and standard errors are per primary.
 
 The run (geometry, held-out corpus, kernel settings) comes from modules/constants.py and its TAMBOPT_* environment:
 source slurm/run20_guard.sh (or run18_guard.sh) first.
@@ -112,9 +114,10 @@ def outside_field_cut(dirs):
     return np.degrees(np.arccos(np.clip(np.abs(dirs[:, 0]), 0, 1))) >= FIELD_CUT
 
 
-def metrics(E, T, ref_E, ref_T, dist):
+def metrics(E, T, ref_E, ref_T, dist, unit):
     lit, ref_lit = (E > LAYOUT_THRESHOLD).sum(1), (ref_E > LAYOUT_THRESHOLD).sum(1)
     diff = lit - ref_lit
+    by_unit = np.array([diff[unit == u].mean() for u in np.unique(unit)])
     both = (E > LAYOUT_THRESHOLD) & (ref_E > LAYOUT_THRESHOLD) & (T > 0) & (ref_T > 0)
     dt = (T - ref_T)[both] * 1e9
     seen = ref_E.sum(1) > LAYOUT_THRESHOLD
@@ -122,7 +125,7 @@ def metrics(E, T, ref_E, ref_T, dist):
     on = E > LAYOUT_THRESHOLD
     return {"lit per event mean": round(float(lit.mean()), 2),
             "lit rel diff to CORSIKA": round(float(diff.mean() / ref_lit.mean()), 4),
-            "lit paired diff mean +- se": [round(float(diff.mean()), 2), round(float(diff.std(ddof=1) / np.sqrt(len(diff))), 2)],
+            "lit paired diff mean +- se": [round(float(diff.mean()), 2), round(float(by_unit.std(ddof=1) / np.sqrt(len(by_unit))), 2)],
             **{f"frac lit >= {n}": round(float(np.mean(lit >= n)), 3) for n in (5, 10, 20)},
             "deposit, median of per-event ratio to CORSIKA": round(float(np.median(E.sum(1)[seen] / ref_E.sum(1)[seen])), 3),
             "log10 deposit per event 16/50/84": np.percentile(np.log10(np.maximum(E.sum(1), 1e-3)), [16, 50, 84]).round(3).tolist(),
@@ -151,37 +154,56 @@ def main():
     ap.add_argument("--clouds", required=True, help="generator clouds (.npz with rows and <species>.points)")
     ap.add_argument("--chain", default="", help="the neural chain's clouds at the same or more primaries (optional)")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--primaries", default="", help="primaries file of judge.py (needs --target)")
+    ap.add_argument("--target", default="", help="reference clouds at the same entries as --clouds and --chain")
     args = ap.parse_args()
-    for k in ("clouds", "chain", "out"):
+    if bool(args.primaries) != bool(args.target):
+        raise ValueError("--primaries and --target go together")
+    for k in ("clouds", "chain", "out", "primaries", "target"):
         if getattr(args, k):
             setattr(args, k, os.path.join(args.root, getattr(args, k)))
     os.makedirs(args.out, exist_ok=True)
     device = torch.device("cuda")
     gen = np.load(args.clouds)
     rows = gen["rows"]
-    lab = np.load(os.path.join(args.root, fit_profiles.TEST))["meta.labels"][rows]
-    with h5py.File(sources.corsika_path(C.SPECIES_NAMES[0], "test"), "r") as f:
-        dirs = f["directions"][...][rows].astype(np.float64)
+    if args.primaries:
+        z, ref = np.load(args.primaries), np.load(args.target)
+        if not np.array_equal(ref["rows"], rows):
+            raise ValueError("reference clouds are on other entries than the generator's")
+        lab, dirs = z["labels"][rows], z["dirs"][rows]
+        reference = {s: ref[f"{s}.points"] for s in C.SPECIES_NAMES}
+    else:
+        lab = np.load(os.path.join(args.root, fit_profiles.TEST))["meta.labels"][rows]
+        with h5py.File(sources.corsika_path(C.SPECIES_NAMES[0], "test"), "r") as f:
+            dirs = f["directions"][...][rows].astype(np.float64)
     dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
     pos = vertices(dirs)
-    clouds = {"CORSIKA": corsika_clouds(rows, dirs), "generator": {s: gen[f"{s}.points"] for s in C.SPECIES_NAMES}}
+    clouds = {"CORSIKA": reference if args.primaries else corsika_clouds(rows, dirs),
+              "generator": {s: gen[f"{s}.points"] for s in C.SPECIES_NAMES}}
     if args.chain:
         ch = np.load(args.chain)
-        sel = np.searchsorted(ch["rows"], rows)
-        if not np.array_equal(ch["rows"][np.minimum(sel, len(ch["rows"]) - 1)], rows):
-            raise ValueError("generator clouds are on primaries the chain does not have")
+        if args.primaries:
+            if not np.array_equal(ch["rows"], rows):
+                raise ValueError("the chain's clouds are on other entries than the generator's")
+            sel = np.arange(len(rows))
+        else:
+            sel = np.searchsorted(ch["rows"], rows)
+            if not np.array_equal(ch["rows"][np.minimum(sel, len(ch["rows"]) - 1)], rows):
+                raise ValueError("generator clouds are on primaries the chain does not have")
         clouds["neural chain"] = {s: ch[f"{s}.points"][sel].astype(np.float32) for s in C.SPECIES_NAMES}
     surface, e_det, n_det, xy = setup(device)
     dist = axis_distance(dirs, pos, e_det, n_det, surface)
     surface = surface.to(device)
     resp = {k: response(per, pos, dirs, surface, xy, device) for k, per in clouds.items()}
     keep = outside_field_cut(dirs)
-    res = {"run": run_settings(), "threshold": float(LAYOUT_THRESHOLD), "clouds": args.clouds, "chain": args.chain}
+    res = {"run": run_settings(), "threshold": float(LAYOUT_THRESHOLD), "clouds": args.clouds, "chain": args.chain,
+           "reference": args.target or "CORSIKA test file, repaired"}
     for c, cn in planes.CLASS.items():
         for tag, m in (("all", lab == c), (f">= {FIELD_CUT:.0f} deg from the field axis", (lab == c) & keep)):
             ref_E, ref_T = resp["CORSIKA"][0][m], resp["CORSIKA"][1][m]
-            res.setdefault(cn, {})[tag] = {"n_events": int(m.sum()),
-                                           **{k: metrics(v[0][m], v[1][m], ref_E, ref_T, dist[m]) for k, v in resp.items()}}
+            res.setdefault(cn, {})[tag] = {"n_events": int(m.sum()), "n_primaries": int(len(np.unique(rows[m]))),
+                                           **{k: metrics(v[0][m], v[1][m], ref_E, ref_T, dist[m], rows[m])
+                                              for k, v in resp.items()}}
         print(cn, json.dumps(res[cn], indent=1), flush=True)
     np.savez_compressed(os.path.join(args.out, "response.npz"), rows=rows, labels=lab, distance=dist,
                         **{f"{k}.E": v[0] for k, v in resp.items()}, **{f"{k}.T": v[1] for k, v in resp.items()})
