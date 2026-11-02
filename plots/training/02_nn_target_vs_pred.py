@@ -478,11 +478,7 @@ def load_recon(folder: str = RECON_DEEPSETS_FOLDER):
     """Mirror of load_fnn() for the recon checkpoint. Used by the standalone
     CLI path; training scripts pass an already-trained recon in.
 
-    Dispatches on the checkpoint's own config["model_type"] via
-    build_recon_from_ckpt, so flat-MLP ("mlp") and DeepSets ("deepsets")
-    checkpoints both load. Hardcoding Reconstruction here predated
-    03_train_recon_deepsets.py and died on a state_dict shape mismatch
-    against its checkpoints."""
+    Loads through build_recon_from_ckpt (DeepSets checkpoints)."""
     recon_ckpt = torch.load(os.path.join(folder, "recon.pt"),
                             map_location=DEVICE, weights_only=False)
     recon = build_recon_from_ckpt(recon_ckpt, N_DETECTORS, DEVICE)

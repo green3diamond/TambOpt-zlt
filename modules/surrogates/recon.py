@@ -1,9 +1,8 @@
 """Reconstruction net: per-detector response -> primary labels.
 
-Maps flattened `(x, y, E_pred, T_pred)` per detector to the primary encoding
-`[dir_x, dir_y, dir_z, log_e_norm]`. `Reconstruction` is the flat MLP, with the input
-z-score and output denormalization baked in as buffers (`set_normalization()`).
-`DeepSetsRecon` is the permutation-equivariant version Step 3 trains.
+Maps per-detector `(x, y, E, T)` to the primary encoding `[dir_x, dir_y, dir_z, log_e_norm]`.
+`DeepSetsRecon` (permutation-equivariant) is the recon Step 3 trains; the flat-MLP
+`Reconstruction` was removed 2026-11-02.
 """
 
 
@@ -12,65 +11,6 @@ import torch.nn as nn
 
 from ..constants import N_DETECTORS
 from .blocks import _mlp
-
-
-class Reconstruction(nn.Module):
-    """Flat MLP: (layout + predicted E/T) → primary encoding.
-
-    Input layout (flattened row-major per sample, length `n_det * input_features`):
-        [x_0, y_0, E_0, T_0, x_1, y_1, E_1, T_1, ...]
-    Output (length `output_dim`, typically 4):
-        [dir_x, dir_y, dir_z, log_e_norm]   (v6 primary encoding)
-
-    Normalization buffers are initialized to identity (zeros/ones) and populated
-    via `set_normalization(...)`. The FNN pattern is followed exactly: input is
-    z-scored on the way in, output is de-z-scored on the way out, so the forward
-    pass works in raw units from the caller's perspective.
-    """
-
-    def __init__(self,
-                 n_det:          int = N_DETECTORS,
-                 input_features: int = 4,
-                 output_dim:     int = 4,
-                 hidden:         int = 512,
-                 dropout:        float = 0.1):
-        super().__init__()
-        self.n_det          = n_det
-        self.input_features = input_features
-        self.output_dim     = output_dim
-
-        in_dim = n_det * input_features
-
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, output_dim),
-        )
-
-        self.register_buffer("in_mean",  torch.zeros(in_dim))
-        self.register_buffer("in_std",   torch.ones(in_dim))
-        self.register_buffer("out_mean", torch.zeros(output_dim))
-        self.register_buffer("out_std",  torch.ones(output_dim))
-
-    def set_normalization(self,
-                          in_mean:  torch.Tensor,
-                          in_std:   torch.Tensor,
-                          out_mean: torch.Tensor,
-                          out_std:  torch.Tensor) -> None:
-        """Copy z-score buffers. Shapes must match the registered buffers."""
-        self.in_mean.copy_(in_mean)
-        self.in_std.copy_(in_std)
-        self.out_mean.copy_(out_mean)
-        self.out_std.copy_(out_std)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Args: `x` of shape `(B, n_det * input_features)` in raw units.
-        Returns: `(B, output_dim)` in raw primary-encoding units.
-        """
-        x_n   = (x - self.in_mean) / self.in_std
-        out_n = self.net(x_n)
-        return out_n * self.out_std + self.out_mean
 
 
 RELTIME_FEATURES = 9
@@ -199,34 +139,28 @@ class DeepSetsRecon(nn.Module):
 
 
 def build_recon_from_ckpt(ckpt: dict, n_det: int, device=None):
-    """Polymorphic recon loader — dispatches on ckpt["config"]["model_type"].
+    """DeepSetsRecon from a checkpoint (config model_type must be "deepsets").
 
     Returns a frozen eval-mode model with normalization applied.
-    Handles both "mlp" (Reconstruction) and "deepsets" (DeepSetsRecon).
     """
     cfg   = ckpt.get("config", {})
     mtype = cfg.get("model_type", "mlp")
+    if mtype != "deepsets":
+        raise ValueError(f"recon checkpoint has model_type={mtype!r}; only DeepSets recons are supported "
+                         "(the flat-MLP Reconstruction was removed)")
     n_det_ckpt      = int(ckpt.get("num_detectors", n_det))
     input_features  = int(ckpt.get("input_features", 4))
 
-    if mtype == "deepsets":
-        model = DeepSetsRecon(
-            n_det=n_det_ckpt,
-            input_features=input_features,
-            hidden=int(cfg.get("hidden", 256)),
-            context=int(cfg.get("context", 128)),
-            n_enc=int(cfg.get("n_enc", 3)),
-            n_dec=int(cfg.get("n_dec", 2)),
-            pool=cfg.get("pool", "mean"),
-            input_mode=cfg.get("input_mode", "raw"),
-        )
-    else:
-        model = Reconstruction(
-            n_det=n_det_ckpt,
-            input_features=input_features,
-            hidden=int(cfg.get("hidden", 512)),
-            dropout=float(cfg.get("dropout", 0.1)),
-        )
+    model = DeepSetsRecon(
+        n_det=n_det_ckpt,
+        input_features=input_features,
+        hidden=int(cfg.get("hidden", 256)),
+        context=int(cfg.get("context", 128)),
+        n_enc=int(cfg.get("n_enc", 3)),
+        n_dec=int(cfg.get("n_dec", 2)),
+        pool=cfg.get("pool", "mean"),
+        input_mode=cfg.get("input_mode", "raw"),
+    )
 
     model.load_state_dict(ckpt["state_dict"])
     model.set_normalization(
