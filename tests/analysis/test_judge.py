@@ -52,6 +52,16 @@ def test_resampling_keeps_primaries_paired():
     assert judge.dist(o, p, np.array([0.0, 0.0, 0.0])) != judge.dist(o, p, np.array([0.0, 0.0, 0.0]))     # empty: NaN
 
 
+def test_per_plane_sees_plane_order_the_pooled_distance_misses():
+    v = np.arange(24.0)
+    one, zero = np.ones(24), np.zeros(24, int)
+    a = (v, one, zero, zero, np.arange(24))
+    b = (v, one, zero, zero, np.arange(24)[::-1])
+    assert judge.dist(a, b) == 0.0
+    assert judge.per_plane(a, b) == np.mean(np.abs(v - v[::-1]))
+    assert judge.per_plane(a, a) == 0.0
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

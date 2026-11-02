@@ -7,8 +7,8 @@ Stages:
   split  the in-range showers (log10 E < chain.TOP) into two folds: within class and zenith band, alternately in log10 E
          order. Fold f's laws are fitted on the other fold plus every shower above the range; fold f is judged.
          -> particles/judge/{primaries.npz, primaries_fold{f}.npz, skip_fold{f}.txt}
-  run    per species, class and zenith band, pooled W1 to the target of suite.observables, each source pooled over its
-         DRAWS draws per primary.
+  run    per species, class and zenith band, pooled and per-plane W1 to the target of suite.observables, each source
+         pooled over its DRAWS draws per primary.
   clouds target and symbolic clouds in the chain's order (primary by primary, DRAWS entries each), for detector.py.
          -> particles/judge/clouds_{target,symbolic}.npz
 
@@ -137,12 +137,12 @@ def draw_index(rows):
 
 
 def observables(clouds, dirs, rows):
-    """name -> (values, weights, primary, draw) of one species' clouds; rows = the primary of each cloud."""
+    """name -> (values, weights, primary, draw, plane) of one species' clouds; rows = the primary of each cloud."""
     cells, pl = suite.tables(clouds, dirs[rows])
     out = suite.observables(cells, pl)
     out["plane_energy"] = (np.log10(pl["E"]), np.ones(len(pl["E"])), pl["i"], pl["k"], pl["group"])
     draw = draw_index(rows)
-    return {name: (v, w, rows[i], draw[i]) for name, (v, w, i, _, _) in out.items()}
+    return {name: (v, w, rows[i], draw[i], k) for name, (v, w, i, k, _) in out.items()}
 
 
 def take(o, m):
@@ -162,6 +162,11 @@ def floor(o):
     return float(np.nanmean([dist(take(o, o[3] == d), take(o, o[3] != d)) for d in np.unique(o[3])]))
 
 
+def per_plane(a, b):
+    """Mean over planes of the W1 on each plane, over planes with data on both sides: a pooled W1 ignores plane order."""
+    return float(np.nanmean([dist(take(a, a[4] == k), take(b, b[4] == k)) for k in range(N_PLANES)]))
+
+
 def median(o):
     i = np.argsort(o[0])
     c = np.cumsum(o[1][i])
@@ -178,6 +183,7 @@ def score(target, symbolic, neural, primaries, rng, n_boot=BOOT):
         d.append(dist(target, symbolic, mult) - dist(target, neural, mult))
     lo, hi = np.nanpercentile(d, [2.5, 97.5])
     return {"symbolic": dist(target, symbolic), "neural chain": dist(target, neural), "difference 95%": [float(lo), float(hi)],
+            "symbolic per plane": per_plane(target, symbolic), "neural chain per plane": per_plane(target, neural),
             "floor symbolic": floor(symbolic), "floor neural chain": floor(neural), "median target": median(target),
             "median symbolic": median(symbolic), "median neural chain": median(neural)}
 
