@@ -51,6 +51,16 @@ def test_noise_offsets_and_ring_fill():
     assert np.array_equal(F[0], B[1]) and np.array_equal(F[3], B[2]) and np.array_equal(F[5], B[4])
 
 
+def test_width_law_must_come_with_non_default_laws():
+    assert draw.width_law_path(draw.LAWS, None) == draw.WIDTH_LAW
+    assert draw.width_law_path("fold0/particle_laws.npz", "fold0/width_law.npz") == "fold0/width_law.npz"
+    try:
+        draw.width_law_path("fold0/particle_laws.npz", None)
+    except ValueError:
+        return
+    raise AssertionError("a fold's laws must not fall back to the default width law")
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

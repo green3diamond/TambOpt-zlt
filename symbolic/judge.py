@@ -36,7 +36,6 @@ from modules.constants import N_PLANES, SPECIES_NAMES
 from symbolic import atmosphere, chain, planes, sources, suite
 
 FOLDER = os.path.join("particles", "judge")
-DRAW = os.path.join("particles", "draw", "judge_fold{}", "clouds.npz")
 CHAIN = os.path.join(chain.FOLDER, "given", "judge.npz")
 LAWS = os.path.join(FOLDER, "fold{}", "particle_laws.npz")
 LABEL = {cn: c for c, cn in planes.CLASS.items()}
@@ -111,10 +110,10 @@ def read_clouds(path):
     return z["rows"], {s: [positive(p) for p in z[f"{s}.points"]] for s in SPECIES_NAMES}
 
 
-def read_symbolic(root, folds):
+def read_symbolic(root, folds, source="judge_fold{}"):
     rows, out = [], {s: [] for s in SPECIES_NAMES}
     for f in folds:
-        r, c = read_clouds(os.path.join(root, DRAW.format(f)))
+        r, c = read_clouds(os.path.join(root, "particles", "draw", source.format(f), "clouds.npz"))
         rows.append(r)
         for s in SPECIES_NAMES:
             out[s] += c[s]
@@ -250,7 +249,7 @@ def stage_run(out, args, log):
     judged_laws_apart(args.out, prim, args.folds)
     judged = np.flatnonzero(np.isin(prim["fold"], args.folds))
     log.info("%d judged primaries, folds %s", len(judged), args.folds)
-    sym_rows, sym = read_symbolic(args.out, args.folds)
+    sym_rows, sym = read_symbolic(args.out, args.folds, args.source)
     neu_rows, neu = read_chain(args.out, judged)
     for src, r in (("symbolic", sym_rows), ("neural chain", neu_rows)):
         if not np.array_equal(np.unique(r, return_counts=True)[0], judged) or (np.bincount(r)[judged] != args.draws).any():
@@ -281,13 +280,13 @@ def stage_clouds(out, args, log):
     rows = np.repeat(prim["rows"], args.draws)
     if not np.array_equal(np.load(os.path.join(args.out, CHAIN))["rows"], rows):
         raise ValueError("the chain's clouds are not in the expected order")
-    sym_rows, sym = read_symbolic(args.out, (0, 1))
+    sym_rows, sym = read_symbolic(args.out, (0, 1), args.source)
     order = np.argsort(sym_rows, kind="stable")
     if not np.array_equal(sym_rows[order], rows):
         raise ValueError("the symbolic draws do not cover every primary DRAWS times")
     target = read_truth(args.out, prim, prim["rows"])
     for name, per in (("target", {s: [target[s][r] for r in rows] for s in SPECIES_NAMES}),
-                      ("symbolic", {s: [sym[s][j] for j in order] for s in SPECIES_NAMES})):
+                      (f"symbolic{args.suffix}", {s: [sym[s][j] for j in order] for s in SPECIES_NAMES})):
         pad = {f"{s}.points": np.stack([np.pad(c, ((0, sources.CAP[s] - len(c)), (0, 0))) for c in per[s]]).astype(np.float32)
                for s in SPECIES_NAMES}
         np.savez(os.path.join(args.out, FOLDER, f"clouds_{name}.npz"), rows=rows, **pad)
@@ -300,13 +299,15 @@ def main():
     ap.add_argument("stage", choices=("split", "run", "clouds"))
     ap.add_argument("--out", required=True, help="the symbolic_trim root")
     ap.add_argument("--name", default="run", help="output folder under particles/judge/")
+    ap.add_argument("--source", default="judge_fold{}", help="run and clouds stages: draw folder under particles/draw, {} the fold")
+    ap.add_argument("--suffix", default="", help="clouds stage: added to the symbolic clouds' file name")
     ap.add_argument("--folds", type=int, nargs="+", default=[0, 1], help="run stage: the folds judged")
     ap.add_argument("--draws", type=int, default=DRAWS)
     ap.add_argument("--boot", type=int, default=BOOT)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     args = ap.parse_args()
-    out, log = logs.start(os.path.join(FOLDER, args.name if args.stage == "run" else args.stage), args)
+    out, log = logs.start(os.path.join(FOLDER, args.name if args.stage == "run" else args.stage + args.suffix), args)
     logs.save(out, {"split": stage_split, "run": stage_run, "clouds": stage_clouds}[args.stage](out, args, log), args, log)
 
 

@@ -4,8 +4,9 @@ scored primaries (chain.primaries), in the suite's cloud format.
 Per primary and species: plane energies E_k and Xmax from the Part-1 sampler (one draw, fixed seed); per plane with
 energy, inputs annuli.features; then, with the laws of particles.py (fitted on the v2 raw showers):
   1. energy before the cut   E_k / stored share (stored law)
-  2. ring energies           shares from the rings law with the plane-to-plane variety: --variety width
-                             (default: the law stretched in radius by the width law, AR(1) along the planes), shape
+  2. ring energies           shares from the rings law with the plane-to-plane variety: --variety along (default:
+                             the law stretched in radius by the width law along the shower of width_sr.py, AR(1) along
+                             the planes), width (stretched by the linear width law of particles.py), shape
                              (stretched and tilted by the shape law, two AR(1) numbers per plane) or k0
                              (K=0 plane noise of traits.py on the logits of the rings inside 1100 m)
   3. particles per ring      Poisson(ring energy / mean particle energy (mean_energy law)), at most ring / E_MIN
@@ -35,11 +36,12 @@ from scipy.special import softmax
 
 from symbolic import logs
 from modules.constants import N_PLANES, SPECIES_NAMES
-from symbolic import annuli, atmosphere, chain, fit_profiles, generator, lateral, longitudinal, particles, planes, \
+from symbolic import annuli, atmosphere, chain, fit_profiles, generator, lateral, longitudinal, particles, planes, width_sr, \
     render, sampler, sources, traits
 
 FOLDER = os.path.join("particles", "draw")
 LAWS = os.path.join("particles", "fit_v2", "particle_laws.npz")
+WIDTH_LAW = os.path.join("particles", "sr_width", width_sr.LAW)
 NOISE = os.path.join("traits", "run_{0}_K0", "traits_{0}_K0.pt")
 LAW_NAMES = ("stored", "rings", "width", "shape", "mean_energy", "lead", "delay", "spread")
 
@@ -63,6 +65,15 @@ def load_laws(root, path=LAWS):
                 law[w] = fill_rings(law[w])
             out[(s, cn)] = law
     return out
+
+
+def width_law_path(laws, width_law):
+    """The width law to draw with. Laws fitted on part of the showers need their own, or a judged shower could leak in."""
+    if width_law:
+        return width_law
+    if laws != LAWS:
+        raise ValueError("--laws is not the default one: give the --width-law fitted on the same showers")
+    return WIDTH_LAW
 
 
 def load_noise(root, cn):
@@ -138,7 +149,10 @@ def shower(job):
         else:
             w = law[variety]
             sample = lambda v: x @ v[:-2] + v[-2] * sampler.ar1(1, N_PLANES, v[-1], rng)[0][ks]
-            ll = sample(w[: len(w) // 2] if variety == "shape" else w)
+            if variety == "along":
+                ll = width_sr.law_mean(w, ks, x[:, 3], x[:, 1]) + width_sr.law_sd(w, ks) * sampler.ar1(1, N_PLANES, w[-1], rng)[0][ks]
+            else:
+                ll = sample(w[: len(w) // 2] if variety == "shape" else w)
             tt = sample(w[len(w) // 2:]) if variety == "shape" else np.zeros(len(ks))
             p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a], tilt=tt[a])
                  for a, k in enumerate(ks)]
@@ -192,6 +206,10 @@ def stage_energies(out, args, log):
 def stage_draw(out, args, log):
     z = np.load(os.path.join(out, "energies.npz"))
     laws = load_laws(args.out, args.laws)
+    if args.variety == "along":
+        z_w = np.load(os.path.join(args.out, width_law_path(args.laws, args.width_law)))
+        for (s, cn), law in laws.items():
+            law["along"] = z_w[f"{s}.{cn}"]
     nets = {cn: load_noise(args.out, cn) for cn in planes.CLASS.values()}
     mine = np.arange(len(z["rows"]))[args.task::args.tasks]
     jobs = [(i, args.seed, float(z["l"][i]), float(z["u"][i]), planes.CLASS[int(z["labels"][i])], z["X"][i],
@@ -256,8 +274,9 @@ def main():
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--clouds", default="clouds.npz", help="merge stage: output file name")
-    ap.add_argument("--variety", choices=("width", "shape", "k0"), default="width",
+    ap.add_argument("--variety", choices=("along", "width", "shape", "k0"), default="along",
                     help="draw stage: plane-to-plane variety")
+    ap.add_argument("--width-law", help="draw stage, variety along: width_sr.py law, relative to --out; required with a non-default --laws")
     args = ap.parse_args()
     out, log = logs.start(os.path.join(FOLDER, args.name), args)
     stage = {"energies": stage_energies, "draw": stage_draw, "merge": stage_merge}[args.stage]

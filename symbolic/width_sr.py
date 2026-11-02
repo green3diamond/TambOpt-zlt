@@ -100,7 +100,7 @@ def merge_folds(found, fold, y, k, steep):
 
 
 def group_data(args, group):
-    t = np.load(os.path.join(args.out, TABLE))
+    t = np.load(os.path.join(args.out, args.table))
     return {w: t[f"{group.replace(' ', '.')}.{w}"] for w in ("x", "v", "y", "i", "k", "fold", "steep")}
 
 
@@ -269,12 +269,18 @@ def stage_common(args, log):
 def stage_table(args, log):
     from scipy.special import softmax
     from symbolic import atmosphere, particles
-    tabs = [dict(np.load(f)) for f in sorted(glob.glob(os.path.join(args.out, "tables", "*.npz")))]
+    skip = set(open(args.skip).read().split()) if args.skip else set()
+    files = [f for f in sorted(glob.glob(os.path.join(args.out, "tables", "*.npz"))) if os.path.basename(f) not in skip]
+    fit = os.path.join(args.out, os.path.dirname(args.laws), "results.json")
+    with open(fit) as h:
+        if sorted(json.load(h)["showers"]) != [os.path.basename(f) for f in files]:
+            raise ValueError(f"the showers differ from those of the rings law in {fit}")
+    tabs = [dict(np.load(f)) for f in files]
     log.info("%d shower tables", len(tabs))
     log10e = np.array([float(t["log10E"]) for t in tabs])
     cz = np.array([float(t["direction"][2]) for t in tabs])
     X = atmosphere.plane_depths(np.degrees(np.arccos(cz)), particles.N_PLANE)
-    laws, out = np.load(os.path.join(args.out, LAWS)), {}
+    laws, out = np.load(os.path.join(args.out, args.laws)), {}
     for s, r in particles.plane_rows(tabs).items():
         test = particles.split_showers(r["i"], r["cls"], log10e)
         for cn in CLASSES:
@@ -290,7 +296,7 @@ def stage_table(args, log):
                                                        ("fold", test[m].astype(int)),
                                                        ("steep", np.abs(cz[i]) >= STEEP))})
             log.info("%-8s %-8s planes %4d showers %2d", s, cn, m.sum(), len(np.unique(i)))
-    np.savez(os.path.join(args.out, TABLE), **out)
+    np.savez(os.path.join(args.out, args.table), **out)
 
 
 def stage_fit(args, log):
@@ -334,6 +340,9 @@ def main():
     ap.add_argument("--out", default=FOLDER)
     ap.add_argument("--name", default="sr_width")
     ap.add_argument("--groups", help="fit stage: comma-separated groups, default all")
+    ap.add_argument("--table", default=TABLE, help="table file under --out")
+    ap.add_argument("--laws", default=LAWS, help="table stage: rings law, relative to --out")
+    ap.add_argument("--skip", help="table stage: file of table names to leave out")
     ap.add_argument("--group", help="search stage")
     ap.add_argument("--fold", type=int, help="search stage")
     ap.add_argument("--iterations", type=int, default=N_ITER)
