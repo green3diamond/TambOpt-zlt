@@ -33,14 +33,20 @@ def radius_cut(k, xy):
 
 def cluster(k, xy, e, t, cell=CELL):
     """Per plane, sum particles into cell x cell ground cells -> (n, 5) [x, y, plane, energy, earliest time]."""
+    if not len(k):
+        return np.zeros((0, 5))
     idx = np.floor(xy.astype(np.float32) / np.float32(cell)).astype(np.int64)
-    keys, inv = np.unique(np.column_stack([k, idx]), axis=0, return_inverse=True)
-    inv = inv.ravel()
+    low = idx.min(0)
+    nx, ny = (int(v) + 1 for v in idx.max(0) - low)
+    if (int(k.max()) + 1) * nx * ny >= 2 ** 63:
+        raise OverflowError(f"cell key out of range: {nx} x {ny} cells")
+    keys, inv = np.unique(k.astype(np.int64) * (nx * ny) + (idx[:, 0] - low[0]) * ny + (idx[:, 1] - low[1]), return_inverse=True)
     energy = np.bincount(inv, e, len(keys))
     time = np.full(len(keys), np.inf)
     np.minimum.at(time, inv, t)
-    centre = (keys[:, 1:] + 0.5) * cell
-    return np.column_stack([centre, keys[:, 0], energy, time])
+    plane, rest = np.divmod(keys, nx * ny)
+    ix, iy = np.divmod(rest, ny)
+    return np.column_stack([(ix + low[0] + 0.5) * cell, (iy + low[1] + 0.5) * cell, plane, energy, time])
 
 
 def cap(cells, n_max):

@@ -84,6 +84,27 @@ def test_cluster_is_exact_where_the_script_key_overflows():
     assert len(theirs) != len(ours) or not np.allclose(by_cell(theirs)[:, :2], by_cell(ours)[:, :2])   # the script errs
 
 
+def row_sorted_cluster(k, xy, e, t, cell=render.CELL):
+    """Reference: the same cells grouped by sorting whole rows."""
+    idx = np.floor(xy.astype(np.float32) / np.float32(cell)).astype(np.int64)
+    keys, inv = np.unique(np.column_stack([k, idx]), axis=0, return_inverse=True)
+    inv = inv.ravel()
+    time = np.full(len(keys), np.inf)
+    np.minimum.at(time, inv, t)
+    return np.column_stack([(keys[:, 1:] + 0.5) * cell, keys[:, 0], np.bincount(inv, e, len(keys)), time])
+
+
+def test_integer_keys_give_the_same_cells_in_the_same_order():
+    rng = np.random.default_rng(5)
+    n = 20000
+    k = rng.integers(0, 24, n)
+    for centre, spread in ((0.0, 80.0), (-12000.0, 3000.0), (40000.0, 25.0)):
+        xy = rng.normal(centre, spread, (n, 2))
+        e, t = rng.gamma(1.5, 2.0, n), rng.uniform(0, 1e-7, n)
+        assert np.array_equal(render.cluster(k, xy, e, t), row_sorted_cluster(k, xy, e, t))
+    assert render.cluster(k[:0], xy[:0], e[:0], t[:0]).shape == (0, 5)
+
+
 def test_radius_cut_keeps_ninety_percent_per_plane_and_cap_keeps_the_brightest():
     rng = np.random.default_rng(4)
     p = toy_particles(rng)
