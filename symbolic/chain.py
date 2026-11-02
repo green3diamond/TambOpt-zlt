@@ -5,6 +5,8 @@ Stages (one GPU):
           every test primary with LO <= log10 E < TOP instead -> OUT/chain/draws_band/draw_XX.npz (extrapolate.py)
   clouds  the full cell clouds of draw 0 -> OUT/chain/clouds_draw00.npz (detector.py --chain); their plane sums must
           reproduce draws/draw_00.npz
+  given   the full cell clouds of draws FIRST..LAST at the primaries of a file (judge.py) -> OUT/chain/given/NAME.npz,
+          the draws of a primary in a row
 """
 import argparse
 import os
@@ -47,9 +49,10 @@ def primaries(band=None):
     return rows, E[rows].astype(np.float32).reshape(-1, 1), D[rows], lab[rows]
 
 
-def run(draws, log, band=None):
-    """{draw: {species: (B, cap, 5) clouds}}, building each species' generator once."""
-    rows, E, D, lab = primaries(band)
+def run(draws, log, band=None, given=None):
+    """{draw: {species: (B, cap, 5) clouds}}, building each species' generator once; given = (rows, E, D, labels)
+    replaces the test primaries."""
+    rows, E, D, lab = primaries(band) if given is None else given
     s0 = sources.stage0()
     from allshowers.generator import Generator                # importable once stage0 has set up the pinned code
     energies, directions, labels = torch.as_tensor(E), torch.as_tensor(D), torch.as_tensor(lab)
@@ -116,16 +119,29 @@ def stage_clouds(args, log):
     return {"plane_sums_vs_draw_00": res}
 
 
+def stage_given(args, log):
+    z = np.load(args.primaries)
+    rows = z["rows"]
+    given = rows, (10.0 ** z["l"]).astype(np.float32).reshape(-1, 1), z["dirs"].astype(np.float32), z["labels"].astype(np.int64)
+    draws = list(range(args.first, args.last + 1))
+    _, out = run(draws, log, given=given)
+    points = {f"{s}.points": torch.stack([out[d][s] for d in draws], 1).flatten(0, 1).numpy() for s in SPECIES_NAMES}
+    save(os.path.join(args.out, FOLDER, "given", f"{args.name}.npz"), log, rows=np.repeat(rows, len(draws)), **points)
+    return {"primaries": int(len(rows)), "draws": draws}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--stage", required=True, choices=["draws", "clouds"])
+    ap.add_argument("--stage", required=True, choices=["draws", "clouds", "given"])
     ap.add_argument("--first", type=int, default=0)
     ap.add_argument("--last", type=int, default=7)
     ap.add_argument("--band", type=float, help="draws stage: every test primary from this log10 E up to TOP")
+    ap.add_argument("--primaries", help="given stage: primaries file of judge.py")
+    ap.add_argument("--name", default="judge", help="given stage: output name")
     args = ap.parse_args()
     log_dir, log = logs.start(os.path.join(FOLDER, "logs", args.stage), args)
-    stage = {"draws": stage_draws, "clouds": stage_clouds}[args.stage]
+    stage = {"draws": stage_draws, "clouds": stage_clouds, "given": stage_given}[args.stage]
     logs.save(log_dir, stage(args, log), args, log)
 
 

@@ -171,6 +171,19 @@ def stage_tables(sim, out):
     np.savez_compressed(os.path.join(out, "tables", f"{cls}_{name}.npz"), **save)
 
 
+def stage_truth(sim, out):
+    """The true stored cells of one shower (all species, old caps) -> <out>/truth/<class>_<sim>.npz (judge.py)."""
+    cls = CLASS[os.path.relpath(sim, RAW).split(os.sep)[0]]
+    name = os.path.basename(os.path.normpath(sim))
+    save = {}
+    for s in PDG:
+        d, _, _, p, _ = read_shower(sim, s)
+        save[f"{s}.cells"] = render.render(p, d, sources.CAP[s]).astype(np.float32)
+    os.makedirs(os.path.join(out, "truth"), exist_ok=True)
+    np.savez_compressed(os.path.join(out, "truth", f"{cls}_{name}.npz"), **save)
+    print(name, cls, "done", flush=True)
+
+
 def plane_rows(tabs):
     """Per species: one row per usable plane (shower i, class, plane k, features x, its tables)."""
     from symbolic import annuli, atmosphere, generator, longitudinal
@@ -513,11 +526,14 @@ def fig_spread(spreads):
 
 def stage_fit(out, args, log):
     from symbolic import logs
-    tabs = [dict(np.load(f)) for f in sorted(glob.glob(os.path.join(args.out, "tables", "*.npz")))]
-    log.info("%d shower tables", len(tabs))
+    skip = set(open(args.skip).read().split()) if args.skip else set()
+    files = [f for f in sorted(glob.glob(os.path.join(args.out, "tables", "*.npz"))) if os.path.basename(f) not in skip]
+    tabs = [dict(np.load(f)) for f in files]
+    log.info("%d shower tables (%d skipped)", len(tabs), len(skip))
     log10e = np.array([float(t["log10E"]) for t in tabs])
     data = plane_rows(tabs)
-    res, laws, pooled, spreads = {"rule": __doc__.split("Rule")[1].strip(), "c0": {}, "laws": {}, "spread": {}}, {}, {}, {}
+    res, laws, pooled, spreads = {"rule": __doc__.split("Rule")[1].strip(), "showers": [os.path.basename(f) for f in files],
+                                  "c0": {}, "laws": {}, "spread": {}}, {}, {}, {}
     for s, r in data.items():
         test = split_showers(r["i"], r["cls"], log10e)
         tg = targets(r)
@@ -579,12 +595,18 @@ def main():
     a = sub.add_parser("tables", help="stage A, one shower directory per call")
     a.add_argument("sim")
     a.add_argument("--out", default=FOLDER)
+    t = sub.add_parser("truth", help="true stored cells, one shower directory per call")
+    t.add_argument("sim")
+    t.add_argument("--out", default=FOLDER)
     b = sub.add_parser("fit", help="stage B, laws from every table under <out>/tables")
     b.add_argument("--out", default=FOLDER)
     b.add_argument("--name", default="fit", help="output folder under <out>")
+    b.add_argument("--skip", help="file of table names to leave out of the fit")
     args = ap.parse_args()
     if args.stage == "tables":
         stage_tables(args.sim, args.out)
+    elif args.stage == "truth":
+        stage_truth(args.sim, args.out)
     else:
         from symbolic import logs
         out, log = logs.start(args.name, args)

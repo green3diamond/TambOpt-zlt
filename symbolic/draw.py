@@ -53,8 +53,8 @@ def fill_rings(B):
     return B
 
 
-def load_laws(root):
-    z = np.load(os.path.join(root, LAWS))
+def load_laws(root, path=LAWS):
+    z = np.load(os.path.join(root, path))
     out = {}
     for s in SPECIES_NAMES:
         for cn in planes.CLASS.values():
@@ -155,12 +155,24 @@ def shower(job):
     return i, out, time.time() - t0, n_part
 
 
-def stage_energies(out, args, log):
+def scored_primaries(args):
+    """rows, log10 E, cos z, classes, depths, unit directions of chain.primaries (--smoke: an even subset)."""
     rows = chain.primaries()[0]
     rows = rows[:: max(1, len(rows) // args.smoke)] if args.smoke else rows
     zt = np.load(os.path.join(args.out, fit_profiles.TEST))
-    l, u, lab, X = zt["meta.log10_E"][rows], zt["meta.cos_zenith"][rows], zt["meta.labels"][rows], zt["X"][rows]
     dirs = zt["meta.directions"][rows] / np.linalg.norm(zt["meta.directions"][rows], axis=1, keepdims=True)
+    return rows, zt["meta.log10_E"][rows], zt["meta.cos_zenith"][rows], zt["meta.labels"][rows], zt["X"][rows], dirs
+
+
+def given_primaries(args):
+    """The same from a primaries file of judge.py, each primary --draws times in a row."""
+    z = np.load(args.primaries)
+    idx = np.repeat(np.arange(len(z["rows"])), args.draws)
+    return tuple(z[k][idx] for k in ("rows", "l", "u", "labels", "X", "dirs"))
+
+
+def stage_energies(out, args, log):
+    rows, l, u, lab, X, dirs = given_primaries(args) if args.primaries else scored_primaries(args)
     rng = np.random.default_rng(args.seed)
     E = {s: np.zeros((len(rows), N_PLANES)) for s in SPECIES_NAMES}
     xmax = {s: np.zeros(len(rows)) for s in SPECIES_NAMES}
@@ -179,7 +191,7 @@ def stage_energies(out, args, log):
 
 def stage_draw(out, args, log):
     z = np.load(os.path.join(out, "energies.npz"))
-    laws = load_laws(args.out)
+    laws = load_laws(args.out, args.laws)
     nets = {cn: load_noise(args.out, cn) for cn in planes.CLASS.values()}
     mine = np.arange(len(z["rows"]))[args.task::args.tasks]
     jobs = [(i, args.seed, float(z["l"][i]), float(z["u"][i]), planes.CLASS[int(z["labels"][i])], z["X"][i],
@@ -237,6 +249,9 @@ def main():
     ap.add_argument("--name", default="run", help="output folder under particles/draw/")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--smoke", type=int, default=0, help="energies stage: this many primaries, evenly spread")
+    ap.add_argument("--primaries", help="energies stage: primaries file of judge.py instead of the scored primaries")
+    ap.add_argument("--draws", type=int, default=1, help="energies stage: draws per primary of --primaries")
+    ap.add_argument("--laws", default=LAWS, help="draw stage: particle laws, relative to --out")
     ap.add_argument("--task", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", 0)))
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
