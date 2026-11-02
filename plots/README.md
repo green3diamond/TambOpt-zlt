@@ -33,14 +33,11 @@ Everything outside `lib/` is an entry point run by path
 | `04_trajectory_gif.py` | `slurm/run_plots.sh`, `run_traj_activation.sh` |
 | `true_utility.py` | `slurm/run_eval_performance.sh` |
 | `true_activation.py` | `slurm/run_eval_true_activation.sh` |
-| `activation_counts.py` | `slurm/run_eval_activation.sh` |
 | `utility_vs_energy.py` | `slurm/run_eval_utility_vs_energy*.sh` |
-| `init_stage4.py` | hand-run — Stage-4 initial layouts, before and after chain perturbation |
 | `init_cross_section.py` | hand-run — init schemes in the (North, Up) cross-section |
 | `replot_optimize_curves.py` | hand-run — re-render a finished run's curves without re-optimizing |
 
-`true_activation.py` and `activation_counts.py` import `true_utility` as a
-sibling, so those three have to stay in the same folder.
+`true_activation.py` imports `true_utility` as a sibling, so the two have to stay in the same folder.
 
 ## `showers/` — all hand-run
 

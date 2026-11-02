@@ -11,7 +11,6 @@ calls instead.
 """
 import math
 import os
-from typing import Optional
 
 import numpy as np
 import torch
@@ -191,81 +190,6 @@ def primary_to_physical_labels(primary: torch.Tensor):
     return E_gev, theta, phi
 
 
-# Off-mesh penalty (see offmesh_penalty). Weight is in units of U: one detector
-# sitting a full max_gap BEYOND the snap radius costs w/n_det, so at w=100 with
-# 100 detectors that is 1.0 U each — comfortably more than the ~1-2 U a chunk
-# gains by overfitting its batch, which is the trade the optimizer was making.
-OFFMESH_PENALTY_W = 100.0
-
-
-# Onset fraction of the snap radius. NOT 1.0, which was the first attempt
-# and measurably failed: a penalty that is flat inside the radius has zero
-# gradient there, so the only equilibrium is where its OUTWARD-growing
-# gradient finally matches the utility's outward pull — necessarily beyond
-# the radius (measured ~21 m beyond at w=100). Starting the wall inside
-# puts that balance point back in-band. The cost is that U is no longer
-# bit-identical to earlier runs for detectors sitting in the outer quarter
-# of the band; the alternative is a barrier that does not hold.
-PENALTY_ONSET_FRAC = 0.75
-
-# Excess (in units of r0) beyond which the penalty grows LINEARLY instead of
-# quadratically. Unbounded quadratic growth was the second failure: a
-# strong-Wolfe probe landing 400 km out produced a gradient ~4000x anything
-# physical, and although the probe was rejected, the curvature pair it fed into
-# L-BFGS's inverse-Hessian approximation made the following directions wilder
-# still (worst excursion grew from 797 m to 420,658 m). Beyond this the
-# gradient is constant, so a wild probe is expensive but not corrupting.
-PENALTY_LINEAR_AT = 1.0
-
-
-def offmesh_penalty(x_det: torch.Tensor, y_det: torch.Tensor,
-                    mesh_en: torch.Tensor, r0: float) -> torch.Tensor:
-    """Mean penalised excess distance beyond `r0` of the nearest mesh centroid.
-
-    Huber-shaped in the normalised excess u = (d - r0)/r0 — quadratic where the
-    optimizer works, linear far away so the far field cannot dominate. Normalised
-    by r0 and averaged over detectors, so the weight means the same thing at any
-    mesh scale or detector count.
-
-    Why it exists: U knows nothing about the mountain, and the snap to the mesh
-    runs under no_grad AFTER the step. Without this the optimizer hill-climbed the
-    surrogate's extrapolation up to 1272 m off-mesh, reporting U 36.2 -> 37.7 out
-    there; the end-of-chunk snap then collapsed it to 16.18.
-
-    `r0` is the ONSET radius (callers pass PENALTY_ONSET_FRAC * max_gap),
-    deliberately inside the snap radius. Tuning arithmetic: docs/THEORY.md §5.8.
-    """
-    d2 = ((x_det[:, None] - mesh_en[None, :, 0]) ** 2
-          + (y_det[:, None] - mesh_en[None, :, 1]) ** 2)
-    d = d2.min(dim=1).values.clamp_min(1e-12).sqrt()
-    u = (d - r0).clamp_min(0.0) / r0
-    a = PENALTY_LINEAR_AT
-    quad = u.clamp_max(a).pow(2)                  # u^2 up to the knee
-    lin = 2.0 * a * (u - a).clamp_min(0.0)        # constant slope past it
-    return (quad + lin).mean()
-
-
-def _apply_offmesh_penalty(U: torch.Tensor, parts: dict,
-                           x_det: torch.Tensor, y_det: torch.Tensor,
-                           mesh_en: Optional[torch.Tensor],
-                           penalty_w: float,
-                           penalty_r0: Optional[float]) -> torch.Tensor:
-    """Subtract the off-mesh penalty from `U`, recording both halves in `parts`.
-
-    A no-op returning `U` unchanged unless a mesh AND a positive weight are both
-    supplied, so callers that never pass them keep bit-identical numbers. Adds
-    "u_raw" (utility before the boundary cost) and "u_offmesh" to `parts` in
-    place and returns the PENALISED objective.
-    """
-    if mesh_en is None or penalty_w <= 0.0:
-        return U
-    r0 = penalty_r0 if penalty_r0 else 1.0
-    pen = penalty_w * offmesh_penalty(x_det, y_det, mesh_en, r0)
-    parts["u_raw"] = U          # utility before the boundary cost
-    parts["u_offmesh"] = -pen
-    return U - pen
-
-
 def _surrogate_predict(x_det: torch.Tensor,
                        y_det: torch.Tensor,
                        primary_batch: torch.Tensor,
@@ -287,7 +211,7 @@ def _surrogate_predict(x_det: torch.Tensor,
     # modules/surrogates/deepsets.py). `sample` is kept in the signature because
     # stage-4 scripts thread it through ~6 call sites, but it is now inert --
     # and inert in the direction those scripts already chose, since
-    # 04_optimize_lbfgs_ensemble.py has had SAMPLE_SURROGATE = False all along.
+    # the (now removed) ensemble Stage 4 had SAMPLE_SURROGATE = False all along.
     #
     # History, because the reasoning is worth keeping: this used to draw a fresh
     # reparameterized (mean, var) sample per call so the recon input matched what
@@ -331,9 +255,6 @@ def utility_of_xy(x_det: torch.Tensor,
                   primary_batch: torch.Tensor,
                   fnn,
                   recon,
-                  mesh_en: torch.Tensor = None,
-                  penalty_w: float = 0.0,
-                  penalty_r0: float = None,
                   sample: bool = True):
     """Composite U for an (East, North) layout against a primary batch.
 
@@ -347,13 +268,6 @@ def utility_of_xy(x_det: torch.Tensor,
 
     NOT `@torch.no_grad()`-decorated, so L-BFGS can differentiate it; the DE
     optimizers wrap their own calls instead.
-
-    `mesh_en` + `penalty_w` > 0 subtract the differentiable off-mesh penalty,
-    putting the mountain boundary inside the objective. OFF by default so existing
-    callers — notably plots/layouts/true_utility.py, which depends on scoring exactly
-    what the optimizer scored — get identical numbers. The returned U is the
-    PENALISED objective; raw utility and penalty are both in `parts`. With
-    r0 = max_gap a converged in-band layout has penalty exactly 0.
 
     `sample` (default True, matching production/optimizer behavior) is passed
     straight through to `_surrogate_predict`: set False when the caller needs
@@ -386,7 +300,6 @@ def utility_of_xy(x_det: torch.Tensor,
         # parts slots reused for the level shares (x30): u_theta = U, u_phi = within 1, u_e = within 5, u_pr = detected
         parts = dict(u_theta=U, u_phi=TWO_TIER_SCALE * g1.mean(), u_e=TWO_TIER_SCALE * g5.mean(),
                      u_pr=TWO_TIER_SCALE * det.mean())
-        U = _apply_offmesh_penalty(U, parts, x_det, y_det, mesh_en, penalty_w, penalty_r0)
         return U, r, parts
     if UTILITY_MODE == "swgo_trigger":
         from .counting import trigger_prob
@@ -422,7 +335,6 @@ def utility_of_xy(x_det: torch.Tensor,
         # parts: u_theta = U, u_phi = trigger rate, u_e = triggered and good, u_pr = good (any trigger); all x30
         parts = dict(u_theta=U, u_phi=TWO_TIER_SCALE * rb.mean(), u_e=TWO_TIER_SCALE * (rb * g).mean(),
                      u_pr=TWO_TIER_SCALE * g.mean())
-        U = _apply_offmesh_penalty(U, parts, x_det, y_det, mesh_en, penalty_w, penalty_r0)
         return U, rb, parts
     if UTILITY_MODE == "two_tier":
         p = _two_tier_params()
@@ -433,7 +345,6 @@ def utility_of_xy(x_det: torch.Tensor,
         U = TWO_TIER_SCALE * u_tt
         zero = torch.zeros((), device=U.device)
         parts = dict(u_theta=U, u_phi=zero, u_e=zero, u_pr=TWO_TIER_SCALE * g.mean())  # u_pr slot: good share
-        U = _apply_offmesh_penalty(U, parts, x_det, y_det, mesh_en, penalty_w, penalty_r0)
         return U, r, parts
     u_theta = U_angle(theta_pred, theta_true, r, cap=CAP_THETA)
     u_phi   = U_angle(phi_pred,   phi_true,   r, cap=CAP_PHI,
@@ -443,33 +354,27 @@ def utility_of_xy(x_det: torch.Tensor,
     U = (W_THETA * u_theta + W_PHI * u_phi + W_E * u_e) / W_DIV
     parts = dict(u_theta=W_THETA * u_theta / W_DIV, u_phi=W_PHI * u_phi / W_DIV,
                  u_e=W_E * u_e / W_DIV, u_pr=W_PR * u_pr / W_DIV)
-    U = _apply_offmesh_penalty(U, parts, x_det, y_det,
-                               mesh_en, penalty_w, penalty_r0)
     return U, r, parts
 
 
 # Divisor putting particles/shower into the same range as the composite U (~35).
-# The 04 optimizers assume an objective of order tens (OFFMESH_PENALTY_W is quoted
-# "in units of U", GRAD_CLIP=100), so an unscaled objective would swamp the
-# boundary penalty.
+# The 04 optimizers assume an objective of order tens (GRAD_CLIP=100).
 #
 # Calibrated on the SURROGATE, not the kernel — that is what this objective reads.
 # Grid layout, 4000 corpus primaries:
 #     surrogate   1.98e4 particles/shower, 47.4 soft detectors
 #     kernel      3.77e5 particles/shower, 34.8 soft detectors
 # The surrogate is ~19x low on particles but ~36% high on detector count, so a
-# kernel-derived scale leaves the penalty ~19x overweight. 500 puts grid at ~40.
-# Pure rescale — cannot change which layout wins, but does set the
-# objective-to-penalty ratio.
+# kernel-derived scale would be ~19x off. 500 puts grid at ~40.
+# Pure rescale — cannot change which layout wins.
 PARTICLE_SCALE = 500.0
 
 # PARTICLE_SCALE's counterpart for mode="distinct"; separate because the overlap
 # correction divides by m_d, so the two modes do not share a range.
 # MEASURED m_d (median over detectors): grid 1.61 (NN spacing 67 m vs sigma 50 m),
 # distinct-optimised 1.25 (NN spacing 120 m). At 100 the objective runs ~123-159,
-# i.e. ~3-4x above the U ~ 35 that OFFMESH_PENALTY_W is quoted against.
-# Left at 100: runs exist at this value and rescaling breaks comparison against
-# them. Revisit only alongside OFFMESH_PENALTY_W, never mid-experiment.
+# i.e. ~3-4x above the composite U ~ 35.
+# Left at 100: runs exist at this value and rescaling breaks comparison against them.
 DISTINCT_SCALE = 100.0
 
 
@@ -499,10 +404,7 @@ def activation_of_xy(x_det: torch.Tensor,
                      y_det: torch.Tensor,
                      primary_batch: torch.Tensor,
                      fnn,
-                     mode: str = "particles",
-                     mesh_en: Optional[torch.Tensor] = None,
-                     penalty_w: float = 0.0,
-                     penalty_r0: Optional[float] = None):
+                     mode: str = "particles"):
     """How much a layout COLLECTS, differentiably — the activation objective.
 
         counts    = expm1(fnn(primary, xy)[..., 0])       particles/detector
@@ -519,11 +421,9 @@ def activation_of_xy(x_det: torch.Tensor,
 
     **Surrogate-fed, so these numbers are NOT comparable to the kernel
     evaluator's** — the two disagree ~19x on total particles (see PARTICLE_SCALE).
-    `plots/layouts/activation_counts.py` scoring held-out events is the honest check.
 
     Contains no reconstruction term by design, so it is expected to disagree with
-    `utility_of_xy`. Returns (U, r, parts) so the ensemble machinery is a drop-in;
-    `r` is reported, not optimized.
+    `utility_of_xy`. Returns (U, r, parts) like `utility_of_xy`; `r` is reported, not optimized.
     """
     if mode not in ("particles", "detectors", "distinct"):
         raise ValueError("mode must be 'particles', 'detectors' or 'distinct', "
@@ -544,8 +444,6 @@ def activation_of_xy(x_det: torch.Tensor,
     U = dict(particles=particles, detectors=n_soft, distinct=distinct)[mode].mean()
     parts = dict(u_particles=particles.mean(), u_detectors=n_soft.mean(),
                  u_distinct=distinct.mean(), u_pr=W_PR * U_PR(r) / W_DIV)
-    U = _apply_offmesh_penalty(U, parts, x_det, y_det,
-                               mesh_en, penalty_w, penalty_r0)
     return U, r, parts
 
 

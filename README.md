@@ -45,7 +45,7 @@ See `docs/THEORY.md` for the full pipeline architecture and the reasoning behind
 ## Running the pipeline
 
 ```
-sbatch slurm/run_all_script_batch.sh
+bash slurm/run20_submit.sh <filter_job>     # submits the run 20 chain with dependencies
 ```
 
-drives the full `00` → `04` pipeline end-to-end, with `pipeline_status.json` checkpointing so already-completed steps are skipped on re-submission. See `slurm/` for the individual evaluation/plotting job wrappers.
+chains the current run's stages (Stage 4 is `scripts/04_optimize_lbfgs_kernel.py`). See `slurm/` for the individual evaluation/plotting job wrappers.
