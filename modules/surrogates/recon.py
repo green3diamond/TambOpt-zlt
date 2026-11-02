@@ -1,9 +1,8 @@
 """Reconstruction net: per-detector response -> primary labels.
 
 Maps flattened `(x, y, E_pred, T_pred)` per detector to the primary encoding
-`[dir_x, dir_y, dir_z, log_e_norm]`. `Reconstruction` mirrors `FNNSurrogate`
-one-for-one — same hidden widths, same baked-in input z-score and output
-denormalization, same `set_normalization()` contract and buffer names.
+`[dir_x, dir_y, dir_z, log_e_norm]`. `Reconstruction` is the flat MLP, with the input
+z-score and output denormalization baked in as buffers (`set_normalization()`).
 `DeepSetsRecon` is the permutation-equivariant version Step 3 trains.
 """
 

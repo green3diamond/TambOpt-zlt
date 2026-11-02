@@ -1,4 +1,4 @@
-"""Permutation-equivariant per-detector surrogate. Drop-in for FNNSurrogate.
+"""Permutation-equivariant per-detector surrogate (the Stage 2 surrogate).
 
 The response kernel is strictly per-detector-local, `(E_i, T_i) = phi(q, x_i, y_i)`
 with no cross-detector term, so a shared per-detector map is the right inductive
@@ -12,7 +12,7 @@ permutation invariance by augmentation; DeepSets is equivariant by construction
     mu_i    = rho([h_i, c])                  # shared decoder, per channel
 
 MEAN-ONLY. The decoder emits mu per channel and nothing else; `forward()` returns
-it in raw units, which is FNNSurrogate's contract and what Steps 3-4 and
+it in raw units, which is what Steps 3-4 and
 `dual.py` consume.
 
 This model used to be heteroscedastic — a second pair of logvar outputs feeding a
@@ -28,9 +28,8 @@ branch. Dropping it makes `out_dim` 4 -> 2 per detector.
 Checkpoint compatibility: a 2-output decoder CANNOT load a 4-output state dict, so
 checkpoints written before this change (runs 12/13/14) do not load here.
 
-Normalization reuses FNNSurrogate's buffers verbatim (widths 208 and 200), so
-`set_normalization` is identical and the trainer's in-place log-T stat mutation
-flows through.
+Normalization buffers are the flat z-score vectors from `fnn.compute_normalization`
+(widths 208 and 200), so the trainer's in-place log-T stat mutation flows through.
 """
 
 import torch
@@ -41,7 +40,7 @@ from .blocks import _mlp
 
 
 class DeepSetsSurrogate(nn.Module):
-    """Permutation-equivariant per-detector surrogate. Drop-in for FNNSurrogate.
+    """Permutation-equivariant per-detector surrogate (the Stage 2 surrogate).
 
     Args:
         n_det       : number of detectors (output set size).
@@ -79,8 +78,8 @@ class DeepSetsSurrogate(nn.Module):
         # mu_T), with mu fitted on lit slots only and z-scored by lit-only stats.
         self.decoder = _mlp(hidden + context, hidden, 4 if self.hurdle else 2, n_dec, dropout)
 
-        # SAME buffer layout as FNNSurrogate so set_normalization is identical
-        # and the trainer's log-T stat mutation (out_mean[n_det:]) flows through.
+        # Flat z-score buffers (compute_normalization's layout), so the trainer's
+        # log-T stat mutation (out_mean[n_det:]) flows through.
         in_dim  = primary_dim + 2 * n_det
         out_dim = 2 * n_det                              # 200
         self.register_buffer("in_mean",  torch.zeros(in_dim))
@@ -94,7 +93,7 @@ class DeepSetsSurrogate(nn.Module):
             self.register_buffer("hit_std",  torch.ones(2))
 
     def set_normalization(self, stats: dict):
-        """Identical contract to FNNSurrogate.set_normalization."""
+        """Copy z-score buffers from `compute_normalization()` output."""
         self.in_mean.copy_(stats["in_mean"])
         self.in_std.copy_(stats["in_std"])
         self.out_mean.copy_(stats["out_mean"])
@@ -171,44 +170,31 @@ class DeepSetsSurrogate(nn.Module):
 
 
 def build_surrogate_from_ckpt(ckpt: dict, n_det: int, primary_dim: int, device=None):
-    """Construct the right surrogate class from a checkpoint's `config`.
+    """Build a DeepSets surrogate from a checkpoint's `config` (model_type must be "deepsets").
 
-    Lets Steps 3/4 load EITHER a flat-MLP `fnn.pt` (config has no `model_type`,
-    or `model_type="fnn"`) OR a DeepSets `fnn.pt` (`model_type="deepsets"`)
-    without the caller knowing which. Returns an eval-mode, frozen model with
-    normalization already applied from the checkpoint's `norm_stats`.
+    Returns an eval-mode, frozen model with normalization applied from the checkpoint's `norm_stats`.
 
-    Usage (replace the hardcoded `FNNSurrogate(...)` block in 03/04):
-
-        ckpt = torch.load(os.path.join(FNN_FOLDER, "fnn.pt"), map_location=DEVICE)
+        ckpt = torch.load(os.path.join(FNN_FOLDER, "fnn_electron.pt"), map_location=DEVICE)
         fnn  = build_surrogate_from_ckpt(ckpt, N_DETECTORS, PRIMARY_DIM, DEVICE)
     """
-    from .fnn import FNNSurrogate
     cfg = ckpt.get("config", {})
     mtype = cfg.get("model_type", "fnn")
-    if mtype == "deepsets":
-        # a DeepSets surrogate runs on any detector count; its buffers keep the training count (from the checkpoint)
-        n_det = int(ckpt["state_dict"]["out_mean"].numel() // 2) if "out_mean" in ckpt["state_dict"] else n_det
-        model = DeepSetsSurrogate(
-            n_det=n_det, primary_dim=primary_dim,
-            hidden=int(cfg.get("hidden", 256)),
-            context=int(cfg.get("context", 64)),
-            n_enc=int(cfg.get("n_enc", 3)),
-            n_dec=int(cfg.get("n_dec", 3)),
-            dropout=float(cfg.get("dropout", 0.0)),
-            hurdle=bool(cfg.get("hurdle", False)),
-        )
-        # `var_param` / `var_min` may still be present in a pre-mean-only
-        # checkpoint's config. They are ignored rather than rejected here; the
-        # load_state_dict below is what actually refuses such a checkpoint, and
-        # its shape-mismatch error names the decoder layer, which is the more
-        # useful diagnostic.
-    else:
-        model = FNNSurrogate(
-            n_det=n_det, primary_dim=primary_dim,
-            hidden=int(cfg.get("hidden", 512)),
-            dropout=float(cfg.get("dropout", 0.1)),
-        )
+    if mtype != "deepsets":
+        raise ValueError(f"surrogate checkpoint has model_type={mtype!r}; only DeepSets surrogates are supported "
+                         "(the flat-MLP FNNSurrogate was removed)")
+    # a DeepSets surrogate runs on any detector count; its buffers keep the training count (from the checkpoint)
+    n_det = int(ckpt["state_dict"]["out_mean"].numel() // 2) if "out_mean" in ckpt["state_dict"] else n_det
+    model = DeepSetsSurrogate(
+        n_det=n_det, primary_dim=primary_dim,
+        hidden=int(cfg.get("hidden", 256)),
+        context=int(cfg.get("context", 64)),
+        n_enc=int(cfg.get("n_enc", 3)),
+        n_dec=int(cfg.get("n_dec", 3)),
+        dropout=float(cfg.get("dropout", 0.0)),
+        hurdle=bool(cfg.get("hurdle", False)),
+    )
+    # `var_param` / `var_min` in a pre-mean-only config are ignored; load_state_dict refuses such a
+    # checkpoint with a shape mismatch that names the decoder layer.
     model.load_state_dict(ckpt["state_dict"])
     if "norm_stats" in ckpt:
         model.set_normalization(ckpt["norm_stats"])

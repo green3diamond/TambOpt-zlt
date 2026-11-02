@@ -5,11 +5,10 @@ shower-level validation split, and plots target vs prediction against a 1:1 line
 The recon runs on FNN-predicted (E, T) rather than ground truth, so its scatter
 shows end-to-end FNN -> recon error.
 
-    python plots/training/02_nn_target_vs_pred.py
-    python plots/training/02_nn_target_vs_pred.py --dual   # dual-species surrogate
+    python plots/training/02_nn_target_vs_pred.py          # per-species surrogate + recon scatters
     python plots/training/02_nn_target_vs_pred.py --kernel-only  # only the *_kernel pair
 
-In --dual mode the FNN scatter is rendered PER SPECIES — each per-species DeepSets
+The FNN scatter is rendered PER SPECIES — each per-species DeepSets
 model against its own species-filtered subset (split on the Step-1 species_ids
 sidecar), since the corpus E/T ground truth is per-species. The recon scatter uses
 the combined DualSpeciesSurrogate on the full corpus, as Step 3 does. Outputs:
@@ -26,7 +25,7 @@ model; the conditional figure drops dark samples, normalises per target-column,
 and shows the compression as a slope.
 
 Recon folder: Step 3 writes to RECON_FOLDER + "_deepsets", so that is where
---dual reads recon.pt and writes its scatter.
+recon.pt is read and its scatter written.
 """
 import os
 import sys
@@ -76,7 +75,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import modules  # noqa: F401 — package import; keeps modules on the path
-from modules.surrogates import FNNSurrogate
 from modules.constants import (
     TRAINING_DATASET_FOLDER, FNN_FOLDER, RECON_FOLDER,
     N_DETECTORS, PRIMARY_DIM, SPECIES_NAMES,
@@ -455,34 +453,14 @@ def _print_conditional_stats(stats, E_target, E_pred):
               f"(n={st['n_hit']:,})  1σ band {st['band_sigma']:.3f}")
 
 
-def load_fnn() -> FNNSurrogate:
-    # Read width + dropout from the saved config and prefer the FNN's own
-    # norm_stats (02_train_fnn.py updates the T slots in-memory for log-T
-    # training and ships the modified stats inside fnn.pt; disk norm_stats.pt
-    # still holds raw-T values).
-    fnn_ckpt = torch.load(os.path.join(FNN_FOLDER, "fnn.pt"), map_location=DEVICE)
-    cfg = fnn_ckpt.get("config", {})
-    fnn = FNNSurrogate(
-        n_det=N_DETECTORS, primary_dim=PRIMARY_DIM,
-        hidden=int(cfg.get("hidden", 512)),
-        dropout=float(cfg.get("dropout", 0.1)),
-    ).to(DEVICE)
-    fnn.load_state_dict(fnn_ckpt["state_dict"])
-    norm_stats = fnn_ckpt.get(
-        "norm_stats",
-        torch.load(os.path.join(TRAINING_DATASET_FOLDER, "norm_stats.pt")),
-    )
-    fnn.set_normalization(norm_stats)
-    fnn.eval()
-    print(f"[load] fnn.pt  epoch={fnn_ckpt.get('epoch','?')}  "
-          f"val={fnn_ckpt.get('val_total','?')}  "
-          f"hidden={int(cfg.get('hidden', 512))} "
-          f"lbfgs_iter={fnn_ckpt.get('lbfgs_iter','?')}")
-    return fnn
+def load_fnn():
+    """The combined per-species DeepSets surrogate (fnn_<species>.pt in FNN_FOLDER)."""
+    from modules.surrogates import load_dual_surrogate
+    return load_dual_surrogate(FNN_FOLDER, DEVICE)
 
 
 @torch.no_grad()
-def fnn_predict(fnn: FNNSurrogate,
+def fnn_predict(fnn,
                 primary: torch.Tensor,
                 xy: torch.Tensor):
     N = primary.shape[0]
@@ -526,8 +504,7 @@ SPECIES_TAGS = tuple((name, i) for i, name in enumerate(SPECIES_NAMES))
 
 def load_species_fnn(species: str):
     """Load one per-species surrogate (fnn_<species>.pt) from
-    FNN_FOLDER. Uses build_surrogate_from_ckpt so flat-MLP or DeepSets configs
-    both work, with the checkpoint's own per-species norm stats applied."""
+    FNN_FOLDER via build_surrogate_from_ckpt, with the checkpoint's own per-species norm stats applied."""
     from modules.surrogates import build_surrogate_from_ckpt
     path = os.path.join(FNN_FOLDER, f"fnn_{species}.pt")
     ckpt = torch.load(path, map_location=DEVICE, weights_only=False)
@@ -930,8 +907,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dual", action="store_true",
-                    help="dual-species surrogate: per-species FNN scatters + "
-                         "combined-surrogate recon scatter")
+                    help="no-op (always the per-species DeepSets surrogate); kept for old scripts")
     ap.add_argument("--kernel-only", action="store_true",
                     help="render only the recon-on-kernel pair "
                          "(recon_target_vs_pred_kernel.png / "
@@ -941,15 +917,11 @@ def main():
     args = ap.parse_args()
 
     print("=" * 72)
-    print("v6/plots/training/02_nn_target_vs_pred.py" + ("  [dual]" if args.dual else ""))
+    print("v6/plots/training/02_nn_target_vs_pred.py")
     print("=" * 72)
     if not args.kernel_only:
-        if args.dual:
-            plot_fnn_dual()
-            plot_recon_dual()
-        else:
-            plot_fnn_only()
-            plot_recon_only()
+        plot_fnn_dual()
+        plot_recon_dual()
     # Recon-on-kernel needs no surrogate at all, so it runs the same way
     # regardless of --dual -- and is the only thing --kernel-only renders.
     plot_recon_on_kernel()

@@ -1,16 +1,13 @@
-"""Primary encoding, normalization statistics, and the pre-DeepSets surrogate.
+"""Primary encoding and normalization statistics, shared by every stage.
 
-`encode_primary` and `compute_normalization` are shared by every stage.
-`FNNSurrogate` itself is superseded by `deepsets.DeepSetsSurrogate` and is kept
-only so `plots/training/02_nn_target_vs_pred.py` can load old checkpoints.
+The surrogate itself is `deepsets.DeepSetsSurrogate` (the flat-MLP FNNSurrogate was removed 2026-11-02).
 """
 
 import os
 
 import torch
-import torch.nn as nn
 
-from ..constants import (N_DETECTORS, PRIMARY_DIM, LOG_E_MIN, LOG_E_MAX)
+from ..constants import LOG_E_MIN, LOG_E_MAX
 
 # ── Primary encoding ─────────────────────────────────────────────────────────
 
@@ -125,70 +122,3 @@ def compute_normalization(primary:   torch.Tensor,
         in_mean=in_mean,   in_std=in_std,
         out_mean=out_mean, out_std=out_std,
     )
-
-
-# ── FNN model ────────────────────────────────────────────────────────────────
-
-class FNNSurrogate(nn.Module):
-    """Flat MLP that maps (primary, layout) → (E, T) per detector.
-
-    Input:  [primary (5) + xy_flat (2·100)] = 205 features.
-    Output: [E (100), T (100)] = 200 features, reshaped to (100, 2).
-    Hidden: 512 → 512 → 512 (ReLU + dropout).
-    Z-scoring is baked into the forward pass via registered buffers so the
-    same model can be used for training and optimization without any extra
-    normalization plumbing at call sites.
-    """
-
-    def __init__(self,
-                 n_det:       int = N_DETECTORS,
-                 primary_dim: int = PRIMARY_DIM,
-                 hidden:      int = 512,
-                 dropout:     float = 0.1):
-        super().__init__()
-        self.n_det       = n_det
-        self.primary_dim = primary_dim
-
-        in_dim  = primary_dim + 2 * n_det
-        out_dim = 2 * n_det
-
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, out_dim),
-        )
-
-        self.register_buffer("in_mean",  torch.zeros(in_dim))
-        self.register_buffer("in_std",   torch.ones(in_dim))
-        self.register_buffer("out_mean", torch.zeros(out_dim))
-        self.register_buffer("out_std",  torch.ones(out_dim))
-
-    def set_normalization(self, stats: dict):
-        """Copy z-score buffers from `compute_normalization()` output."""
-        self.in_mean.copy_(stats["in_mean"])
-        self.in_std.copy_(stats["in_std"])
-        self.out_mean.copy_(stats["out_mean"])
-        self.out_std.copy_(stats["out_std"])
-
-    def forward(self, primary: torch.Tensor, xy: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            primary : (B, primary_dim)
-            xy      : (B, n_det, 2)
-        Returns:
-            (B, n_det, 2) — column 0 = E, column 1 = T, in unnormalized units.
-        """
-        B = primary.shape[0]
-        flat   = torch.cat([primary, xy.reshape(B, -1)], dim=1)    # (B, 205)
-        flat_n = (flat - self.in_mean) / self.in_std
-        out_n  = self.net(flat_n)                                   # (B, 200)
-        out    = out_n * self.out_std + self.out_mean
-
-        E_out = out[:, :self.n_det]
-        T_out = out[:, self.n_det:]
-        return torch.stack([E_out, T_out], dim=-1)                 # (B, n_det, 2)

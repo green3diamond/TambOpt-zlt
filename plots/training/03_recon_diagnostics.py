@@ -119,9 +119,8 @@ def main():
     # recon_conditional.png. It can self-load recon.pt, the corpus and the val
     # split -- its RECON_VAL_SEED/VAL_FRAC (1 / 0.10) match 03's SEED/VAL_FRAC,
     # so the split is the same one recon actually validated on. The one thing
-    # it CANNOT self-load is the surrogate: its load_fnn() wants a legacy
-    # single-model fnn.pt, while this pipeline writes per-species
-    # fnn_electron/muon/photon.pt. Hand it the dual wrapper explicitly.
+    # it does not reuse is the surrogate already loaded here: hand it the
+    # dual wrapper explicitly instead of letting load_fnn() reload it.
     import torch
     import importlib.util
     from modules.surrogates import load_dual_surrogate
