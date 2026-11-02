@@ -67,6 +67,7 @@ SPREAD_RINGS = (4, 9, 14, 16)                                # 10-20, 100-140, 5
 MIN_PARTICLES = 1000
 E_MIN = {"electron": 0.01 * 0.999, "muon": 0.5 * 0.999, "photon": 0.01 * 0.999}   # GeV kinetic, CORSIKA
 LOG_LAM = np.arange(-3.0, 3.0001, 0.01)                        # log10 width grid of plane_widths
+BAND = (EDGES[1:-1] >= 10.0) & (EDGES[1:-1] <= 400.0)           # ring edges where the cells' brightness cut sits
 CUM_CLIP = 1e-6
 # --emcut 0.01 --mucut 0.5 of the v2 runs (observed minima 0.0099990, 0.49995: float32), a hair below so no particle
 # falls under it
@@ -348,15 +349,15 @@ def stretch(q, log_lam, tau=0.0):
     return np.diff(np.r_[0.0, c, 1.0])
 
 
-def plane_shapes(q_true, q_law, tilt=True):
+def plane_shapes(q_true, q_law, tilt=True, edges=slice(None)):
     """Per plane, the log10 stretch (grid LOG_LAM) of its law profile that best matches the true profile on the
-    cumulative log-odds, then the tilt of what the stretch leaves (least squares) -> (log10 lam, tau). In sequence,
-    because fitted jointly the two trade off almost perfectly (residual correlation 0.82-0.99) and wander along that
-    ridge; tilt=False gives tau = 0."""
+    cumulative log-odds at `edges`, then the tilt of what the stretch leaves (least squares) -> (log10 lam, tau). In
+    sequence, because fitted jointly the two trade off almost perfectly (residual correlation 0.82-0.99) and wander
+    along that ridge; tilt=False gives tau = 0."""
     lam, tau = np.empty(len(q_true)), np.zeros(len(q_true))
     for p, (yl, yt) in enumerate(zip(cum_logodds(q_law), cum_logodds(q_true))):
         Y = stretch_logodds(yl, LOG_LAM)
-        b = ((yt[None, :] - Y) ** 2).sum(1).argmin()
+        b = ((yt[None, :] - Y)[:, edges] ** 2).sum(1).argmin()
         lam[p] = LOG_LAM[b]
         if tilt:
             g = tilt_axis(Y[b:b + 1])[0]

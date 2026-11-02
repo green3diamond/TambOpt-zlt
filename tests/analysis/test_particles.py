@@ -133,6 +133,18 @@ def test_stretch_moves_energy_outward_and_widths_are_recovered():
     assert np.allclose(got, truth, atol=0.011) and not tau.any()
 
 
+def test_band_fit_ignores_a_profile_change_outside_the_band():
+    q = np.diff(np.r_[0.0, 1 - (1 + particles.EDGES[1:-1] / 100.0) ** -1.5, 1.0])
+    true = particles.stretch(q, 0.3)
+    c = np.cumsum(true)[:-1]
+    inside = np.flatnonzero(particles.EDGES[1:-1] < 10.0)
+    c[inside] = c[inside] ** 3                                              # the core changes, the band does not
+    true = np.diff(np.r_[0.0, c, 1.0])
+    band = particles.plane_shapes(true[None], q[None], tilt=False, edges=particles.BAND)[0][0]
+    every = particles.plane_shapes(true[None], q[None], tilt=False)[0][0]
+    assert particles.BAND.sum() == 10 and abs(band - 0.3) < 0.011 and abs(every - 0.3) > 0.05
+
+
 def test_tilt_keeps_the_half_energy_radius_and_shapes_are_recovered():
     q = np.diff(np.r_[0.0, 1 - (1 + particles.EDGES[1:-1] / 100.0) ** -1.5, 1.0])    # broad: no clipping at 9 km
     half = lambda p: np.interp(0.5, np.cumsum(p)[:-1], np.log10(particles.EDGES[1:-1]))
