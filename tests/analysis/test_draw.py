@@ -51,6 +51,32 @@ def test_noise_offsets_and_ring_fill():
     assert np.array_equal(F[0], B[1]) and np.array_equal(F[3], B[2]) and np.array_equal(F[5], B[4])
 
 
+def test_time_law_replaces_the_ring_laws_only_when_given():
+    law, x = toy_law(), np.eye(N_F)[0]
+    lead, delay = draw.ring_times(law, x, 5)
+    assert np.allclose(lead, np.log10(6.0)) and np.allclose(delay, np.log10(21.0))
+    theta = np.array([0.6, 0.35, -0.02, 0.8])
+    law["time"] = {"form": "c", "lead": theta, "delay": 2 * theta}
+    lead, delay = draw.ring_times(law, x, 5)
+    assert lead.shape == (particles.N_RING,) and np.array_equal(lead, times_sr_c(theta, x, 5))
+
+
+def times_sr_c(theta, x, k):
+    from symbolic import times_sr
+    return times_sr.ring_times(theta, "c", x, k)
+
+
+def test_time_law_must_come_with_non_default_laws():
+    assert draw.time_law_path(draw.LAWS, None) == draw.TIME_LAW
+    assert draw.time_law_path("other", "mine.npz") == "mine.npz"
+    assert draw.time_law_path("other", "none") is None
+    try:
+        draw.time_law_path("other", None)
+    except ValueError:
+        return
+    raise AssertionError("a fold's laws drew with the time law of all showers")
+
+
 def test_width_law_must_come_with_non_default_laws():
     assert draw.width_law_path(draw.LAWS, None) == draw.WIDTH_LAW
     assert draw.width_law_path("fold0/particle_laws.npz", "fold0/width_law.npz") == "fold0/width_law.npz"

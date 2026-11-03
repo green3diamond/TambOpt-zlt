@@ -36,12 +36,13 @@ from scipy.special import softmax
 
 from symbolic import logs
 from modules.constants import N_PLANES, SPECIES_NAMES
-from symbolic import annuli, atmosphere, chain, fit_profiles, generator, lateral, longitudinal, particles, planes, width_sr, \
+from symbolic import annuli, atmosphere, chain, fit_profiles, generator, lateral, longitudinal, particles, planes, energy_sr, times_sr, width_sr, \
     render, sampler, sources, traits
 
 FOLDER = os.path.join("particles", "draw")
 LAWS = os.path.join("particles", "fit_v2", "particle_laws.npz")
 WIDTH_LAW = os.path.join("particles", "sr_width", width_sr.LAW)
+TIME_LAW = os.path.join("particles", "sr_times", times_sr.LAW)
 NOISE = os.path.join("traits", "run_{0}_K0", "traits_{0}_K0.pt")
 LAW_NAMES = ("stored", "rings", "width", "shape", "mean_energy", "lead", "delay", "spread")
 
@@ -76,6 +77,17 @@ def width_law_path(laws, width_law):
     return WIDTH_LAW
 
 
+def time_law_path(laws, time_law):
+    """The time law to draw with, None for the ring-by-ring laws. Laws fitted on part of the showers need their own, or a judged shower could leak in."""
+    if time_law == "none":
+        return None
+    if time_law:
+        return time_law
+    if laws != LAWS:
+        raise ValueError("--laws is not the default one: give the --time-law fitted on the same showers, or none")
+    return TIME_LAW
+
+
 def load_noise(root, cn):
     """The K=0 plane-noise network as numpy layers [(W, b)], checked against traits' sizes."""
     import torch
@@ -101,6 +113,20 @@ def noise(net, x, s, rng):
     return h
 
 
+def ring_times(law, x, k):
+    """log10(1 + t / ns) per ring of the lead and the delay: from a common form if the laws carry one, else ring by ring."""
+    if "time" in law:
+        return tuple(times_sr.ring_times(law["time"][w], law["time"]["form"], x, k) for w in times_sr.TIMES)
+    return law["lead"] @ x, law["delay"] @ x
+
+
+def ring_means(law, x, k):
+    """ln mean particle energy per ring: from a common form if the laws carry one, else ring by ring."""
+    if "energy" in law:
+        return energy_sr.ring_means(law["energy"]["theta"], law["energy"]["form"], x, k)
+    return law["mean_energy"] @ x
+
+
 def plane_particles(rng, k, x, e_k, law, s, off=None, log_lam=None, tilt=0.0):
     """Particles (n, 5) [plane k, across, along, energy, time] of one plane before the preprocessing; the variety is
     either K=0 logit offsets `off` or the plane's log10 width `log_lam` and tilt `tilt`."""
@@ -109,9 +135,10 @@ def plane_particles(rng, k, x, e_k, law, s, off=None, log_lam=None, tilt=0.0):
     if off is not None:
         logit[: particles.OUTER] += off
     shares = softmax(logit) if log_lam is None else particles.stretch(softmax(logit), log_lam, tilt)
-    lead = np.maximum(10.0 ** (law["lead"] @ x) - 1, 0.0)
-    tau = np.maximum(10.0 ** (law["delay"] @ x) - 1 - lead, 0.0)
-    return ring_particles(rng, k, e_tot * shares, np.exp(law["mean_energy"] @ x), law["spread"],
+    lead_y, delay_y = ring_times(law, x, k)
+    lead = np.maximum(10.0 ** lead_y - 1, 0.0)
+    tau = np.maximum(10.0 ** delay_y - 1 - lead, 0.0)
+    return ring_particles(rng, k, e_tot * shares, np.exp(ring_means(law, x, k)), law["spread"],
                           particles.E_MIN[s], lead, tau)
 
 
@@ -210,6 +237,15 @@ def stage_draw(out, args, log):
         z_w = np.load(os.path.join(args.out, width_law_path(args.laws, args.width_law)))
         for (s, cn), law in laws.items():
             law["along"] = z_w[f"{s}.{cn}"]
+    time_law = time_law_path(args.laws, args.time_law)
+    if time_law:
+        z_t = np.load(os.path.join(args.out, time_law))
+        for (s, cn), law in laws.items():
+            law["time"] = {"form": str(z_t["form"]), **{w: z_t[f"{s}.{cn}.{w}"] for w in times_sr.TIMES}}
+    if args.energy_law:
+        z_e = np.load(os.path.join(args.out, args.energy_law))
+        for (s, cn), law in laws.items():
+            law["energy"] = {"form": str(z_e["form"]), "theta": z_e[f"{s}.{cn}"]}
     nets = {cn: load_noise(args.out, cn) for cn in planes.CLASS.values()}
     mine = np.arange(len(z["rows"]))[args.task::args.tasks]
     jobs = [(i, args.seed, float(z["l"][i]), float(z["u"][i]), planes.CLASS[int(z["labels"][i])], z["X"][i],
@@ -277,6 +313,8 @@ def main():
     ap.add_argument("--variety", choices=("along", "width", "shape", "k0"), default="along",
                     help="draw stage: plane-to-plane variety")
     ap.add_argument("--width-law", help="draw stage, variety along: width_sr.py law, relative to --out; required with a non-default --laws")
+    ap.add_argument("--time-law", help="draw stage: times_sr.py law, relative to --out, or none for the ring-by-ring laws; required with a non-default --laws")
+    ap.add_argument("--energy-law", help="draw stage: energy_sr.py law, relative to --out; default the ring-by-ring mean energy law")
     args = ap.parse_args()
     out, log = logs.start(os.path.join(FOLDER, args.name), args)
     stage = {"energies": stage_energies, "draw": stage_draw, "merge": stage_merge}[args.stage]
