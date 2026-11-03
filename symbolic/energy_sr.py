@@ -52,7 +52,7 @@ FORMS = {"a": 3, "b": 4, "c": 6, "d": 9}                   # form: numbers per g
 def group_data(args, group):
     t = np.load(os.path.join(args.out, TABLE))
     key = group.replace(" ", ".")
-    return {w: t[f"{key}.{w}"] for w in ("v", "n", "fold", "y", "ref")}
+    return {w: t[f"{key}.{w}"] for w in ("v", "n", "fold", "y", "ref", "shower")}
 
 
 def fit_form(form, v, y, n):
@@ -129,10 +129,10 @@ def stage_table(args, log):
                 j = fold == f
                 ref[j] = x[j] @ draw.fill_rings(laws[f][f"{key}.mean_energy"]).T
             out.update({f"{key}.v": rings_sr.plane_inputs(x, k), f"{key}.n": r["ring_count"][m], f"{key}.fold": fold,
-                        f"{key}.y": y[m], f"{key}.ref": ref})
+                        f"{key}.y": y[m], f"{key}.ref": ref, f"{key}.shower": r["i"][m]})
             log.info("%-8s %-8s planes %4d judged %4d", s, cn, m.sum(), (fold >= 0).sum())
     np.savez(os.path.join(args.out, TABLE), **out)
-    return {"groups": len(out) // 5}
+    return {"groups": len(out) // 6}
 
 
 def stage_fit(args, log):

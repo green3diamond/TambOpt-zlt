@@ -140,7 +140,7 @@ def found_path(run, group, f):
     return os.path.join(run, "found", f"{group.replace(' ', '_')}_fold{f}.pkl")
 
 
-def regressor(run, run_id, seed, iterations, **extra):
+def regressor(run, run_id, seed, iterations, timeout=TIMEOUT, **extra):
     from pysr import PySRRegressor
     return PySRRegressor(niterations=iterations, binary_operators=["+", "-", "*", "/"],
                          unary_operators=["exp", "log", "square", "sqrt", "tanh"], maxsize=MAX_SIZE,
@@ -148,7 +148,7 @@ def regressor(run, run_id, seed, iterations, **extra):
                                              "tanh": {"tanh": 0}},
                          batching=True, batch_size=BATCH, output_directory=os.path.join(run, "pysr"), run_id=run_id,
                          random_state=seed, deterministic=True, parallelism="serial", progress=False, verbosity=0,
-                         timeout_in_seconds=TIMEOUT, model_selection="best", **extra)
+                         timeout_in_seconds=timeout, model_selection="best", **extra)
 
 
 def stage_search(args):
