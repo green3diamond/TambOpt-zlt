@@ -49,13 +49,3 @@ bash slurm/run20_submit.sh <filter_job>     # submits the run 20 chain with depe
 ```
 
 chains the current run's stages (Stage 4 is `scripts/04_optimize_lbfgs_kernel.py`). See `slurm/` for the individual evaluation/plotting job wrappers.
-
-### Paper 1 optimizer tests
-
-```
-bash slurm/paper1_opt_submit.sh [steps]     # 16 Stage 4 runs + 2 scoring jobs, default 20,000 steps
-```
-
-Original utility; {Adam + L-BFGS, SGD} × {centre, uniform grid} × {kernel, surrogate} × {plane (run 19), Malata (run 20)}.
-Needs `<run>/diagnostics/paper1/ugrid.pt` (the uniform-grid start) in both run folders. Results: `_p1` Stage 4 folders,
-scores in `tmp_rings/optres/p1_scores_<site>.json`.

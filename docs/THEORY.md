@@ -1,4 +1,4 @@
-# TambOpt: how the pipeline works (2026-10-23)
+# TambOpt: how the pipeline works (2026-11-04)
 
 Goal: place N detectors (100) on a mountain face so that tau-induced air showers are reconstructed as well as possible
 (direction, energy). The layout is optimised by gradient descent through a differentiable detector response and a
@@ -12,9 +12,9 @@ trained reconstruction network.
 | 0 Showers | `00_generate_data_dual_species.py` | AllShowers point clouds per event × species (e, μ, γ); 5 % held out |
 | 1 Labels | `01_build_dataset_northeast.py` | per row (shower × layout): E, T per detector per species from the kernel |
 | 2 Surrogate | `02_train_fnn_deepsets.py --species s` | hurdle DeepSets per species: P(lit), value (only for surrogate-based Stage 4) |
-| 3 Recon | `03_train_recon_deepsets.py --recon-input kernel` | DeepSets: detector (E, N, E, T) set → primary (direction, log E) |
+| 3 Recon | `03_train_recon_deepsets.py --recon-input kernel` | DeepSets: detector set (9 features each) → primary (direction, log E) |
 | 3c Fine-tune | `03c_finetune_recon_noise.py` | recon on background / counted inputs (optional) |
-| 4 Optimise | `04_optimize_lbfgs_kernel.py` | layout: Adam (+ chunked L-BFGS), best on a separate scoring set |
+| 4 Optimise | `04_optimize_lbfgs_kernel.py` | layout: Adam or SGD (+ chunked L-BFGS), best on a separate scoring set |
 | Score | `plots/analysis/run19/*/score_*.py` | layouts on held-out showers (true kernel, true recon) |
 
 Run folder and every path: `modules/constants.py` (`RUN_LOCATION`, overridable with `TAMBOPT_RUN_LOCATION`).
@@ -33,8 +33,11 @@ detector is mapped into it: depth along the axis (plane l at (l + 1) × 500 m) a
 
 **Kernel (detector response)** (`modules/showers/kernel.py`, `compute_labels_batch`):
 - **Ring:** each point is a ring of radius |t1| around the axis (circular showers); detectors read by axis distance.
-- **Gaussian:** σ = 10 m, widened to the 8th-nearest-neighbour distance, capped at 50 m (`KERNEL_INTERP_K`, `_MAX`).
-- **E** = Σ KE × Gaussian weight (peak 1, total 628 m²): GeV collected over ~628 m², **not particles**.
+- **Gaussian:** width h = the 8th-nearest-neighbour distance in the same plane and species, clamped to 10–50 m
+  (`KERNEL_INTERP_K`, `_MAX`); averaged around the ring in closed form (Bessel factor `i0e`).
+- **Planes:** a detector between two planes reads a linear interpolation of the two.
+- **E** = Σ KE × weight; the (σ0/h)² factor (σ0 = 10 m) makes every weight integrate to 2πσ0² ≈ 628 m², so E/628 m²
+  is a kernel density estimate of the energy density (GeV/m²), **not particles**. The sum is not normalised over points.
 - **T** = earliest point with deposit > 10⁻³ (`HIT_DEPOSIT_MIN`), carried along the axis at c (no 1.67 µs steps).
 - Species combine as E = Σ_s E_s, T = min_s T_s.
 - Differentiable in the detector positions.
@@ -52,21 +55,29 @@ Optional kNN 2-of-3 gate: a detector is read out only if ≥ 2 of {itself, its 2
 
 ## 3. Training data (Stage 1)
 
-Every shower is labelled under layouts drawn from 11 strategies (`modules/layouts/strategies.py`): grids
-(jitter 20 / 200 m), centre Gaussians (σ 200 / 400 / 800 m), rings (0.3 / 0.8 / 1.8 km), uniform random, clusters,
-disks, grid patches. The recon is trained on these kernel labels, so it has seen spread-out and compact layouts.
+Every shower is labelled under layouts drawn from the 11 `ACTIVE_STRATEGIES` (`modules/layouts/strategies.py`):
+centre Gaussians (σ 400 / 800 m on the plane, 200 m on Malata), uniform random (×2), Latin hypercube (×2), clusters (×2),
+disk, grid patches (×2); sizes per site via `TAMBOPT_SITE`. The recon is trained on these kernel labels, so it has seen
+spread-out and compact layouts.
 
 ## 4. Recon (Stage 3)
 
-DeepSets (permutation invariant). Input `reltime1`: positions relative to the earliest timed detector, linear Δt, lit
-flag. Target: direction and log E. AdamW (weight decay 0.03), then L-BFGS. Run 19: val 0.132, ~10–12 % of showers
+DeepSets (permutation invariant). Input `reltime1`, 9 features per detector: position relative to the reference, log1p E,
+Δt [ns], lit (E > 0) and timed (T > 0) flags, and the reference position and log1p t0 (reference = earliest timed
+detector with ≥ 1 count). Encoder 4 × 256, mean ⊕ max pool → 128 context, decoder 4 × 256 → unit direction and log E. AdamW (weight decay 0.03), then L-BFGS. Run 19: val 0.132, ~10–12 % of showers
 within 1° on the best layouts (resolution floor ~2.5° median, set by the kernel times, not the recon).
 
 ## 5. Layout optimisation (Stage 4)
 
 `04_optimize_lbfgs_kernel.py` (`slurm/kernel_opt_run19.sh <init> <utility> [λ] [lr] [steps]`). Per step: a fresh
-batch of Stage 1 showers (`--batch-events`, 2,048), utility, gradient to (E, N), Adam; best layout on a fixed scoring
-set; optional chunked L-BFGS polish. Starts: `grid` or `center`.
+batch of Stage 1 showers (`--batch-events`, default 512), utility, gradient to (E, N), Adam (or `--optim sgd`); best
+layout on a fixed 1,024-shower scoring set every 250 steps; optional chunked L-BFGS after it (`LBFGS_CHUNKS`). Starts:
+`grid`, `center` (~50 m cluster), `lhs:<seed>` or a layout file (`.pt` with x, y; `INIT_TAG` names the run folder).
+The built-in `grid` start thins an oversampled lattice and is not a regular lattice on the plane; the uniform grids are
+`<run>/diagnostics/paper1/ugrid.pt` (plane 10 × 10, Malata 119 m square lattice, 100 on the mesh).
+
+Paper 1 optimizer tests: `slurm/paper1_opt_submit.sh [steps]` — `current` utility, {Adam + L-BFGS, SGD} × {centre,
+uniform grid} × {kernel, surrogate} × {plane, Malata}, `_p1` folders, then kernel scoring on 5,000 held-out showers.
 
 **Response (what gives E, T for a layout):**
 
@@ -81,7 +92,7 @@ Options: `BG_WINDOW` (background), `GATE=knn23`, `FREEZE_UNSEEN` (detectors with
 
 | Mode | Per shower | Trigger |
 |---|---|---|
-| `current` | weighted 1/(err² + ε) terms, capped | soft ≥ 5 detectors with E > 1 (kernel units ≪ 1 particle) |
+| `current` | (10² U_θ + 10² U_φ + 2.5·10² U_E)/10³, each r_b/(err² + ε), capped | r_b = soft ≥ 5 detectors with E > 1 (kernel units ≪ 1 particle) |
 | `two_tier` | g + λ(1 − g) q; g = soft(a < 5°) · soft(e < 0.2), q = 1/(1 + (a/20)² + (e/0.5)²) | none |
 | `three_tier` | 0.9 if a < 1°, else 0.3 if a < 5°, else 0.1 · detected | "detected" = ≥ 3 detectors with E > 1, consolation only |
 | `swgo_trigger` | r_b · (g + λ(1 − g) q), g angle only (energy with `TRIG_ENERGY=1`) | r_b = P(≥ k detectors with ≥ 1 particle), Poisson-binomial on μ; missed shower = 0 |
@@ -106,9 +117,9 @@ mesh `location` (lon −71.97°, lat −15.58°); bbox North [−956, 716], East
 - Taus: `decay_locations/tau_wholesky.jl` (whole-sky throw, Earth-skimming), cuts zenith 60–100° from +Up and decay
   ≥ 1 km from the mesh (`--mindist`); ~3 % of thrown taus survive. Julia writes (3, N): `modules/showers/tau.py`
   handles it.
-- Last run with the old global-frame kernel (runs ≤ 16). To run it now: `TAMBOPT_GEOMETRY_PATH=<malata.h5>`,
-  `TAMBOPT_GEOMETRY_GROUP=malata`, `TAU_WHOLESKY_PATH` (constants.py) to the cut corpus, a new `RUN_LOCATION`, then
-  Stages 0–3.
+- **Run 20** (`<v6>/20_malata_showerframe`, env in `slurm/run20_guard.sh`): run 19's pipeline on Malata; run 15's
+  corpus filtered to ≥ 30° from the C8 field axis, 464,024 training + 24,366 held-out showers. No 1 km distance cut
+  in this corpus: median decay 61 m from the mesh.
 - 100 detectors at ~120 m spacing.
 
 ## 7. Hazards
@@ -118,4 +129,9 @@ mesh `location` (lon −71.97°, lat −15.58°); bbox North [−956, 716], East
 - **Blob showers:** 0.5 % of muon showers are degenerate (median point energy > 10³ GeV), flagged at Stage 1.
 - **E is not particles:** thresholds on E (> 1, > 10⁻³) are far below one particle in a 2 m² detector; use μ.
 - **Showers near the C8 field axis** (East) come out shifted sideways; inputs exclude ±30°.
+- **Malata layout strategies** stack detectors on the same mesh face (except disk and clusters, fixed with `on_mesh`);
+  run 20's recon was trained on the stacked layouts.
+- **CORSIKA preprocessing:** a cell-key overflow moved 17–25 % of shower planes 0.7–4 km South (repaired in the
+  `symbolic-run20` branch, `symbolic/unwrap.py`); the AllShowers training data has it. Our placement keeps only the
+  across-track offset, so North-going showers lose most of it.
 - **Any change to the kernel** (σ, k, cap, frame, ring) changes the labels: Stage 1 and everything after must rerun.
