@@ -12,6 +12,7 @@ from typing import Tuple
 
 from ..geometry import Layouts as _v3_Layouts
 from ..geometry import project_to_mountain_ne, sample_initial_layout_ne
+from ..geometry.placement import _ne_max_gap
 
 # ── Layout generators (all return (North, East) tensors on the mountain) ─────
 
@@ -120,8 +121,40 @@ def _log_uniform(rng, lo: float, hi: float) -> float:
     return float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
 
 
+def _on_mesh(mountain, E: np.ndarray, N: np.ndarray) -> np.ndarray:
+    """True where (East, North) lies within the centroid spacing tolerance of the detector region
+    (the test the start layouts use, placement.sample_initial_layout_ne)."""
+    c = mountain.centroids_ENU[:, :2]
+    d2 = ((np.stack([E, N], 1)[:, None, :] - c[None, :, :]) ** 2).sum(-1).min(1)
+    return d2 <= _ne_max_gap(mountain) ** 2
+
+
+def _disk_on_mesh(mountain, cE, cN, R, n, rng, tries: int = 200):
+    """n points uniform in the disk(s) (cE, cN, R), rejection-sampled to the detector region, so a disk that
+    overhangs a narrow region is cut at its edge instead of being clipped onto it. cE / cN: scalars or (n,)."""
+    cE, cN = np.broadcast_to(cE, (n,)).astype(float), np.broadcast_to(cN, (n,)).astype(float)
+    E, N = np.empty(n), np.empty(n)
+    todo = np.arange(n)
+    for _ in range(tries):
+        r = R * np.sqrt(rng.random(todo.size)); a = rng.uniform(0.0, 2.0 * np.pi, todo.size)
+        e, nn = cE[todo] + r * np.cos(a), cN[todo] + r * np.sin(a)
+        ok = _on_mesh(mountain, e, nn)
+        E[todo[ok]], N[todo[ok]] = e[ok], nn[ok]
+        todo = todo[~ok]
+        if todo.size == 0:
+            break
+    E[todo], N[todo] = cE[todo], cN[todo]                     # centres are on the mesh
+    return E, N
+
+
+def _mesh_centres(mountain, k, rng):
+    """k centres at random detector-region centroids (on the slope, never off it)."""
+    c = mountain.centroids_ENU[rng.integers(0, len(mountain.centroids_ENU), k)]
+    return c[:, 0], c[:, 1]
+
+
 def layout_clusters(mountain, n_det: int = N_DETECTORS, r_min: float = 30.0,
-                    r_max: float = 600.0, rng=None):
+                    r_max: float = 600.0, on_mesh: bool = False, rng=None):
     """K clusters of M = n_det / K detectors: K a random divisor of n_det (2..n_det/2),
     centres uniform over the bbox, one radius per draw (log-uniform in [r_min, r_max]),
     members uniform in the disk."""
@@ -131,6 +164,10 @@ def layout_clusters(mountain, n_det: int = N_DETECTORS, r_min: float = 30.0,
     K = int(rng.choice(ks))
     M = n_det // K
     R = _log_uniform(rng, r_min, r_max)
+    if on_mesh:                                   # narrow regions (Malata): centres on the slope, members kept on it
+        cE, cN = _mesh_centres(mountain, K, rng)
+        E, N = _disk_on_mesh(mountain, np.repeat(cE, M), np.repeat(cN, M), R, n_det, rng)
+        return _clip_project(mountain, E, N)
     cE = rng.uniform(mountain.east_lo, mountain.east_hi, K)
     cN = rng.uniform(mountain.n_min, mountain.n_max, K)
     r = R * np.sqrt(rng.random(n_det))
@@ -141,12 +178,16 @@ def layout_clusters(mountain, n_det: int = N_DETECTORS, r_min: float = 30.0,
 
 
 def layout_disk(mountain, n_det: int = N_DETECTORS, r_min: float = 200.0,
-                r_max: float = 4000.0, rng=None):
+                r_max: float = 4000.0, on_mesh: bool = False, rng=None):
     """Detectors uniform in one disk: centre uniform over the bbox, radius log-uniform
     in [r_min, r_max] (the part outside the bbox is clipped to its edge)."""
     if rng is None:
         rng = np.random.default_rng()
     R = _log_uniform(rng, r_min, r_max)
+    if on_mesh:                                   # narrow regions (Malata): centre on the slope, points kept on it
+        cE, cN = _mesh_centres(mountain, 1, rng)
+        E, N = _disk_on_mesh(mountain, cE[0], cN[0], R, n_det, rng)
+        return _clip_project(mountain, E, N)
     cE = rng.uniform(mountain.east_lo, mountain.east_hi)
     cN = rng.uniform(mountain.n_min, mountain.n_max)
     r = R * np.sqrt(rng.random(n_det))
@@ -234,7 +275,9 @@ ACTIVE_STRATEGIES = (
 # and "center_gauss800" a narrow 200 m blob (center_gauss400 already spans the slope). Same names and order, so
 # strategy ids keep their meaning.
 _SITE_SIZES = {
-    "malata": {"disk_a":          dict(r_min=100.0, r_max=450.0),
+    "malata": {"disk_a":          dict(r_min=100.0, r_max=450.0, on_mesh=True),
+               "clusters_a":      dict(on_mesh=True),
+               "clusters_b":      dict(on_mesh=True),
                "grid_patch_a":    dict(side_min=250.0, side_max=1700.0),
                "grid_patch_b":    dict(side_min=250.0, side_max=1700.0),
                "center_gauss800": dict(sigma=200.0)},
