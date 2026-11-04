@@ -100,6 +100,33 @@ Options: `BG_WINDOW` (background), `GATE=knn23`, `FREEZE_UNSEEN` (detectors with
 `swgo_trigger` (branch `swgo-trigger`, now on master): `TRIG_K` (3), `TRIG_AREA` (2 m²). μ comes from the kernel
 with gradients; the recon input stays noise-free, so the current recon applies.
 
+**Trigger and reward options** (`swgo_trigger`, env `TAMBOPT_*`, set by `slurm/kernel_opt_run19.sh`):
+- `TRIG_MODE=step`: the SWGOLO notebook trigger on expected counts, per detector sigmoid(10 (μ − 1)), per shower
+  sigmoid(5 (Σ − k)); default `poisson` (Poisson-binomial).
+- `TRIG_THETA / TRIG_WIDTH / TRIG_QREF` (default 5° / 1° / 20°): the reward's angle scale; 1 / 0.2 / 5 rewards 1°.
+- `TRIG_GATED=1`: trigger on read-out detectors only (needs `GATE=knn23`); `TRIG_OFF=1`: no trigger term;
+  `TRIG_ONLY=1`: the trigger probability alone; `UTIL_ZERO=1`: penalties only.
+
+**Training-loop options** (`04_optimize_lbfgs_kernel.py`): `--counting poisson` (Poisson-drawn counts in the forward,
+gradient of the expectation), `--accum K` (K batches per step), `--plateau-every` (step size halved when the scoring-set
+U stalls), `--e-range lo hi` (log10 E band), `--bg-window-ns`, `--gate knn23`.
+
+**Construction penalties** (in units of U, normalised to the grid, so λ costs 30 λ U at the grid):
+- `TAMBOPT_CABLE_LAMBDA`: 3-D minimum-spanning-tree cable length, with a spacing hinge at `CABLE_DMIN` (5 m).
+- `TAMBOPT_CONSTRUCT="slope=…,access=…,pads=…,contour=…"` (`modules/optimize/construction.py`): slope above the grid's
+  median, 3-D distance to an access point, distance to K shared pads (k-means), height off N contour rows.
+
+**Recon fine-tunes** (`03c_finetune_recon_noise.py`): on cosmic background (`_deepsets_noise`), on Poisson-drawn counts
+(`_deepsets_count`), with detector dropout (`_deepsets_dropout`).
+
+**Validation** (`plots/analysis/run19/*/`): held-out showers through the true kernel; drawn counts with 5 seeds;
+background windows of 0 / 1 / 10 µs; ghost triggers = background-only windows that trigger (`score_ghost.py`).
+
+**Run 20 results (Malata).** Run 20b (1° reward, Poisson or step trigger, the old U; background, gate, drawn counts):
+the batch gradient was mostly noise and all three runs ended 2–6 % below the grid. Run 20c: the best scoring-set U
+was at step 0 in both runs. `swgo_trigger` from the centre start reaches the grid's level (5,000 held-out showers:
+5.9 → 33.4 % within 1°, grid 35.3 %); from the grid it does not improve.
+
 ## 6. Setups
 
 **12 × 12 km plane (run 19, current default).** `<v6>/19_plane45S_12km_showerframe_400k`.
