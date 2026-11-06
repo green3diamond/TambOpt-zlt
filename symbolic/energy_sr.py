@@ -61,8 +61,17 @@ def fit_form(form, v, y, n):
     return np.linalg.lstsq(design(form, times_sr.expand(v)[m.ravel()]), y[m], rcond=None)[0]
 
 
+def tanh_sum(theta, X):
+    """c + sum_u a_u tanh(w_u . x + b_u) on raw inputs; theta = [w (U rows of len(x)), b (U), a (U), c] (tiny_net.py)."""
+    u = (len(theta) - 1) // (X.shape[1] + 2)
+    w, b, a, c = theta[:u * X.shape[1]].reshape(u, -1), theta[-1 - 2 * u:-1 - u], theta[-1 - u:-1], theta[-1]
+    return np.tanh(X @ w.T + b) @ a + c
+
+
 def predict(theta, form, v):
-    return (design(form, times_sr.expand(v)) @ theta).reshape(-1, times_sr.N_RING)
+    X = times_sr.expand(v)
+    y = tanh_sum(theta, X) if form == "tanh" else design(form, X) @ theta
+    return y.reshape(-1, times_sr.N_RING)
 
 
 def ring_means(theta, form, x, k):

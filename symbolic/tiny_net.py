@@ -48,11 +48,13 @@ def train(X, y, val, u, seed, epochs=EPOCHS):
             if wait >= PATIENCE:
                 break
     net.load_state_dict(state)
+    theta = constants(*(t.detach().numpy().astype(np.float64) for t in net.parameters()), mu, sd, y_mu, y_sd)
+    return best, lambda Q: energy_sr.tanh_sum(theta, Q), theta
 
-    def predict(Q):
-        with torch.no_grad():
-            return net(torch.as_tensor((Q - mu) / sd, dtype=torch.float32)).squeeze(1).numpy().astype(np.float64) * y_sd + y_mu
-    return best, predict
+
+def constants(w, b, a, c, mu, sd, y_mu, y_sd):
+    """The fitted sum on raw inputs and target, scalings folded in: [w (U x inputs), b (U), a (U), c], 9U + 1 numbers."""
+    return np.concatenate([(w / sd).ravel(), b - (w / sd) @ mu, a.ravel() * y_sd, c * y_sd + y_mu])
 
 
 def smallest_passing(ratios):
@@ -70,6 +72,7 @@ def stage_fit(args, log):
     scores, ratios = {}, {}
     for u in args.terms:
         scores[u] = {}
+        laws = {f: {"form": np.array("tanh")} for f in (0, 1)}
         for g, d in data.items():
             pred = np.full(d["y"].shape, np.nan)
             for f in (0, 1):
@@ -78,8 +81,13 @@ def stage_fit(args, log):
                 X, y = times_sr.expand(d["v"][train_rows])[m], d["y"][train_rows].ravel()[m]
                 showers = np.repeat(d["shower"][train_rows], times_sr.N_RING)[m]
                 fits = [train(X, y, slot_net.split_showers(showers, np.random.default_rng(100 * f + s)), u, s, args.epochs) for s in range(args.seeds)]
-                pred[judged] = min(fits, key=lambda q: q[0])[1](times_sr.expand(d["v"][judged])).reshape(-1, times_sr.N_RING)
+                best = min(fits, key=lambda q: q[0])
+                pred[judged] = best[1](times_sr.expand(d["v"][judged])).reshape(-1, times_sr.N_RING)
+                laws[f][g.replace(" ", ".")] = best[2]
             scores[u][g] = times_sr.score_rows(pred, d)
+        if args.save:
+            for f in (0, 1):
+                np.savez(os.path.join(args.out, args.name, f"fold{f}_U{u}_{energy_sr.LAW}"), **laws[f])
         ratios[u] = [scores[u][g]["rmse"] / reference[g]["rmse"] for g in energy_sr.GATED]
         log.info("U %d numbers %d total %d | %s | e/gamma ratio %s mean %.3f | stands %s", u, numbers(u), numbers(u) * len(groups),
                  " ".join(f"{g.split()[0][0]}{g.split()[1][0]} {scores[u][g]['rmse']:.3f}" for g in groups),
@@ -98,6 +106,7 @@ def main():
     ap.add_argument("--seeds", type=int, default=SEEDS)
     ap.add_argument("--epochs", type=int, default=EPOCHS)
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
+    ap.add_argument("--save", action="store_true", help="per U and fold, the constants for draw.py --energy-law")
     args = ap.parse_args()
     run, log = logs.start(args.name, args)
     logs.save(run, stage_fit(args, log), args, log)
