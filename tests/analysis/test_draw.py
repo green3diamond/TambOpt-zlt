@@ -77,6 +77,17 @@ def test_time_law_must_come_with_non_default_laws():
     raise AssertionError("a fold's laws drew with the time law of all showers")
 
 
+def test_energy_law_must_come_with_non_default_laws():
+    assert draw.energy_law_path(draw.LAWS, None) == draw.ENERGY_LAW
+    assert draw.energy_law_path("other", "mine.npz") == "mine.npz"
+    assert draw.energy_law_path("other", "none") is None
+    try:
+        draw.energy_law_path("other", None)
+    except ValueError:
+        return
+    raise AssertionError("a fold's laws drew with the mean energy law of all showers")
+
+
 def test_width_law_must_come_with_non_default_laws():
     assert draw.width_law_path(draw.LAWS, None) == draw.WIDTH_LAW
     assert draw.width_law_path("fold0/particle_laws.npz", "fold0/width_law.npz") == "fold0/width_law.npz"

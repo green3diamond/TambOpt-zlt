@@ -9,7 +9,8 @@ energy, inputs annuli.features; then, with the laws of particles.py (fitted on t
                              the planes), width (stretched by the linear width law of particles.py), shape
                              (stretched and tilted by the shape law, two AR(1) numbers per plane) or k0
                              (K=0 plane noise of traits.py on the logits of the rings inside 1100 m)
-  3. particles per ring      Poisson(ring energy / mean particle energy (mean_energy law)), at most ring / E_MIN
+  3. particles per ring      Poisson(ring energy / mean particle energy (tanh-sum law of tiny_net.py, or the
+                             ring-by-ring mean_energy law with --energy-law none)), at most ring / E_MIN
   4. particle energies       E_MIN each plus the ring's excess split by Burr XII draws (spread law): the ring energy
                              is exact and no particle falls under CORSIKA's threshold
   5. positions               uniform in area within the ring (the open last ring up to generator.R_OPEN x its inner
@@ -43,6 +44,7 @@ FOLDER = os.path.join("particles", "draw")
 LAWS = os.path.join("particles", "fit_v2", "particle_laws.npz")
 WIDTH_LAW = os.path.join("particles", "sr_width", width_sr.LAW)
 TIME_LAW = os.path.join("particles", "sr_times", times_sr.LAW)
+ENERGY_LAW = os.path.join("particles", "judge", "sr_energy_tanh", energy_sr.LAW)
 NOISE = os.path.join("traits", "run_{0}_K0", "traits_{0}_K0.pt")
 LAW_NAMES = ("stored", "rings", "width", "shape", "mean_energy", "lead", "delay", "spread")
 
@@ -86,6 +88,17 @@ def time_law_path(laws, time_law):
     if laws != LAWS:
         raise ValueError("--laws is not the default one: give the --time-law fitted on the same showers, or none")
     return TIME_LAW
+
+
+def energy_law_path(laws, energy_law):
+    """The mean energy law to draw with, None for the ring-by-ring law. Laws fitted on part of the showers need their own, or a judged shower could leak in."""
+    if energy_law == "none":
+        return None
+    if energy_law:
+        return energy_law
+    if laws != LAWS:
+        raise ValueError("--laws is not the default one: give the --energy-law fitted on the same showers, or none")
+    return ENERGY_LAW
 
 
 def load_noise(root, cn):
@@ -242,8 +255,9 @@ def stage_draw(out, args, log):
         z_t = np.load(os.path.join(args.out, time_law))
         for (s, cn), law in laws.items():
             law["time"] = {"form": str(z_t["form"]), **{w: z_t[f"{s}.{cn}.{w}"] for w in times_sr.TIMES}}
-    if args.energy_law:
-        z_e = np.load(os.path.join(args.out, args.energy_law))
+    energy_law = energy_law_path(args.laws, args.energy_law)
+    if energy_law:
+        z_e = np.load(os.path.join(args.out, energy_law))
         for (s, cn), law in laws.items():
             law["energy"] = {"form": str(z_e["form"]), "theta": z_e[f"{s}.{cn}"]}
     nets = {cn: load_noise(args.out, cn) for cn in planes.CLASS.values()}
@@ -314,7 +328,7 @@ def main():
                     help="draw stage: plane-to-plane variety")
     ap.add_argument("--width-law", help="draw stage, variety along: width_sr.py law, relative to --out; required with a non-default --laws")
     ap.add_argument("--time-law", help="draw stage: times_sr.py law, relative to --out, or none for the ring-by-ring laws; required with a non-default --laws")
-    ap.add_argument("--energy-law", help="draw stage: energy_sr.py law, relative to --out; default the ring-by-ring mean energy law")
+    ap.add_argument("--energy-law", help="draw stage: energy_sr.py or tiny_net.py law, relative to --out, or none for the ring-by-ring laws; required with a non-default --laws")
     args = ap.parse_args()
     out, log = logs.start(os.path.join(FOLDER, args.name), args)
     stage = {"energies": stage_energies, "draw": stage_draw, "merge": stage_merge}[args.stage]

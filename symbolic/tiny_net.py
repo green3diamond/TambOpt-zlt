@@ -63,6 +63,30 @@ def smallest_passing(ratios):
     return ok[0] if ok else None
 
 
+def fit_rows(d, rows, u, f, args):
+    """The best of args.seeds sums fitted on one group's planes `rows` -> (validation error, predict, constants)."""
+    m = ((d["n"][rows] > 0) & np.isfinite(d["y"][rows])).ravel()
+    X, y = times_sr.expand(d["v"][rows])[m], d["y"][rows].ravel()[m]
+    showers = np.repeat(d["shower"][rows], times_sr.N_RING)[m]
+    fits = [train(X, y, slot_net.split_showers(showers, np.random.default_rng(100 * f + s)), u, s, args.epochs) for s in range(args.seeds)]
+    return min(fits, key=lambda q: q[0])
+
+
+def stage_law(args, log):
+    """One sum per group fitted on every shower, for draw.py's default; nothing is held out, so nothing is scored."""
+    import torch
+    torch.set_num_threads(args.workers)
+    u = args.terms[0]
+    law = {"form": np.array("tanh")}
+    for g in times_sr.all_groups():
+        d = energy_sr.group_data(args, g)
+        best = fit_rows(d, np.ones(len(d["fold"]), bool), u, 2, args)
+        law[g.replace(" ", ".")] = best[2]
+        log.info("%-18s planes %d validation error %.4f", g, len(d["fold"]), best[0])
+    np.savez(os.path.join(args.out, args.name, energy_sr.LAW), **law)
+    return {"terms": u, "numbers": numbers(u) * len(times_sr.all_groups())}
+
+
 def stage_fit(args, log):
     import torch
     torch.set_num_threads(args.workers)
@@ -77,11 +101,7 @@ def stage_fit(args, log):
             pred = np.full(d["y"].shape, np.nan)
             for f in (0, 1):
                 train_rows, judged = d["fold"] != f, d["fold"] == f
-                m = ((d["n"][train_rows] > 0) & np.isfinite(d["y"][train_rows])).ravel()
-                X, y = times_sr.expand(d["v"][train_rows])[m], d["y"][train_rows].ravel()[m]
-                showers = np.repeat(d["shower"][train_rows], times_sr.N_RING)[m]
-                fits = [train(X, y, slot_net.split_showers(showers, np.random.default_rng(100 * f + s)), u, s, args.epochs) for s in range(args.seeds)]
-                best = min(fits, key=lambda q: q[0])
+                best = fit_rows(d, train_rows, u, f, args)
                 pred[judged] = best[1](times_sr.expand(d["v"][judged])).reshape(-1, times_sr.N_RING)
                 laws[f][g.replace(" ", ".")] = best[2]
             scores[u][g] = times_sr.score_rows(pred, d)
@@ -107,9 +127,10 @@ def main():
     ap.add_argument("--epochs", type=int, default=EPOCHS)
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--save", action="store_true", help="per U and fold, the constants for draw.py --energy-law")
+    ap.add_argument("--law", action="store_true", help="instead: the first --terms fitted on every shower, for draw.py's default")
     args = ap.parse_args()
     run, log = logs.start(args.name, args)
-    logs.save(run, stage_fit(args, log), args, log)
+    logs.save(run, (stage_law if args.law else stage_fit)(args, log), args, log)
 
 
 if __name__ == "__main__":
