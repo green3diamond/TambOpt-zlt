@@ -44,12 +44,12 @@ See `docs/THEORY.md` for the full pipeline architecture and the reasoning behind
 
 ## Setup
 
-Python 3.13 with PyTorch 2.9 (CUDA GPU), numpy 2.3, scipy 1.16, h5py 3.15, scikit-learn 1.7, pandas 2.3, matplotlib 3.10, tqdm. There is no lock file; these are the versions the results were produced with.
+Python 3.13 and a CUDA GPU. Package versions are pinned in `requirements.txt` (the ones the results were produced with).
 
 ```bash
 conda create -n multiproc_env python=3.13
 conda activate multiproc_env
-pip install torch numpy scipy h5py scikit-learn pandas matplotlib tqdm
+pip install -r requirements.txt
 source slurm/env.sh     # bytecode prefix; on the original cluster it also loads the module and conda env
 ```
 
