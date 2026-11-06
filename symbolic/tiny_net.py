@@ -9,7 +9,7 @@ sys.path.insert(0, REPO)
 
 import numpy as np
 
-from symbolic import energy_sr, rings_sr, slot_net, times_sr
+from symbolic import energy_sr, rings_sr, times_sr
 
 TERMS = (1, 2, 3, 4, 6, 8)
 N_INPUTS = 7
@@ -17,6 +17,13 @@ LR = 3e-3
 EPOCHS = 3000
 PATIENCE = 200
 SEEDS = 3
+VAL_SHARE = 0.2
+
+
+def split_showers(showers, rng, share=VAL_SHARE):
+    """Mask of the rows whose shower is in a random share of the showers, so no shower sits on both sides."""
+    ids = np.unique(showers)
+    return np.isin(showers, rng.choice(ids, max(1, int(round(share * len(ids)))), replace=False))
 
 
 def numbers(u):
@@ -68,7 +75,7 @@ def fit_rows(d, rows, u, f, args):
     m = ((d["n"][rows] > 0) & np.isfinite(d["y"][rows])).ravel()
     X, y = times_sr.expand(d["v"][rows])[m], d["y"][rows].ravel()[m]
     showers = np.repeat(d["shower"][rows], times_sr.N_RING)[m]
-    fits = [train(X, y, slot_net.split_showers(showers, np.random.default_rng(100 * f + s)), u, s, args.epochs) for s in range(args.seeds)]
+    fits = [train(X, y, split_showers(showers, np.random.default_rng(100 * f + s)), u, s, args.epochs) for s in range(args.seeds)]
     return min(fits, key=lambda q: q[0])
 
 

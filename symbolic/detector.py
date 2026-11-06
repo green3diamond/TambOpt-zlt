@@ -150,7 +150,7 @@ def setup(device):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--root", required=True, help="output folder of fit_profiles.py and generator.py (--out there)")
+    ap.add_argument("--root", required=True, help="output folder of fit_profiles.py and draw.py (--out there)")
     ap.add_argument("--clouds", required=True, help="generator clouds (.npz with rows and <species>.points)")
     ap.add_argument("--chain", default="", help="the neural chain's clouds at the same or more primaries (optional)")
     ap.add_argument("--out", required=True)

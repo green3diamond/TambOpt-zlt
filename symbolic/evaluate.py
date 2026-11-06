@@ -4,7 +4,7 @@ training ranges and sizes, scored against CORSIKA next to the neural chain.
 Stages:
   draw   --task i: fit one (model, training set, seed) per class, 8 draws on the range set (the chain's 1,000
          primaries) and the band set (every test shower in [CUT, TOP)) -> OUT/evaluate/draws/<name>.npz
-  table  every metric of study_plan.md (1b, 1c, 1d) from the saved draws -> OUT/evaluate/table/results.json
+  table  every metric of the per-plane comparison (control, data efficiency, metrics) from the saved draws -> OUT/evaluate/table/results.json
 """
 import argparse
 import glob

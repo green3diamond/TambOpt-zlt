@@ -1,4 +1,4 @@
-"""Particle laws (study_plan.md 2.4 step 2): what turns a plane's ring energies into particles, from the raw
+"""Particle laws: what turns a plane's ring energies into particles, from the raw
 showers (every particle of every plane, 1, 2, 5 m inner rings).
 
 Stage A, tables (an env python with pyarrow; one shower per call): the raw particles in our frame about
@@ -21,7 +21,7 @@ fit_profiles). Laws per species and class, one form for every species:
                    AR(1) residual along the shower's planes: [beta..., residual sd, lag-1 rho] per number
   mean_energy      ln mean particle energy per ring, before the cut (ridge-linear, one law per ring)
   lead, delay      log10(1 + delay / ns) of the ring's earliest and mean time, delay = time minus the axis light time
-Check C0 (descriptive): the ring law of 2.3 (radial_bins) against the true ring shares inside OUTER, before and after
+Check C0 (descriptive): the saved ring law (RING_LAWS) against the true ring shares inside OUTER, before and after
 the cut. Energy spread within a ring: E = E_MIN + (ring mean - E_MIN) v above CORSIKA's tracking threshold E_MIN,
 v ~ Burr XII (CDF 1 - (1 + (v / lam)^c)^-k, lam set by mean 1: a power-law tail, the ring mean kept exactly), c and k
 per species, class and ring by binned likelihood over the plane-ring histograms (rings with fewer than MIN_PARTICLES
@@ -65,6 +65,7 @@ RIDGE = 1.0
 SHARE_EPS = 1e-12
 SPREAD_RINGS = (4, 9, 14, 16)                                # 10-20, 100-140, 560-800, 1100-1600 m
 MIN_PARTICLES = 1000
+R_OPEN = 1.4                                                 # the open last ring is drawn up to R_OPEN x its inner edge
 E_MIN = {"electron": 0.01 * 0.999, "muon": 0.5 * 0.999, "photon": 0.01 * 0.999}   # GeV kinetic, CORSIKA
 LOG_LAM = np.arange(-3.0, 3.0001, 0.01)                        # log10 width grid of plane_widths
 BAND = (EDGES[1:-1] >= 10.0) & (EDGES[1:-1] <= 400.0)           # ring edges where the cells' brightness cut sits
@@ -187,7 +188,7 @@ def stage_truth(sim, out):
 
 def plane_rows(tabs):
     """Per species: one row per usable plane (shower i, class, plane k, features x, its tables)."""
-    from symbolic import annuli, atmosphere, generator, longitudinal
+    from symbolic import annuli, atmosphere, longitudinal
     rows = {s: [] for s in PDG}
     k = np.arange(N_PLANE)
     for i, t in enumerate(tabs):
@@ -198,7 +199,7 @@ def plane_rows(tabs):
         for s in PDG:
             E = t[f"{s}.E_stored"]
             fit = longitudinal.fit_one(X, longitudinal.log_energy(E))
-            age = generator.age(X, fit[1][0] if fit else np.nan)
+            age = longitudinal.age(X, fit[1][0] if fit else np.nan)
             ok = (t[f"{s}.ring_count"].sum(1) >= annuli.MIN_CELLS) & (E > 0)
             x = annuli.features(age, np.full(N_PLANE, float(t["log10E"])), np.full(N_PLANE, cz),
                                 np.log(np.where(E > 0, E, 1.0)), r_ref)
@@ -233,7 +234,7 @@ def ridge(x, y, alpha=RIDGE):
 
 
 def fit_multinomial(x, w, alpha=RIDGE):
-    """Multinomial logit of shares w (rows on the simplex), first column the reference; generator.fit_shares plus the
+    """Multinomial logit of shares w (rows on the simplex), first column the reference; a ridge on the
     ridge penalty (intercept free), so a ring that is empty in most planes cannot run off."""
     from scipy.optimize import minimize
     from scipy.special import logsumexp

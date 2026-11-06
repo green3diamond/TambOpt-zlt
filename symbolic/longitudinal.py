@@ -8,6 +8,7 @@ L_BOUNDS = (5.0, 5000.0)
 R_MAX = 5.0
 R_SERIES = 1e-4        # below this |R z| the R -> 0 series replaces log1p
 E_EMPTY = 1.0          # GeV; a plane with less is empty
+AGE_RANGE = (0.2, 2.5)
 NAMES = ("log10 Emax/E", "Xmax", "ln L", "R")
 LO = np.array([-1000.0, np.log(L_BOUNDS[0]), -0.999])
 HI = np.array([MAX_DEPTH, np.log(L_BOUNDS[1]), 0.999])
@@ -135,3 +136,9 @@ def flags(f, X, E):
                  | (xmax - first <= -1000.0 + 1e-3) | (xmax - first >= MAX_DEPTH - 1e-3))
         outside = (xmax < X[:, 0]) | (xmax > X[:, -1])
     return {"unfit": unfit, "bound": bound & ~unfit, "outside": outside & ~unfit}
+
+
+def age(X, xmax):
+    """Shower age 3X / (X + 2 Xmax), clipped; 1 where Xmax is unknown."""
+    with np.errstate(invalid="ignore"):
+        return np.where(np.isfinite(xmax), np.clip(3 * X / (X + 2 * xmax), *AGE_RANGE), 1.0)

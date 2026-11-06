@@ -8,7 +8,7 @@ central difference of the depth table). Gate: autodiff should equal a narrow cen
 draws; the pathwise gradient leaves out planes switching on as the start depth moves, so a wide finite difference
 (which includes them on average) is compared with CORSIKA as well, and the gate is recorded, not enforced.
 
-Rule (study_plan.md 1g): PASS per class if the sampler's slope is within 2 se of CORSIKA's at >= 80% of the
+Rule: PASS per class if the sampler's slope is within 2 se of CORSIKA's at >= 80% of the
 evaluation points (species x observable x derivative x point).
 """
 import argparse

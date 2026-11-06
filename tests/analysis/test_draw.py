@@ -27,7 +27,7 @@ def test_plane_particles_carry_the_law():
     rng = np.random.default_rng(1)
     x = np.r_[1.0, np.zeros(N_F - 1)]
     k, e_k = 6, 900.0
-    p = draw.plane_particles(rng, k, x, e_k, toy_law(), "electron", np.zeros(particles.OUTER))
+    p = draw.plane_particles(rng, k, x, e_k, toy_law(), "electron")
     assert np.isclose(p[:, 3].sum(), e_k / 0.9, rtol=1e-6)                       # energy before the cut
     assert p[:, 3].min() >= particles.E_MIN["electron"]
     assert abs(len(p) / (e_k / 0.9 / 0.05) - 1) < 0.03                           # count = energy / mean energy
@@ -40,11 +40,7 @@ def test_plane_particles_carry_the_law():
     assert delay.min() >= 5.0 - 1e-3 and abs(delay.mean() - 20.0) < 0.5
 
 
-def test_noise_offsets_and_ring_fill():
-    rng = np.random.default_rng(2)
-    net = [(rng.normal(size=(15, 4)), np.zeros(4)), (rng.normal(size=(4, particles.OUTER)), np.zeros(particles.OUTER))]
-    off = draw.noise(net, rng.normal(size=(7, N_F)), "muon", rng)
-    assert off.shape == (7, particles.OUTER) and np.isfinite(off).all()
+def test_ring_fill():
     B = np.arange(12.0).reshape(6, 2)
     B[[0, 3, 5]] = np.nan
     F = draw.fill_rings(B)

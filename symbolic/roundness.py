@@ -1,4 +1,4 @@
-"""Is the energy in each plane round about the shower axis? (study_plan.md 2.2; data only, no fitting.)
+"""Is the energy in each plane round about the shower axis? (Data only, no fitting.)
 
 On planes of repaired CORSIKA test showers with |cos z| >= COS_MIN, each cell's offset from the axis point splits
 into the across-track distance a (exact up to the cell) and the in-plane along-track distance b = g / |cos z| (ground

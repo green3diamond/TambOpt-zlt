@@ -2,7 +2,7 @@
 and the physics scalings (elongation rate d Xmax / d log10 E, peak size d log10 E_max / d log10 E) from sampler draws
 against the same slopes on CORSIKA's fitted test showers.
 
-Rule (study_plan.md 1f): PASS per species and class if the sampler's slope is within 2 se of CORSIKA's.
+Rule: PASS per species and class if the sampler's slope is within 2 se of CORSIKA's.
 """
 import argparse
 import os

@@ -1,19 +1,16 @@
-"""Particle draw (study_plan.md 2.4 step 3): symbolic showers as particles through the preprocessing model, on the
+"""Particle draw: symbolic showers as particles through the preprocessing model, on the
 scored primaries (chain.primaries), in the suite's cloud format.
 
 Per primary and species: plane energies E_k and Xmax from the Part-1 sampler (one draw, fixed seed); per plane with
 energy, inputs annuli.features; then, with the laws of particles.py (fitted on the v2 raw showers):
   1. energy before the cut   E_k / stored share (stored law)
-  2. ring energies           shares from the rings law with the plane-to-plane variety: --variety along (default:
-                             the law stretched in radius by the width law along the shower of width_sr.py, AR(1) along
-                             the planes), width (stretched by the linear width law of particles.py), shape
-                             (stretched and tilted by the shape law, two AR(1) numbers per plane) or k0
-                             (K=0 plane noise of traits.py on the logits of the rings inside 1100 m)
+  2. ring energies           shares from the rings law stretched in radius by the width law along the shower
+                             (width_sr.py), AR(1) from plane to plane
   3. particles per ring      Poisson(ring energy / mean particle energy (tanh-sum law of tiny_net.py, or the
                              ring-by-ring mean_energy law with --energy-law none)), at most ring / E_MIN
   4. particle energies       E_MIN each plus the ring's excess split by Burr XII draws (spread law): the ring energy
                              is exact and no particle falls under CORSIKA's threshold
-  5. positions               uniform in area within the ring (the open last ring up to generator.R_OPEN x its inner
+  5. positions               uniform in area within the ring (the open last ring up to particles.R_OPEN x its inner
                              edge), uniform azimuth
   6. times                   axis light time + lead + Exp(mean delay - lead) (lead and delay laws)
   7. render                  the preprocessing with the OLD caps (render.render, sources.CAP); each plane's stored
@@ -37,16 +34,15 @@ from scipy.special import softmax
 
 from symbolic import logs
 from modules.constants import N_PLANES, SPECIES_NAMES
-from symbolic import annuli, atmosphere, chain, fit_profiles, generator, lateral, longitudinal, particles, planes, energy_sr, times_sr, width_sr, \
-    render, sampler, sources, traits
+from symbolic import annuli, atmosphere, chain, fit_profiles, lateral, longitudinal, particles, planes, energy_sr, times_sr, width_sr, \
+    render, sampler, sources
 
 FOLDER = os.path.join("particles", "draw")
 LAWS = os.path.join("particles", "fit_v2", "particle_laws.npz")
 WIDTH_LAW = os.path.join("particles", "sr_width", width_sr.LAW)
 TIME_LAW = os.path.join("particles", "sr_times", times_sr.LAW)
 ENERGY_LAW = os.path.join("particles", "judge", "sr_energy_tanh", energy_sr.LAW)
-NOISE = os.path.join("traits", "run_{0}_K0", "traits_{0}_K0.pt")
-LAW_NAMES = ("stored", "rings", "width", "shape", "mean_energy", "lead", "delay", "spread")
+LAW_NAMES = ("stored", "rings", "mean_energy", "lead", "delay", "spread")
 
 
 def fill_rings(B):
@@ -101,31 +97,6 @@ def energy_law_path(laws, energy_law):
     return ENERGY_LAW
 
 
-def load_noise(root, cn):
-    """The K=0 plane-noise network as numpy layers [(W, b)], checked against traits' sizes."""
-    import torch
-    st = torch.load(os.path.join(root, NOISE.format(cn)), map_location="cpu")["state"]
-    pre = next(k for k in st if k.endswith("plane.0.weight"))[: -len("0.weight")]
-    idx = sorted({int(k[len(pre):].split(".")[0]) for k in st if k.startswith(pre)})
-    net = [(st[f"{pre}{i}.weight"].numpy().T.astype(np.float64), st[f"{pre}{i}.bias"].numpy().astype(np.float64))
-           for i in idx]
-    if net[0][0].shape[0] != traits.P + 8 + len(SPECIES_NAMES) or net[-1][0].shape[1] != particles.OUTER:
-        raise ValueError(f"unexpected noise network sizes {[W.shape for W, _ in net]}")
-    return net
-
-
-def noise(net, x, s, rng):
-    """Ring-logit offsets (planes, OUTER) of the plane-noise network for species s, one fresh e per plane."""
-    one = np.zeros((len(x), len(SPECIES_NAMES)))
-    one[:, SPECIES_NAMES.index(s)] = 1.0
-    h = np.column_stack([rng.normal(size=(len(x), traits.P)), x, one])
-    for j, (W, b) in enumerate(net):
-        h = h @ W + b
-        if j < len(net) - 1:
-            h = np.tanh(h)
-    return h
-
-
 def ring_times(law, x, k):
     """log10(1 + t / ns) per ring of the lead and the delay: from a common form if the laws carry one, else ring by ring."""
     if "time" in law:
@@ -140,14 +111,12 @@ def ring_means(law, x, k):
     return law["mean_energy"] @ x
 
 
-def plane_particles(rng, k, x, e_k, law, s, off=None, log_lam=None, tilt=0.0):
-    """Particles (n, 5) [plane k, across, along, energy, time] of one plane before the preprocessing; the variety is
-    either K=0 logit offsets `off` or the plane's log10 width `log_lam` and tilt `tilt`."""
+def plane_particles(rng, k, x, e_k, law, s, log_lam=None):
+    """Particles (n, 5) [plane k, across, along, energy, time] of one plane before the preprocessing; log_lam: the
+    plane's log10 width, None for the rings law unstretched."""
     e_tot = e_k / softmax(x @ law["stored"])[0]
-    logit = x @ law["rings"]
-    if off is not None:
-        logit[: particles.OUTER] += off
-    shares = softmax(logit) if log_lam is None else particles.stretch(softmax(logit), log_lam, tilt)
+    shares = softmax(x @ law["rings"])
+    shares = shares if log_lam is None else particles.stretch(shares, log_lam)
     lead_y, delay_y = ring_times(law, x, k)
     lead = np.maximum(10.0 ** lead_y - 1, 0.0)
     tau = np.maximum(10.0 ** delay_y - 1 - lead, 0.0)
@@ -167,7 +136,7 @@ def ring_particles(rng, k, e_ring, mean, spread, e_min, lead, tau):
     excess = e_ring - n * e_min
     e = e_min + excess[j] * v / np.bincount(j, v, particles.N_RING)[j]
     lo, hi = particles.EDGES[j], particles.EDGES[j + 1]
-    hi = np.where(np.isfinite(hi), hi, generator.R_OPEN * lo)
+    hi = np.where(np.isfinite(hi), hi, particles.R_OPEN * lo)
     r, phi = np.sqrt(rng.uniform(lo ** 2, hi ** 2)), rng.uniform(0, 2 * np.pi, len(j))
     t = (k + 1) * atmosphere.PLANE_SPACING / annuli.C_LIGHT + (lead[j] + tau[j] * rng.exponential(size=len(j))) * 1e-9
     return np.column_stack([np.full(len(j), k), r * np.cos(phi), r * np.sin(phi), e, t])
@@ -175,27 +144,16 @@ def ring_particles(rng, k, e_ring, mean, spread, e_min, lead, tau):
 
 def shower(job):
     """Stored cells per species of one primary -> (index, {species: cells}, seconds, particles drawn)."""
-    i, seed, l, u, cn, X, d, E, xmax, laws, nets, variety = job
+    i, seed, l, u, cn, X, d, E, xmax, laws = job
     rng = np.random.default_rng([seed, i])
     t0, out, n_part = time.time(), {}, 0
     for s in SPECIES_NAMES:
         ks = np.nonzero(E[s] > 0)[0]
-        x = annuli.features(generator.age(X[ks], xmax[s]), np.full(len(ks), l), np.full(len(ks), u),
-                            np.log(E[s][ks]), np.array([lateral.r_m_ref(k, d[2]) for k in ks]))
-        law = laws[(s, cn)]
-        if variety == "k0":
-            off = noise(nets[cn], x, s, rng)
-            p = [plane_particles(rng, k, x[a], E[s][k], law, s, off=off[a]) for a, k in enumerate(ks)]
-        else:
-            w = law[variety]
-            sample = lambda v: x @ v[:-2] + v[-2] * sampler.ar1(1, N_PLANES, v[-1], rng)[0][ks]
-            if variety == "along":
-                ll = width_sr.law_mean(w, ks, x[:, 3], x[:, 1]) + width_sr.law_sd(w, ks) * sampler.ar1(1, N_PLANES, w[-1], rng)[0][ks]
-            else:
-                ll = sample(w[: len(w) // 2] if variety == "shape" else w)
-            tt = sample(w[len(w) // 2:]) if variety == "shape" else np.zeros(len(ks))
-            p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a], tilt=tt[a])
-                 for a, k in enumerate(ks)]
+        x = annuli.features(longitudinal.age(X[ks], xmax[s]), np.full(len(ks), l), np.full(len(ks), u),
+                            np.log(E[s][ks]), np.array([lateral.r_m_ref(k, u) for k in ks]))
+        law, w = laws[(s, cn)], laws[(s, cn)]["along"]
+        ll = width_sr.law_mean(w, ks, x[:, 3], x[:, 1]) + width_sr.law_sd(w, ks) * sampler.ar1(1, N_PLANES, w[-1], rng)[0][ks]
+        p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a]) for a, k in enumerate(ks)]
         p = np.concatenate(p) if p else np.zeros((0, 5))
         n_part += len(p)
         cells = render.render(p, d, sources.CAP[s]) if len(p) else np.zeros((0, 5))
@@ -225,46 +183,55 @@ def given_primaries(args):
     return tuple(z[k][idx] for k in ("rows", "l", "u", "labels", "X", "dirs"))
 
 
-def stage_energies(out, args, log):
-    rows, l, u, lab, X, dirs = given_primaries(args) if args.primaries else scored_primaries(args)
-    rng = np.random.default_rng(args.seed)
-    E = {s: np.zeros((len(rows), N_PLANES)) for s in SPECIES_NAMES}
-    xmax = {s: np.zeros(len(rows)) for s in SPECIES_NAMES}
-    tr = sampler.load(os.path.join(args.out, fit_profiles.TRAIN))
+def sample_energies(root, l, u, X, lab, rng):
+    """Plane energies {species: (n, planes)} and Xmax {species: (n,)} from the Part-1 sampler, class by class."""
+    E = {s: np.zeros((len(l), N_PLANES)) for s in SPECIES_NAMES}
+    xmax = {s: np.zeros(len(l)) for s in SPECIES_NAMES}
+    tr = sampler.load(os.path.join(root, fit_profiles.TRAIN))
     for c in planes.CLASS:
         m = lab == c
         e, lat = sampler.sample(sampler.fit(tr, c), l[m], u[m], X[m], rng)
         for j, s in enumerate(SPECIES_NAMES):
             E[s][m] = e[s]
             xmax[s][m] = longitudinal.from_latent(sampler.species_block(lat, j)[0], l[m])[0]
+    return E, xmax
+
+
+def stage_energies(out, args, log):
+    rows, l, u, lab, X, dirs = given_primaries(args) if args.primaries else scored_primaries(args)
+    E, xmax = sample_energies(args.out, l, u, X, lab, np.random.default_rng(args.seed))
     np.savez(os.path.join(out, "energies.npz"), rows=rows, labels=lab, l=l, u=u, X=X, dirs=dirs,
              **{f"{s}.E": E[s] for s in SPECIES_NAMES}, **{f"{s}.xmax": xmax[s] for s in SPECIES_NAMES})
     log.info("sampled plane energies of %d primaries", len(rows))
     return {"primaries": int(len(rows)), "seed": args.seed}
 
 
-def stage_draw(out, args, log):
-    z = np.load(os.path.join(out, "energies.npz"))
-    laws = load_laws(args.out, args.laws)
-    if args.variety == "along":
-        z_w = np.load(os.path.join(args.out, width_law_path(args.laws, args.width_law)))
-        for (s, cn), law in laws.items():
-            law["along"] = z_w[f"{s}.{cn}"]
-    time_law = time_law_path(args.laws, args.time_law)
+def draw_laws(root, laws_path=LAWS, width_law=None, time_law=None, energy_law=None):
+    """The laws of every (species, class) with the width, time and mean energy laws the draw uses."""
+    laws = load_laws(root, laws_path)
+    z_w = np.load(os.path.join(root, width_law_path(laws_path, width_law)))
+    for (s, cn), law in laws.items():
+        law["along"] = z_w[f"{s}.{cn}"]
+    time_law = time_law_path(laws_path, time_law)
     if time_law:
-        z_t = np.load(os.path.join(args.out, time_law))
+        z_t = np.load(os.path.join(root, time_law))
         for (s, cn), law in laws.items():
             law["time"] = {"form": str(z_t["form"]), **{w: z_t[f"{s}.{cn}.{w}"] for w in times_sr.TIMES}}
-    energy_law = energy_law_path(args.laws, args.energy_law)
+    energy_law = energy_law_path(laws_path, energy_law)
     if energy_law:
-        z_e = np.load(os.path.join(args.out, energy_law))
+        z_e = np.load(os.path.join(root, energy_law))
         for (s, cn), law in laws.items():
             law["energy"] = {"form": str(z_e["form"]), "theta": z_e[f"{s}.{cn}"]}
-    nets = {cn: load_noise(args.out, cn) for cn in planes.CLASS.values()}
+    return laws
+
+
+def stage_draw(out, args, log):
+    z = np.load(os.path.join(out, "energies.npz"))
+    laws = draw_laws(args.out, args.laws, args.width_law, args.time_law, args.energy_law)
     mine = np.arange(len(z["rows"]))[args.task::args.tasks]
     jobs = [(i, args.seed, float(z["l"][i]), float(z["u"][i]), planes.CLASS[int(z["labels"][i])], z["X"][i],
              z["dirs"][i], {s: z[f"{s}.E"][i] for s in SPECIES_NAMES}, {s: float(z[f"{s}.xmax"][i]) for s in SPECIES_NAMES},
-             laws, nets, args.variety) for i in mine]
+             laws) for i in mine]
     cells = {s: {} for s in SPECIES_NAMES}
     secs, n_part = [], []
     with Pool(args.workers) as pool:
@@ -324,9 +291,7 @@ def main():
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--clouds", default="clouds.npz", help="merge stage: output file name")
-    ap.add_argument("--variety", choices=("along", "width", "shape", "k0"), default="along",
-                    help="draw stage: plane-to-plane variety")
-    ap.add_argument("--width-law", help="draw stage, variety along: width_sr.py law, relative to --out; required with a non-default --laws")
+    ap.add_argument("--width-law", help="draw stage: width_sr.py law, relative to --out; required with a non-default --laws")
     ap.add_argument("--time-law", help="draw stage: times_sr.py law, relative to --out, or none for the ring-by-ring laws; required with a non-default --laws")
     ap.add_argument("--energy-law", help="draw stage: energy_sr.py or tiny_net.py law, relative to --out, or none for the ring-by-ring laws; required with a non-default --laws")
     args = ap.parse_args()

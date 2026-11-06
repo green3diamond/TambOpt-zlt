@@ -1,5 +1,5 @@
-"""CPU self-test of the symbolic generator: slant depth, profile fits, plane sums, the sampler (margins, copula, plane
-residuals), the energy score, the CORSIKA repair and the in-plane pattern fit."""
+"""CPU self-test of the along-the-shower model: slant depth, profile fits, plane sums, the sampler (margins, copula,
+plane residuals), the energy score and the CORSIKA repair."""
 import os
 import sys
 import tempfile
@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from scipy import special
 
-from symbolic import (annuli, atmosphere as atm, copula as cp, evaluate as ev, fit_profiles, generator, lateral,
+from symbolic import (annuli, atmosphere as atm, copula as cp, evaluate as ev, fit_profiles, lateral,
                       longitudinal, planes, sampler, score, sources, unwrap as uw)
 
 DIST = atm.PLANE_SPACING * np.arange(1, 25)
@@ -247,32 +247,6 @@ def test_torch_profile_shape_matches_numpy_and_has_finite_gradients():
     assert torch.all(torch.isfinite(Rt.grad)) and np.any(~np.isfinite(ref))
 
 
-def test_across_track_cells_keep_plane_energy_spread_cells_and_radius_mode_is_unchanged():
-    nb, nf = annuli.N_BIN, 8
-    law = {"N": np.zeros((nf, nb)), "cell": np.zeros((nf, nb)), "cell_mode": np.zeros(nb), "count_sd": np.array(0.0),
-           "count": np.r_[np.log(400.0), np.zeros(nf - 1)], "delay": np.zeros(nb)}
-    law["N"][0, 8:] = -50.0                       # bins beyond 200 m empty
-    x, d, k, e_k = np.r_[1.0, np.zeros(nf - 1)], np.array([0.6, -0.7, 0.05]), 5, 1e4
-    d = d / np.linalg.norm(d)
-    h, perp, c = lateral.frame(d)
-    axis = (k + 1) * atm.PLANE_SPACING * d[:2]
-    flat = generator.plane_cells(k, d, e_k, x, law, np.random.default_rng(0), 0.0, "across")
-    spread = generator.plane_cells(k, d, e_k, x, {**law, "spread": np.r_[[np.full(nb, 0.7)], np.zeros((nf - 1, nb))]},
-                                   np.random.default_rng(0), 0.0, "across")
-    t = lateral.to_plane(spread[:, :2] - axis, h, perp, c)
-    assert np.isclose(spread[:, 3].sum(), e_k) and np.isclose(flat[:, 3].sum(), e_k)
-    assert np.abs(t[:, 0]).max() < 200 and np.abs(t[:, 1]).max() < 200 + 1e-6
-    assert len(np.unique(flat[:, 3].round(9))) <= 8 and 0.5 < np.log(spread[:, 3]).std() < 0.9
-    old = law["N"].copy()
-    rng_a, rng_b = np.random.default_rng(3), np.random.default_rng(3)
-    a = generator.plane_cells(k, d, e_k, x, law, rng_a, 0.0)
-    n = max(1, int(round(np.exp(x @ law["count"] + 0.0 * rng_b.normal()))))
-    counts = rng_b.multinomial(n, generator.softmax(x @ old))
-    j = np.repeat(np.arange(nb), counts)
-    r = np.sqrt(rng_b.uniform(annuli.EDGES[j] ** 2, annuli.EDGES[j + 1] ** 2))
-    phi = rng_b.uniform(0, 2 * np.pi, len(r))
-    ref = axis + (r * np.cos(phi))[:, None] * perp + (r * np.sin(phi) * c)[:, None] * h
-    assert np.allclose(a[:, :2], ref)
 
 
 def test_gaussian_copula_and_species_blocks():
@@ -409,22 +383,6 @@ def test_unwrap_shower_and_restore_agree():
     assert np.array_equal(uw.restore(cloud, UNWRAP_DIR, s_k), fixed)
 
 
-def test_pattern_fit_recovers_a_planted_pattern_and_its_correlation():
-    rng = np.random.default_rng(12)
-    n_sh, n_pl, cols = 2000, 10, 20
-    g_true = np.linspace(-1.0, 2.0, cols)
-    a = sampler.ar1(n_sh, n_pl, 0.8, rng).ravel()
-    unit, plane = np.repeat(np.arange(n_sh), n_pl), np.tile(np.arange(n_pl), n_sh)
-    w = rng.uniform(1, 50, size=(len(a), cols)) * (rng.uniform(size=(len(a), cols)) < 0.6)   # cell counts, 40% empty
-    r = np.where(w > 0, a[:, None] * g_true + 0.3 * rng.normal(size=w.shape), 0.0)
-    fit = unit % 5 != 0
-    g = generator.fit_pattern(r[fit], w[fit], rng)
-    sc = generator.pattern_scores(r[fit], w[fit], g)
-    cos = abs(g @ g_true) / np.linalg.norm(g) / np.linalg.norm(g_true)
-    rho = generator.lag1(sc, unit[fit], plane[fit])
-    print(f"      cos to truth {cos:.4f}, |g| / |truth| {np.linalg.norm(g) / np.linalg.norm(g_true):.3f}, rho {rho:.3f}, "
-          f"score sd {sc.std():.3f}, held-out removed {generator.removed(r[~fit], w[~fit], g):.3f}")
-    assert cos > 0.999 and abs(rho - 0.8) < 0.03 and abs(sc.std() - 1) < 1e-6
 
 
 if __name__ == "__main__":
