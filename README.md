@@ -67,7 +67,7 @@ All paths are set in `modules/constants.py` and overridden by environment variab
 | `TAMBOPT_SITE` | `plane12` or `malata` | `plane12` |
 | `TAMBOPT_UTILITY` | Stage 4 utility (see `docs/THEORY.md`) | see `constants.py` |
 
-Only the Malata mesh (`data/malata.h5`, group `malata`) is in the repo. The tau decay files come from `decay_locations/` (Julia injection pipeline) or `scripts/17_make_plane_inputs.py` (plane), and the shower generator needs the per-species AllShowers checkpoints, which are not distributed with the repo. `slurm/run20_guard.sh` shows a complete set of variables for the Malata run.
+Only the Malata mesh (`data/malata.h5`, group `malata`) is in the repo. The tau decay files come from `decay_locations/` (Julia injection pipeline) or `scripts/17_make_plane_inputs.py` (plane), and Stage 0 needs the separate repo [TAMBO-opt](https://github.com/green3diamond/TAMBO-opt) (AllShowers and point-count models with their checkpoints, plus its `environment.yaml` dependencies). It is not vendored: `modules/showers/generate.py` expects it at `/n/home05/zdimitrov/tambo/TAMBO-opt` (the `sys.path.insert` and the two checkpoint paths in that file) and must be edited elsewhere. Stages 1-4 do not need it if the corpus already exists. `slurm/run20_guard.sh` shows a complete set of variables for the Malata run.
 
 ## Running the pipeline
 
