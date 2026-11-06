@@ -57,6 +57,21 @@ TRIG_ENERGY       = os.environ.get("TAMBOPT_TRIG_ENERGY", "0") == "1"
 TRIG_MODE         = os.environ.get("TAMBOPT_TRIG_MODE", "poisson")
 TRIG_MU0          = float(os.environ.get("TAMBOPT_TRIG_MU0", "1.0"))
 TRIG_SLOPE        = float(os.environ.get("TAMBOPT_TRIG_SLOPE", "10.0"))   # 10: a dark detector adds sigmoid(-10) ~ 5e-5 (5 leaks ~0.7 over 100)
+# The reward's angle scale (run 20b): g = sigmoid((TRIG_THETA - a) / TRIG_WIDTH), q = 1 / (1 + (a / TRIG_QREF)^2 [+ ...]).
+# Defaults 5 / 1 / 20 are the original swgo_trigger reward; 1 / 0.2 / 5 rewards 1 deg reconstruction.
+TRIG_THETA        = float(os.environ.get("TAMBOPT_TRIG_THETA", "5.0"))
+TRIG_WIDTH        = float(os.environ.get("TAMBOPT_TRIG_WIDTH", "1.0"))
+TRIG_QREF         = float(os.environ.get("TAMBOPT_TRIG_QREF", "20.0"))
+# TAMBOPT_TRIG_GATED=1: the trigger counts only read-out detectors (the response's `gate_mask`, kNN gate; the expected
+# shower counts, never background). TAMBOPT_TRIG_OFF=1: no trigger term (r_b = 1); with TRIG_ENERGY=1 and the default
+# angle scale this is the tables' Old U, mean[g + 0.3 (1 - g) q].
+TRIG_GATED        = os.environ.get("TAMBOPT_TRIG_GATED", "0") == "1"
+TRIG_OFF          = os.environ.get("TAMBOPT_TRIG_OFF", "0") == "1"
+# TAMBOPT_TRIG_ONLY=1: no reconstruction term, u = r_b (the trigger probability alone): detection without the angle /
+# energy reward, to see what the trigger and the layout penalties do on their own
+TRIG_ONLY         = os.environ.get("TAMBOPT_TRIG_ONLY", "0") == "1"
+# TAMBOPT_UTIL_ZERO=1: the utility is 0 (kept in the graph): only the layout penalties (cable / construction) act
+UTIL_ZERO         = os.environ.get("TAMBOPT_UTIL_ZERO", "0") == "1"
 _TT_PARAMS = None
 
 
@@ -376,22 +391,33 @@ def utility_of_xy(x_det: torch.Tensor,
     if UTILITY_MODE == "swgo_trigger":
         from .counting import trigger_prob
         from .background import AREA_M2
-        mu = getattr(fnn, "mu", None)
-        if mu is None:
-            raise RuntimeError("TAMBOPT_UTILITY=swgo_trigger needs a response with expected counts `mu` (Stage 4 kernel)")
-        mu_a = mu * (TRIG_AREA_M2 / AREA_M2)
-        if TRIG_MODE == "step":
-            rb = torch.sigmoid(5.0 * (torch.sigmoid(TRIG_SLOPE * (mu_a - TRIG_MU0)).sum(-1) - TRIG_K))
-        else:
-            rb = trigger_prob(mu_a, TRIG_K)
         a = angle_between_deg(_sph(theta_pred, phi_pred), _sph(theta_true, phi_true))
         e = (torch.log10(E_pred_phys) - torch.log10(E_true)).abs()
-        g = torch.sigmoid(5.0 - a)
-        q2 = (a / 20.0) ** 2
+        if TRIG_OFF:
+            rb = torch.ones_like(a)
+        else:
+            mu = getattr(fnn, "mu", None)
+            if mu is None:
+                raise RuntimeError("TAMBOPT_UTILITY=swgo_trigger needs a response with expected counts `mu` (Stage 4 "
+                                   "kernel)")
+            mu_a = mu * (TRIG_AREA_M2 / AREA_M2)
+            if TRIG_GATED:
+                gm = getattr(fnn, "gate_mask", None)
+                if gm is None:
+                    raise RuntimeError("TAMBOPT_TRIG_GATED=1 needs a gated response (--gate knn23)")
+                mu_a = mu_a * gm
+            if TRIG_MODE == "step":
+                rb = torch.sigmoid(5.0 * (torch.sigmoid(TRIG_SLOPE * (mu_a - TRIG_MU0)).sum(-1) - TRIG_K))
+            else:
+                rb = trigger_prob(mu_a, TRIG_K)
+        g = torch.sigmoid((TRIG_THETA - a) / TRIG_WIDTH)
+        q2 = (a / TRIG_QREF) ** 2
         if TRIG_ENERGY:
             g = g * torch.sigmoid((0.2 - e) / 0.05)
             q2 = q2 + (e / 0.5) ** 2
-        u = rb * (g + TWO_TIER_LAMBDA * (1.0 - g) / (1.0 + q2))
+        u = rb if TRIG_ONLY else rb * (g + TWO_TIER_LAMBDA * (1.0 - g) / (1.0 + q2))
+        if UTIL_ZERO:
+            u = 0.0 * u
         U = TWO_TIER_SCALE * u.mean()
         # parts: u_theta = U, u_phi = trigger rate, u_e = triggered and good, u_pr = good (any trigger); all x30
         parts = dict(u_theta=U, u_phi=TWO_TIER_SCALE * rb.mean(), u_e=TWO_TIER_SCALE * (rb * g).mean(),

@@ -9,7 +9,12 @@ OPT = {"opt_a2_grid": "Opt. Poisson 2 m², grid start", "opt_a2_center": "Opt. P
        "opt_a20_grid": "Opt. Poisson 20 m², grid start",
        "opt_a2_step_grid_5000": "Opt. step 2 m², grid start (5,000 steps)",
        "opt_a2_step_grid_8000": "Opt. step 2 m², grid start (8,000 steps)",
-       "opt_a2_step_grid": "Opt. step 2 m², grid start", "opt_a2_step_center": "Opt. step 2 m², centre start"}
+       "opt_a2_step_grid": "Opt. step 2 m², grid start", "opt_a2_step_center": "Opt. step 2 m², centre start",
+       "opt20b_1deg_poisson": "Opt. 1° under 10 µs bg, Poisson, grid start",
+       "opt20b_1deg_step": "Opt. 1° under 10 µs bg, step, grid start",
+       "opt20b_oldu": "Opt. Old U under 10 µs bg, grid start",
+       "opt20c_nobg": "Opt. 1° no bg, default recon, grid start",
+       "opt20c_1us": "Opt. 1° under 1 µs bg + kNN, default recon, grid start"}
 
 
 def _metres(v):
@@ -37,6 +42,19 @@ def label(key, short=False):
     if m:
         return f"Triplets, {_metres(m.group(1))} disk" if short else f"Triplets r = {m.group(2)} m on {_metres(m.group(1))} disk"
     return key
+
+
+def run_info(d, run_location):
+    """('Run <N>', held-out showers scored): N from the run folder name, the showers summed over the seed-1 chunks of
+    validate_count (the first layout, no background, all read out)."""
+    import glob
+    import json
+    n = 0
+    for f in glob.glob(os.path.join(d, "validate_count_s1_*.json")):
+        s = json.load(open(f))["scores"]
+        n += int(s[next(iter(s))]["none"]["0"]["n_showers"])
+    m = re.match(r"(\d+)_", os.path.basename(run_location.rstrip("/")))
+    return (f"Run {int(m.group(1))}" if m else os.path.basename(run_location)), n
 
 
 def layouts(d, short=False):

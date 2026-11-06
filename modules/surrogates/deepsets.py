@@ -112,7 +112,7 @@ class DeepSetsSurrogate(nn.Module):
             the lit-only stats.
         """
         B = primary.shape[0]
-        nd = self.n_det
+        nd = xy.shape[1]           # any detector count: the stats are shared by all slots (n_det only sizes the buffers)
 
         # Per-feature z-score scalars pulled from the broadcast-shared buffers:
         #   in_mean = [primary(5), x0,y0, x1,y1, ...]  → x stat at idx 5, y at 6.
@@ -187,6 +187,8 @@ def build_surrogate_from_ckpt(ckpt: dict, n_det: int, primary_dim: int, device=N
     cfg = ckpt.get("config", {})
     mtype = cfg.get("model_type", "fnn")
     if mtype == "deepsets":
+        # a DeepSets surrogate runs on any detector count; its buffers keep the training count (from the checkpoint)
+        n_det = int(ckpt["state_dict"]["out_mean"].numel() // 2) if "out_mean" in ckpt["state_dict"] else n_det
         model = DeepSetsSurrogate(
             n_det=n_det, primary_dim=primary_dim,
             hidden=int(cfg.get("hidden", 256)),

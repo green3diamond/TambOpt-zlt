@@ -4,7 +4,9 @@ Per step: a fresh slice of --batch-events Stage-1 showers (the main pool), U = u
 TAMBOPT_UTILITY), backward in sub-batches of --chunk, Adam on (East, North), projection onto the mesh. The best layout
 is chosen on a fixed scoring set at the end of the pool (--n-score). Optional: chunked L-BFGS polish (--lbfgs-chunks),
 cosmic background (--bg-window-ns), kNN 2-of-3 gate (--gate knn23), the Stage 2 surrogate as the response
-(--response surrogate), frozen unseen detectors (--freeze-unseen). Resumes from opt_state.pt / lbfgs_state.pt.
+(--response surrogate), frozen unseen detectors (--freeze-unseen), straight-through Poisson-drawn counts (--counting
+poisson), K-times larger batches in sub-batches (--accum K), a step size that drops when the scoring-set U stalls
+(--plateau-every), plain gradient ascent instead of Adam (--optim sgd). Resumes from opt_state.pt / lbfgs_state.pt.
 Output: <OPT_FOLDER>_lbfgs_kernel_<suffix>/layout_best.pt, optimize_log.json, layout_density.png.
 
     python scripts/04_optimize_lbfgs_kernel.py --precompute-bw <species index>      # once per run (kernel widths)
@@ -34,7 +36,7 @@ from modules.constants import (
 )
 from modules.constants import (
     DUAL_SHOWER_CACHE_PATH, DATASET_FRACTION, NUM_SHOWERS, SPECIES_NAMES,
-    TRAINING_DATASET_FOLDER, FNN_FOLDER,
+    TRAINING_DATASET_FOLDER, FNN_FOLDER, LOG_E_MIN, LOG_E_MAX,
 )
 from modules.data.dataset_builder import compute_labels_batch, place_clouds, _load_corpus_metadata
 from modules.showers.kernel import adaptive_bandwidths
@@ -44,9 +46,10 @@ from modules.geometry import load_tr_mountain, SurfaceUpMap
 from modules.geometry import project_to_mountain_ne, sample_initial_layout_ne
 from modules.optimize import utility_of_xy
 from modules.optimize.background import add_background, window_centres, knn_pairs, knn_gate, axis_distance
-from modules.optimize.counting import expected_counts
+from modules.optimize.counting import expected_counts, CountingTransform
 from modules.optimize.objective import UTILITY_MODE, TWO_TIER_SCALE
 from modules.optimize.cable import cable_length
+from modules.optimize.construction import ConstructionCost, parse as parse_construct
 from modules.surrogates import load_dual_surrogate
 from modules.surrogates import build_recon_from_ckpt
 
@@ -157,13 +160,26 @@ class BatchKernel:
 
 class SurrogateResponse:
     """Stage 2 hurdle surrogate as the detector response, thresholded at P(lit) >= p_min
-    (MultiSpeciesSurrogate.forward_thresholded): same call signature as BatchKernel."""
+    (as MultiSpeciesSurrogate.forward_thresholded): same call signature as BatchKernel. Also sets `mu`, the expected
+    detected particles per detector (counting.expected_counts on the per-species lit values, band scaling: no shower
+    frame, r = None), differentiable, for the swgo_trigger utility, as BatchKernel does."""
 
     def __init__(self, surrogate, p_min):
         self.surrogate, self.p_min = surrogate, p_min
+        self.mu = None
 
     def __call__(self, primary_batch, xy_batch):
-        return self.surrogate.forward_thresholded(primary_batch, xy_batch, self.p_min)
+        preds, t_min = [], None
+        for m in self.surrogate.models:
+            p, v = m.forward_parts(primary_batch, xy_batch)
+            n_s = torch.where(p[..., 0] >= self.p_min, torch.expm1(v[..., 0]).clamp(min=0.0), torch.zeros_like(v[..., 0]))
+            preds.append(torch.stack([torch.log1p(n_s), torch.zeros_like(n_s)], -1))
+            t_s = torch.where(p[..., 1] >= self.p_min, v[..., 1].clamp(min=0.0), torch.full_like(v[..., 1], float("inf")))
+            t_min = t_s if t_min is None else torch.minimum(t_min, t_s)
+        t_min = torch.where(torch.isfinite(t_min), t_min, torch.zeros_like(t_min))
+        self.mu = sum(expected_counts(preds, None, species=self.surrogate.species))
+        n_tot = sum(torch.expm1(q[..., 0]) for q in preds)
+        return torch.stack([torch.log1p(n_tot), t_min], dim=-1)
 
 
 class NoisyGated:
@@ -177,6 +193,7 @@ class NoisyGated:
         self.base, self.window_ns, self.gate, self.gen = base, window_ns, gate, gen
         self.t_fallback, self.st = t_fallback_us, straight_through
         self.read, self.ghosts, self.seen = 1.0, 0.0, None
+        self.gate_mask = None                     # (B, nd) read-out mask of the last call (TAMBOPT_TRIG_GATED)
 
     def __call__(self, primary_batch, xy_batch):
         out = self.base(primary_batch, xy_batch)
@@ -193,6 +210,7 @@ class NoisyGated:
         if self.gate == "knn23":
             hard, st = knn_gate(E.detach() if not self.st else E, knn_pairs(xy_batch[0, :, 0], xy_batch[0, :, 1]))
             E, t = E * (st if self.st else hard), t * hard
+            self.gate_mask = st if self.st else hard
             self.read = float(hard.mean())
             self.ghosts = float((ghost & (hard > 0)).float().sum(1).mean())
         else:
@@ -217,10 +235,14 @@ def pool_utility(xy_module, batch, surface, recon, chunk, backward, resp=None, g
             if resp is not None and resp["surrogate"] is not None:
                 kern = SurrogateResponse(resp["surrogate"], resp["p_min"])
             else:
+                # --counting poisson: Poisson-drawn particle counts per species (drawn from `gen`), straight-through
+                # (the gradient of the expected counts) when differentiating
+                cnt = (CountingTransform(surface, gen, "poisson", straight_through=backward)
+                       if resp is not None and resp.get("counting") == "poisson" else None)
                 kern = BatchKernel([c[lo:hi].to(DEVICE, non_blocking=True) for c in clouds],
                                    [w[lo:hi].to(DEVICE) if w is not None else None for w in bws],
                                    surface, differentiable=backward,
-                                   frames=None if frames is None else frames[lo:hi].to(DEVICE))
+                                   frames=None if frames is None else frames[lo:hi].to(DEVICE), species_transform=cnt)
             if resp is not None and (resp["window_ns"] > 0 or resp["gate"] != "none" or resp.get("track_seen")):
                 kern = NoisyGated(kern, resp["window_ns"], resp["gate"], gen, resp["t_fallback_us"],
                                   straight_through=backward)
@@ -304,18 +326,47 @@ class CableCost:
         print(f"[cable] lambda={CABLE_LAMBDA:g}  d_min={CABLE_DMIN:g} m  L_ref (grid_n99) = {self.l_ref / 1e3:.2f} km")
 
     def __call__(self, x, y):
-        """(penalty tensor, L [m])."""
+        """(penalty tensor, {cable_km})."""
         L, h = cable_length(x, y, self.surface, CABLE_DMIN)
-        return TWO_TIER_SCALE * (CABLE_LAMBDA * L / self.l_ref + h / CABLE_DMIN ** 2), float(L)
+        return TWO_TIER_SCALE * (CABLE_LAMBDA * L / self.l_ref + h / CABLE_DMIN ** 2), dict(cable_km=float(L) / 1e3)
+
+
+class Penalties:
+    """The active layout penalties (cable, construction terms) as one: (summed penalty tensor, merged info dict)."""
+
+    def __init__(self, terms):
+        self.terms = terms
+
+    def __call__(self, x, y):
+        pens, info = [], {}
+        for t in self.terms:
+            p, i = t(x, y)
+            pens.append(p)
+            info.update(i)
+        return sum(pens), info
+
+
+def make_penalties(mountain, surface):
+    """Penalties for TAMBOPT_CABLE_LAMBDA / TAMBOPT_CONSTRUCT, or None (the objective is then the plain utility)."""
+    terms = []
+    if CABLE_LAMBDA > 0:
+        terms.append(CableCost(mountain, surface))
+    if parse_construct():
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(0)
+            e, n = init_layout(mountain, "grid", DEVICE, 99)
+        terms.append(ConstructionCost(mountain, surface, (e, n)))
+    return Penalties(terms) if terms else None
 
 
 def add_cable(cable, xy_module, tot, backward):
-    """Subtract the cable penalty from tot["U"] (backward: add its gradient); tot keeps U_util, cable_km, penalty."""
+    """Subtract the layout penalties from tot["U"] (backward: add their gradient); tot keeps U_util, penalty and the
+    penalties' info (cable_km, construction metrics)."""
     with (torch.enable_grad() if backward else torch.no_grad()):
-        pen, L = cable(*xy_module())
+        pen, info = cable(*xy_module())
         if backward:
             pen.backward()
-    tot.update(U_util=tot["U"], cable_km=L / 1e3, penalty=float(pen))
+    tot.update(U_util=tot["U"], penalty=float(pen), **info)
     tot["U"] -= float(pen)
     return tot
 
@@ -323,6 +374,16 @@ def add_cable(cable, xy_module, tot, backward):
 def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
     pool = MainPool(mountain)
     load = pool.load_prim if resp is not None and resp["surrogate"] is not None else pool.load
+    if args.e_range:                              # --e-range: only showers with log10 E [GeV] in [lo, hi)
+        lo, hi = args.e_range
+        load_all = load
+
+        def load(a, b):
+            clouds, bws, prim, frames = load_all(a, b)
+            le = prim[:, 3] * (LOG_E_MAX - LOG_E_MIN) + LOG_E_MIN
+            k = (le >= lo) & (le < hi)
+            return ([c[k] for c in clouds], [w[k] if w is not None else None for w in bws], prim[k],
+                    frames[k] if frames is not None else None)
     n_score = args.n_score
     n_sweep = pool.n - n_score
     B = args.batch_events
@@ -330,18 +391,28 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
           f"(events {n_sweep}..{pool.n}); {B} fresh events per step")
     t0 = time.time()
     score_set = load(n_sweep, pool.n)
-    print(f"[pool] scoring set loaded ({score_set[2].shape[0]} events) in {time.time() - t0:.0f}s")
+    print(f"[pool] scoring set loaded ({score_set[2].shape[0]} events) in {time.time() - t0:.0f}s"
+          + (f"; energy band log10 E in [{args.e_range[0]:g}, {args.e_range[1]:g}): {score_set[2].shape[0]} of "
+             f"{n_score} scoring showers, ~{B * score_set[2].shape[0] / n_score:.0f} of {B} per sub-batch"
+             if args.e_range else ""))
 
     e_init, n_init = init_layout(mountain, args.init, DEVICE, args.n_det)
+    args.n_det = len(e_init)                      # a layout file sets the detector count
     xy_module = LearnableXY(e_init, n_init, device=str(DEVICE)).to(DEVICE)
-    optimizer = torch.optim.Adam(xy_module.parameters(), lr=args.lr)
+    # --optim sgd: plain gradient ascent; the step is proportional to the gradient, so a gradient that is mostly noise
+    # (averaging out over steps) moves little, where Adam moves every detector by ~lr per step whatever the direction.
+    # The lr is in metres for a gradient as large as the first step's: SGD's rate = lr / (per-detector RMS of the first
+    # step's gradient), saved for a resume (sgd_ref).
+    optimizer = (torch.optim.SGD(xy_module.parameters(), lr=args.lr) if args.optim == "sgd"
+                 else torch.optim.Adam(xy_module.parameters(), lr=args.lr))
+    sgd_ref = None
 
     def gen_for(seed):
         g = torch.Generator(device=DEVICE)
         g.manual_seed(int(seed))
         return g
 
-    cable = CableCost(mountain, surface) if CABLE_LAMBDA > 0 else None
+    cable = make_penalties(mountain, surface)          # cable and / or construction penalties
 
     def score():
         # the same background draws every time, so scores are comparable across steps
@@ -352,36 +423,67 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
     log, score_log = [], []
     start = 0
     state_path = os.path.join(out_dir, "opt_state.pt")
+    # --plateau-every: adaptive step size (current lr, best scoring-set U it is judged against, scores without a gain)
+    plat = dict(lr=args.lr, best=-np.inf, bad=0, stop=False)
+    lr_min = args.lr * args.plateau_min_frac
+
+    def step_lr(epoch):
+        return plat["lr"] if args.plateau_every > 0 else lr_at(args, epoch)
     if os.path.exists(state_path):
         st = torch.load(state_path, map_location=DEVICE, weights_only=False)
         xy_module.load_state_dict(st["xy"])
         optimizer.load_state_dict(st["optimizer"])
         start, log, score_log = st["epoch"], st["log"], st["score_log"]
         best_u, best_x, best_y = st["best_u"], st["best_x"], st["best_y"]
-        print(f"[resume] {state_path} at epoch {start}, best scoring-set U={best_u:+.3f}")
+        plat = st.get("plateau", plat)
+        sgd_ref = st.get("sgd_ref")
+        snaps = st.get("snaps", {})
+        print(f"[resume] {state_path} at epoch {start}, best scoring-set U={best_u:+.3f}"
+              + (f", lr {plat['lr']:.3g}" if args.plateau_every > 0 else ""))
     else:
         best_u = score()
         best_x, best_y = e_init.detach().cpu().clone(), n_init.detach().cpu().clone()
         score_log.append(dict(epoch=0, U_score=best_u))
+        snaps = {0: (best_x.clone(), best_y.clone())} if args.snap_every > 0 else {}
         print(f"[score] init U={best_u:+.3f} on the scoring set")
 
-    def offset(epoch):
-        return int(np.random.default_rng([args.seed, epoch]).integers(0, n_sweep - B + 1))
+    def offset(epoch, sub=0):
+        # sub-batch 0 draws as before, so --accum 1 repeats the original runs exactly
+        key = [args.seed, epoch] if sub == 0 else [args.seed, epoch, sub]
+        return int(np.random.default_rng(key).integers(0, n_sweep - B + 1))
 
+    def bg_seed(epoch, sub=0):
+        return args.seed * 1000003 + epoch + 10_000_000 * sub
+
+    K = max(args.accum, 1)
     ex = ThreadPoolExecutor(max_workers=1)
     nxt = ex.submit(lambda a: load(a, a + B), offset(start)) if start < args.epochs else None
     t_loop = time.time()
     n_skip = 0
     for epoch in range(start, args.epochs):
-        batch = nxt.result()
-        if epoch + 1 < args.epochs:
-            nxt = ex.submit(lambda a: load(a, a + B), offset(epoch + 1))
-
-        for grp in optimizer.param_groups:
-            grp["lr"] = lr_at(args, epoch)
+        if plat["stop"]:                          # resumed after the plateau schedule had already stopped the run
+            break
         optimizer.zero_grad(set_to_none=True)
-        tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True,
-                           resp=resp, gen=gen_for(args.seed * 1000003 + epoch))   # per-step draws, resume-safe
+        # --accum: K sub-batches of B showers, each back-propagated with weight 1 / K into the same gradients (the
+        # loader prefetches the next sub-batch while one runs); memory is one sub-batch's
+        parts = []
+        for sub in range(K):
+            batch = nxt.result()
+            ne, ns = (epoch, sub + 1) if sub + 1 < K else (epoch + 1, 0)
+            if ne < args.epochs:
+                nxt = ex.submit(lambda a: load(a, a + B), offset(ne, ns))
+            parts.append(pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True,
+                                      resp=resp, gen=gen_for(bg_seed(epoch, sub))))   # per-step draws, resume-safe
+            del batch
+        if K == 1:
+            tot = parts[0]
+        else:
+            for p in xy_module.parameters():
+                if p.grad is not None:
+                    p.grad /= K
+            tot = {k: sum(t[k] for t in parts) / K for k in parts[0] if k != "seen"}
+            seen = [t["seen"] for t in parts if t["seen"] is not None]
+            tot["seen"] = None if not seen else torch.stack(seen).any(0)
         if cable:
             add_cable(cable, xy_module, tot, True)
         # NaN guard: a non-finite utility or gradient skips the step (no Adam update, so neither the positions nor
@@ -407,6 +509,13 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
             unseen = (~seen) if (args.freeze_unseen and (seen := tot["seen"]) is not None) else None
             if unseen is not None:
                 x_old, y_old = xy_module.x.detach().clone(), xy_module.y.detach().clone()
+            if args.optim == "sgd" and sgd_ref is None:
+                g2 = sum(float((p.grad ** 2).sum()) for p in xy_module.parameters() if p.grad is not None)
+                sgd_ref = max(np.sqrt(g2 / args.n_det), 1e-30)
+                print(f"  [sgd] first step's per-detector RMS gradient {sgd_ref:.3g}: lr {args.lr:g} m -> "
+                      f"rate {args.lr / sgd_ref:.3g}", flush=True)
+            for grp in optimizer.param_groups:
+                grp["lr"] = step_lr(epoch) / (sgd_ref if args.optim == "sgd" else 1.0)
             optimizer.step()
             if unseen is not None:
                 with torch.no_grad():
@@ -420,6 +529,8 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
             xy_module.x.data.copy_(e_new.to(DEVICE).to(xy_module.x.dtype))
             xy_module.y.data.copy_(n_new.to(DEVICE).to(xy_module.y.dtype))
         log.append(dict(epoch=epoch + 1, **tot))
+        if args.snap_every > 0 and (epoch + 1) % args.snap_every == 0:      # --snap-every: layout snapshots
+            snaps[epoch + 1] = (xy_module.x.detach().cpu().clone(), xy_module.y.detach().cpu().clone())
 
         if (epoch + 1) % args.score_every == 0 or epoch == args.epochs - 1:
             s = score()
@@ -429,20 +540,41 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
                 best_x = xy_module.x.detach().cpu().clone()
                 best_y = xy_module.y.detach().cpu().clone()
             print(f"  [score {epoch+1}] U_score={s:+.3f}  best={best_u:+.3f}", flush=True)
+            if args.plateau_every > 0:
+                if s > plat["best"] + args.plateau_tol:
+                    plat.update(best=s, bad=0)
+                else:
+                    plat["bad"] += 1
+                    if plat["bad"] >= args.plateau_patience:
+                        if plat["lr"] <= lr_min * (1 + 1e-9):
+                            plat["stop"] = True
+                            print(f"  [plateau] no gain > {args.plateau_tol} in {plat['bad']} scores at the minimum "
+                                  f"step size {plat['lr']:.3g}: stopping", flush=True)
+                        else:
+                            plat.update(lr=max(plat["lr"] * args.plateau_factor, lr_min), bad=0)
+                            print(f"  [plateau] no gain > {args.plateau_tol} in {args.plateau_patience} scores: "
+                                  f"step size -> {plat['lr']:.3g}", flush=True)
+                score_log[-1]["lr"] = plat["lr"]
         if epoch == start or (epoch + 1) % args.log_every == 0:
             print(f"  [{epoch+1:5d}/{args.epochs}] U_batch={tot['U']:+.3f}  "
                   f"(u_theta={tot['u_theta']:.3f} u_phi={tot['u_phi']:.3f} "
                   f"u_e={tot['u_e']:.3f})  r={tot['r_mean']:.3f}  read={tot['read']:.3f} ghosts={tot['ghosts']:.3f}  "
-                  f"lr={lr_at(args, epoch):.3g}  frozen={tot.get('frozen', 0)}  "
-                  + (f"U_util={tot['U_util']:+.3f} cable={tot['cable_km']:.2f}km  " if cable else "")
+                  f"lr={step_lr(epoch):.3g}  frozen={tot.get('frozen', 0)}  "
+                  + (f"U_util={tot['U_util']:+.3f} penalty={tot['penalty']:.3f} "
+                     + " ".join(f"{k}={tot[k]:.3g}" for k in tot if k.startswith(("cable_km", "slope_", "access_m",
+                                                                               "pad_rms", "row_rms", "pen_"))) + "  "
+                     if cable else "")
                   + f"{(time.time() - t_loop) / (epoch + 1 - start):.2f}s/epoch", flush=True)
-        if (epoch + 1) % args.ckpt_every == 0:
+        if (epoch + 1) % args.ckpt_every == 0 or plat["stop"]:
             os.makedirs(out_dir, exist_ok=True)
             torch.save(dict(xy=xy_module.state_dict(), optimizer=optimizer.state_dict(),
                             epoch=epoch + 1, log=log, score_log=score_log, best_u=best_u,
-                            best_x=best_x, best_y=best_y), state_path + ".tmp")
+                            best_x=best_x, best_y=best_y, plateau=plat, sgd_ref=sgd_ref, snaps=snaps),
+                       state_path + ".tmp")
             os.replace(state_path + ".tmp", state_path)
-    ex.shutdown()
+        if plat["stop"]:
+            break
+    ex.shutdown(cancel_futures=True)
     print(f"[adam done] best scoring-set U={best_u:+.3f}")
 
     lbfgs_log = []
@@ -566,17 +698,45 @@ def load_recon(recon_dir, device):
     return recon
 
 
+def lhs_on_mesh(mountain, n_det, seed):
+    """Latin hypercube restricted to the detector region: an LHS of m >= n_det points over the (East, North) bbox (one
+    per stratum on each axis, axes paired at random), keeping the points the mesh projection leaves in place (< 1 m),
+    m grown until at least n_det land on the mesh; then n_det of them at random. Unlike the bbox LHS
+    (layouts.strategies.layout_latin_hypercube), no detectors are pushed onto the region's edge on top of each other."""
+    rng = np.random.default_rng(seed)
+    m = n_det
+    while True:
+        u_n = ((np.arange(m) + rng.random(m)) / m)[rng.permutation(m)]
+        u_e = ((np.arange(m) + rng.random(m)) / m)[rng.permutation(m)]
+        N = torch.as_tensor(mountain.n_min + u_n * (mountain.n_max - mountain.n_min), dtype=torch.float32)
+        E = torch.as_tensor(mountain.east_lo + u_e * (mountain.east_hi - mountain.east_lo), dtype=torch.float32)
+        ep, np_ = project_to_mountain_ne(mountain, E, N)
+        inside = torch.hypot(ep - E, np_ - N) < 1.0
+        if int(inside.sum()) >= n_det:
+            idx = torch.as_tensor(rng.choice(np.flatnonzero(inside.numpy()), n_det, replace=False))
+            return E[idx], N[idx]
+        m = int(m * 1.3) + 1
+
+
 def init_layout(mountain, scheme, device, n_det=N_DETECTORS):
-    e, n = sample_initial_layout_ne(mountain, n_units=n_det, scheme=scheme)
-    e = torch.as_tensor(e, dtype=torch.float32)
-    n = torch.as_tensor(n, dtype=torch.float32)
+    """grid / center, lhs:<seed> (Latin hypercube over the mountain bbox, projected to the surface;
+    layouts.strategies.layout_latin_hypercube), or a layout file (.pt with x, y; its own detector count)"""
+    if scheme.endswith(".pt"):
+        lay = torch.load(scheme, map_location="cpu")
+        e, n = lay["x"].float(), lay["y"].float()
+    elif scheme.startswith("lhs"):
+        e, n = lhs_on_mesh(mountain, n_det, int(scheme.split(":")[1]) if ":" in scheme else 0)
+    else:
+        e, n = sample_initial_layout_ne(mountain, n_units=n_det, scheme=scheme)
+        e = torch.as_tensor(e, dtype=torch.float32)
+        n = torch.as_tensor(n, dtype=torch.float32)
     e, n = project_to_mountain_ne(mountain, e, n)
     return e.to(device), n.to(device)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--init", choices=("grid", "center"), default="center")
+    ap.add_argument("--init", default="center", help="grid, center, lhs:<seed> or a layout file (.pt with x, y)")
     ap.add_argument("--n-det", type=int, default=N_DETECTORS,
                     help="detectors in the layout; the DeepSets recon takes any count")
     ap.add_argument("--epochs", type=int, default=200, help="Adam steps")
@@ -590,6 +750,8 @@ def main():
     ap.add_argument("--score-every", type=int, default=250)
     ap.add_argument("--score-chunk", type=int, default=32)
     ap.add_argument("--log-every", type=int, default=5)
+    ap.add_argument("--snap-every", type=int, default=0,
+                    help="> 0: keep the layout every N steps (and at step 0) in opt_state.pt['snaps'] {step: (x, y)}")
     ap.add_argument("--ckpt-every", type=int, default=250,
                     help="save optimizer state every N steps; a rerun with the same --out-suffix resumes")
     ap.add_argument("--recon-folder", default=RECON_FOLDER + "_deepsets")
@@ -619,7 +781,28 @@ def main():
     ap.add_argument("--lbfgs-max-iter", type=int, default=40)
     ap.add_argument("--lbfgs-tol", type=float, default=0.05,
                     help="carry on from a chunk whose scoring-set U is within this relative tolerance of the best")
+    ap.add_argument("--counting", choices=("none", "poisson"), default="none",
+                    help="poisson: Poisson-drawn particle counts per species in the forward pass, the gradient of the "
+                         "expected counts in the backward pass (straight-through; modules/optimize/counting.py)")
+    ap.add_argument("--accum", type=int, default=1,
+                    help="sub-batches of --batch-events per Adam step, gradients averaged: an accum x larger batch "
+                         "with the memory of one sub-batch")
+    ap.add_argument("--plateau-every", type=int, default=0,
+                    help="> 0: adaptive step size: score every N steps (replaces --score-every) and multiply the step "
+                         "by --plateau-factor after --plateau-patience scores without a gain > --plateau-tol; stop at "
+                         "--plateau-min-frac x --lr without a gain. Replaces --lr-final")
+    ap.add_argument("--plateau-patience", type=int, default=4)
+    ap.add_argument("--plateau-factor", type=float, default=0.5)
+    ap.add_argument("--plateau-tol", type=float, default=0.05)
+    ap.add_argument("--plateau-min-frac", type=float, default=1 / 30)
+    ap.add_argument("--e-range", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                    help="only showers with log10 E [GeV] in [LO, HI) (training batches and scoring set)")
+    ap.add_argument("--optim", choices=("adam", "sgd"), default="adam",
+                    help="sgd: plain gradient ascent, step = lr x gradient / (first step's per-detector RMS gradient), "
+                         "i.e. lr metres for a gradient as large as the first one")
     args = ap.parse_args()
+    if args.plateau_every > 0:
+        args.score_every = args.plateau_every
     torch.manual_seed(args.seed)
 
     out_dir = OPT_FOLDER + "_lbfgs_kernel" + (f"_{args.out_suffix}" if args.out_suffix else "")
@@ -636,13 +819,15 @@ def main():
 
     recon = load_recon(args.recon_folder, DEVICE)
     resp = None
-    if args.response == "surrogate" or args.bg_window_ns > 0 or args.gate != "none" or args.freeze_unseen:
-        resp = dict(track_seen=args.freeze_unseen,
+    if (args.response == "surrogate" or args.bg_window_ns > 0 or args.gate != "none" or args.freeze_unseen
+            or args.counting != "none"):
+        resp = dict(track_seen=args.freeze_unseen, counting=args.counting,
                     surrogate=(load_dual_surrogate(args.fnn_folder, DEVICE, n_det=args.n_det)
                                if args.response == "surrogate" else None),
                     p_min=args.p_lit_min, window_ns=args.bg_window_ns, gate=args.gate,
                     t_fallback_us=args.t_fallback_us)
-        print(f"[response] {args.response}  background window {args.bg_window_ns:g} ns  gate {args.gate}"
+        print(f"[response] {args.response}  background window {args.bg_window_ns:g} ns  gate {args.gate}  "
+              f"counting {args.counting}"
               + (f"  P(lit) >= {args.p_lit_min}" if args.response == "surrogate" else ""))
     run_main_pool(args, mountain, surface, recon, out_dir, resp)
 

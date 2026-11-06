@@ -56,6 +56,13 @@ elif [ "$UTIL" = swgotrig ]; then
     # TRIG_MODE=step: the notebook's near-step trigger on expected counts (TRIG_MU0, TRIG_SLOPE; suffix _step)
     export TAMBOPT_TRIG_MODE="${TRIG_MODE:-poisson}" TAMBOPT_TRIG_MU0="${TRIG_MU0:-1.0}" TAMBOPT_TRIG_SLOPE="${TRIG_SLOPE:-10.0}"
     [ "$TAMBOPT_TRIG_MODE" = step ] && TAG="${TAG}_step"
+    # run 20b: the reward's angle scale TRIG_THETA / TRIG_WIDTH / TRIG_QREF (defaults 5 / 1 / 20; suffix _th<theta>),
+    # TRIG_GATED=1 trigger on read-out detectors only (needs GATE; _gtrig), TRIG_OFF=1 no trigger term (_notrig)
+    export TAMBOPT_TRIG_THETA="${TRIG_THETA:-5}" TAMBOPT_TRIG_WIDTH="${TRIG_WIDTH:-1}" TAMBOPT_TRIG_QREF="${TRIG_QREF:-20}" \
+           TAMBOPT_TRIG_GATED="${TRIG_GATED:-0}" TAMBOPT_TRIG_OFF="${TRIG_OFF:-0}"
+    [ "$TAMBOPT_TRIG_THETA" != 5 ] && TAG="${TAG}_th${TAMBOPT_TRIG_THETA/./p}"
+    [ "$TAMBOPT_TRIG_GATED" = 1 ] && TAG="${TAG}_gtrig"
+    [ "$TAMBOPT_TRIG_OFF" = 1 ] && TAG="${TAG}_notrig"
 elif [ "$UTIL" = threetier ]; then
     # exclusive levels: 0.9 within 1 deg, 0.3 within 5 deg, 0.1 detected (>= 3 detectors > 1 particle); angle only
     export TAMBOPT_UTILITY=three_tier TAMBOPT_THREE_TIER="${THREE_TIER_W:-0.9,0.3,0.1}"
@@ -77,6 +84,14 @@ if [ -n "$BG_WINDOW" ] && [ "$BG_WINDOW" != 0 ]; then
 fi
 [ "${GATE:-none}" != none ] && SUFFIX="${SUFFIX}_${GATE}"
 [ "${RESPONSE:-kernel}" = surrogate ] && SUFFIX="${SUFFIX}_sur"
+# run 20b: COUNTING=poisson straight-through Poisson-drawn counts (_cnt), ACCUM=<K> K sub-batches of BATCH per step
+# (_acc<K>), PLATEAU=1 step size halved when the scoring-set U stalls (PLATEAU_EVERY steps per score, default 25;
+# down to PLATEAU_MIN_FRAC x the initial lr, default 1/30; _plat), CKPT_EVERY=<steps> between checkpoints (default 250)
+[ "${COUNTING:-none}" = poisson ] && SUFFIX="${SUFFIX}_cnt"
+[ -n "$ACCUM" ] && [ "$ACCUM" != 1 ] && SUFFIX="${SUFFIX}_acc${ACCUM}"
+[ -n "$PLATEAU" ] && SUFFIX="${SUFFIX}_plat"
+# OPTIM=sgd: plain gradient ascent, lr = metres for a gradient as large as the first step's (_sgd)
+[ "${OPTIM:-adam}" = sgd ] && SUFFIX="${SUFFIX}_sgd"
 # CABLE=<lambda>: subtract the cable cost, lambda x 30 x (3-D MST length / grid_n99's) (CABLE_DMIN spacing hinge, default
 # 5 m); suffix _cab<lambda>
 if [ -n "$CABLE" ] && [ "$CABLE" != 0 ]; then
@@ -90,7 +105,11 @@ python -u scripts/04_optimize_lbfgs_kernel.py --init "$INIT" \
     --recon-folder "$RK" --out-suffix "$SUFFIX" --n-det "$N_DET" \
     --bg-window-ns "${BG_WINDOW:-0}" --gate "${GATE:-none}" --response "${RESPONSE:-kernel}" ${FNN_DIR:+--fnn-folder $FNN_DIR} \
     ${FREEZE_UNSEEN:+--freeze-unseen} --lbfgs-chunks "${LBFGS_CHUNKS:-0}" --lbfgs-chunk-events "${LBFGS_EVENTS:-4096}" \
-    --lbfgs-max-iter "${LBFGS_MAXITER:-40}"
+    --lbfgs-max-iter "${LBFGS_MAXITER:-40}" --counting "${COUNTING:-none}" --accum "${ACCUM:-1}" \
+    ${PLATEAU:+--plateau-every ${PLATEAU_EVERY:-25} --plateau-min-frac ${PLATEAU_MIN_FRAC:-0.0333333}} \
+    --ckpt-every "${CKPT_EVERY:-250}" --optim "${OPTIM:-adam}"
 rc=$?
+# CHAIN=1 (run20b_submit.sh): the continuation jobs share this job's name; once the run has finished they are not needed
+[ "$rc" = 0 ] && [ -n "$CHAIN" ] && scancel --state=PENDING -u "$USER" -n "$SLURM_JOB_NAME"
 notify_end $rc
 exit $rc

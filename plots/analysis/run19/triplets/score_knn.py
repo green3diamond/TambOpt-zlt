@@ -46,6 +46,7 @@ ap.add_argument("--out", default=None, help="default knn_scores.json, or knn_sco
 ap.add_argument("--counting", choices=("none", "poisson"), default="none")
 ap.add_argument("--eps-gamma", type=float, default=EPS_GAMMA, help="photon detection probability (counting only)")
 ap.add_argument("--count-seed", type=int, default=7)
+ap.add_argument("--kernel-chunk", type=int, default=64, help="showers per kernel pass (GPU memory only; 16 fits a 20 GB MIG slice)")
 ap.add_argument("--mu-min", type=float, default=1.0, help="expected-count trigger: a detector counts if mu >= this")
 ap.add_argument("--k-min", type=int, default=3, help="expected-count trigger: >= this many such read-out detectors")
 ap.add_argument("--layouts", default=None, help="name=path.pt lines instead of the default triplet / grid / disk set")
@@ -54,6 +55,9 @@ ap.add_argument("--drop-test", type=float, default=0.0,
                      "(E = T = 0, mu = 0) after background and before the gate; 0 = off")
 ap.add_argument("--axis-within", type=float, default=0.0,
                 help="keep only showers whose axis passes within this distance [m] of the plane centre (0 = all)")
+ap.add_argument("--e-bins", type=float, nargs="+", default=None,
+                help="log10 E [GeV] bin edges: also score each layout per energy band (scores_by_band; 'scores' keeps "
+                     "all showers, as without the option)")
 ap.add_argument("--core-in-layout", action="store_true",
                 help="score each layout only on showers whose axis passes within the layout's radius of its centroid")
 args = ap.parse_args()
@@ -76,8 +80,15 @@ def near_centre(pos, dirs):
 clouds, B, _, prim = load_events(args.n_events, dev, m, select=near_centre if args.axis_within > 0 else None,
                                  start=args.event_start)
 ct = CountingTransform(surface, None, mode="poisson" if args.counting == "poisson" else "expected", eps_gamma=args.eps_gamma)
-kern = DCS.GS.CachedKernel(clouds, surface, dev, chunk=64, expected_primary=prim, species_transform=ct)
+kern = DCS.GS.CachedKernel(clouds, surface, dev, chunk=args.kernel_chunk, expected_primary=prim, species_transform=ct)
 E_true, th_t, ph_t = primary_to_physical_labels(prim)
+BANDS = [("all", torch.ones(B, dtype=torch.bool, device=dev))]
+if args.e_bins:
+    le = torch.log10(E_true)
+    for lo, hi in zip(args.e_bins[:-1], args.e_bins[1:]):
+        BANDS.append((f"{lo:g}-{hi:g}", (le >= lo) & (le < hi if hi < args.e_bins[-1] else le <= hi)))
+    print("[e-bins] " + "  ".join(f"{t}: {int(m.sum())}" for t, m in BANDS), flush=True)
+by_band = {}
 T_FALLBACK = None
 
 layouts = {}
@@ -120,70 +131,75 @@ for li, (name, path) in enumerate(layouts.items()):
         if T_FALLBACK is None:
             T_FALLBACK = float(t[timed].median()) if timed.any() else 10.0
         t_c = window_centres(t, timed, T_FALLBACK)
-        for W in args.windows:
-            g = torch.Generator(device=dev); g.manual_seed(int(1000003 * li + W))
-            En, Tn, Nb, hasbg = add_background(E, t, timed, t_c, W, g, r_axis=r_axis)
-            ghost = hasbg & ~timed                                                 # background-only detectors
-            alive = torch.ones_like(En, dtype=torch.bool)
-            if args.drop_test > 0:                                                 # missing detectors
-                gd = torch.Generator(device=dev); gd.manual_seed(int(7919 * li + W) + 1)
-                alive = torch.rand(En.shape, device=dev, generator=gd) >= args.drop_test
-                En, Tn = En * alive, Tn * alive
-            for rd in rds:
-                h = (En > HIT_MIN).float()
-                if rd == "none":
-                    keep = torch.ones_like(En, dtype=torch.bool)
-                elif rd == "knn":
-                    keep = (h + h[:, nn[:, 0]] + h[:, nn[:, 1]]) >= 2                # kNN 2-of-3
-                else:
-                    keep = (h.view(B, -1, 3).sum(-1, keepdim=True) >= 2).expand(B, -1, 3).reshape(B, nd)   # own triangle
-                Ek, Tk = torch.where(keep, En, 0.0), torch.where(keep, Tn, 0.0)
-                E_p, th_p, ph_p = primary_to_physical_labels(recon(torch.cat([xy, torch.log1p(Ek)[..., None],
-                                                                             torch.log1p(Tk)[..., None]], -1)))
-                a, de = (x[sub].cpu().numpy() for x in DCS.ang_err((E_p.clamp(min=1.0), th_p, ph_p, E_true, th_t, ph_t)))
-                trig = ((Ek[sub] > 1).sum(1) >= MIN_HIT).cpu().numpy()
-                r = dict(n_det=nd, n_showers=int(sub.sum()), n_counted=n_counted, triggered=float(trig.mean()),
-                         ang_med=float(np.median(a)),
-                         read_det=float(keep[sub].float().sum(1).mean()), ghosts=float((ghost & keep)[sub].float().sum(1).mean()),
-                         lit_det=float(((Ek > 0) | (Tk > 0))[sub].float().sum(1).mean()))
-                # notebook-style trigger on EXPECTED counts: >= k_min read-out detectors with mu >= mu_min (hard),
-                # and the smooth r_b = sigmoid(5 (sum_i sigmoid(5 (mu_i - mu_min)) - k_min)) as a weight
-                mk = (mu * keep * alive)[sub]
-                trig_mu = ((mk >= args.mu_min).sum(1) >= args.k_min).cpu().numpy()
-                rb = torch.sigmoid(5 * (torch.sigmoid(5 * (mk - args.mu_min)).mul(keep[sub]).sum(1) - args.k_min)).cpu().numpy()
-                r.update(mu_det=float((mk >= args.mu_min).float().sum(1).mean()), trig_mu=float(trig_mu.mean()),
-                         r_soft=float(rb.mean()))
-                # energy: |dlog10 E| < E_GOOD (the two-tier e_good); "5e" = within 5 deg and energy good
-                eg = de < E_GOOD
-                # The Stage 4 utilities, unscaled (the optimiser logs them x30):
-                #   u_two_tier   mean[g + 0.3 (1 - g) q], g = soft(a < 5) soft(|dlog10 E| < 0.2), q = 1/(1 + (a/20)^2 + (e/0.5)^2)
-                #   u_swgo       mean[r_b (g_a + 0.3 (1 - g_a) q_a)], angle only; r_b = P(>= 3 read-out detectors with
-                #                >= 1 particle) (Poisson-binomial) or, u_swgo_step, sigmoid(5 (sum sigmoid(10 (mu - 1)) - 3))
-                at, et = torch.as_tensor(a), torch.as_tensor(de)
-                g2 = torch.sigmoid(5.0 - at) * torch.sigmoid((0.2 - et) / 0.05)
-                q2 = 1.0 / (1.0 + (at / 20.0) ** 2 + (et / 0.5) ** 2)
-                ga, qa = torch.sigmoid(5.0 - at), 1.0 / (1.0 + (at / 20.0) ** 2)
-                rp = trigger_prob(mk.double().cpu(), 3).float()
-                rs = torch.sigmoid(5.0 * (torch.sigmoid(10.0 * (mk.cpu() - 1.0)).sum(1) - 3.0))
-                # drawn trigger (--counting poisson): >= 3 read-out detectors with a drawn particle (E' > 1 kernel units:
-                # one counted particle is >> 1; background muons count too), the trigger a real array would apply
-                td = torch.as_tensor(trig).float()
-                r.update(ang_mean_trig=float(a[trig].mean()) if trig.any() else float("nan"),   # angle error [deg]
-                         ang_med_trig=float(np.median(a[trig])) if trig.any() else float("nan"))  # over triggered
-                r.update(u_swgo_drawn=float((td * (ga + 0.3 * (1 - ga) * qa)).mean()))
-                r.update(u_two_tier=float((g2 + 0.3 * (1 - g2) * q2).mean()),
-                         u_swgo=float((rp * (ga + 0.3 * (1 - ga) * qa)).mean()),
-                         u_swgo_step=float((rs * (ga + 0.3 * (1 - ga) * qa)).mean()),
-                         trig_poisson=float(rp.mean()), trig_step=float(rs.mean()))
-                r.update(notrig_e=float(eg.mean()), allmu_e=float(np.mean(eg & trig_mu)),
-                         notrig_5e=float(np.mean(eg & (a < 5))), allmu_5e=float(np.mean(eg & (a < 5) & trig_mu)),
-                         de_med=float(np.median(de)), de_med_trig=float(np.median(de[trig_mu])) if trig_mu.any() else float("nan"))
-                for th, kk in ((1, "1"), (2.5, "2.5"), (5, "5")):
-                    r[f"notrig_{kk}"] = float(np.mean(a < th))
-                    r[f"all_{kk}"] = float(np.mean((a < th) & trig))
-                    r[f"allmu_{kk}"] = float(np.mean((a < th) & trig_mu))
-                    r[f"rw_{kk}"] = float(np.sum(rb * (a < th)) / max(rb.sum(), 1e-9))
-                res[rd][f"{W:g}"] = r
+        sub0, res_all = sub, res
+        for btag, bm in BANDS:                                                     # --e-bins: per energy band
+            sub = sub0 & bm
+            res = res_all if btag == "all" else by_band.setdefault(btag, {}).setdefault(name, {r: {} for r in rds})
+            for W in args.windows:
+                g = torch.Generator(device=dev); g.manual_seed(int(1000003 * li + W))
+                En, Tn, Nb, hasbg = add_background(E, t, timed, t_c, W, g, r_axis=r_axis)
+                ghost = hasbg & ~timed                                                 # background-only detectors
+                alive = torch.ones_like(En, dtype=torch.bool)
+                if args.drop_test > 0:                                                 # missing detectors
+                    gd = torch.Generator(device=dev); gd.manual_seed(int(7919 * li + W) + 1)
+                    alive = torch.rand(En.shape, device=dev, generator=gd) >= args.drop_test
+                    En, Tn = En * alive, Tn * alive
+                for rd in rds:
+                    h = (En > HIT_MIN).float()
+                    if rd == "none":
+                        keep = torch.ones_like(En, dtype=torch.bool)
+                    elif rd == "knn":
+                        keep = (h + h[:, nn[:, 0]] + h[:, nn[:, 1]]) >= 2                # kNN 2-of-3
+                    else:
+                        keep = (h.view(B, -1, 3).sum(-1, keepdim=True) >= 2).expand(B, -1, 3).reshape(B, nd)   # own triangle
+                    Ek, Tk = torch.where(keep, En, 0.0), torch.where(keep, Tn, 0.0)
+                    E_p, th_p, ph_p = primary_to_physical_labels(recon(torch.cat([xy, torch.log1p(Ek)[..., None],
+                                                                                 torch.log1p(Tk)[..., None]], -1)))
+                    a, de = (x[sub].cpu().numpy() for x in DCS.ang_err((E_p.clamp(min=1.0), th_p, ph_p, E_true, th_t, ph_t)))
+                    trig = ((Ek[sub] > 1).sum(1) >= MIN_HIT).cpu().numpy()
+                    r = dict(n_det=nd, n_showers=int(sub.sum()), n_counted=n_counted, triggered=float(trig.mean()),
+                             ang_med=float(np.median(a)),
+                             read_det=float(keep[sub].float().sum(1).mean()), ghosts=float((ghost & keep)[sub].float().sum(1).mean()),
+                             lit_det=float(((Ek > 0) | (Tk > 0))[sub].float().sum(1).mean()))
+                    # notebook-style trigger on EXPECTED counts: >= k_min read-out detectors with mu >= mu_min (hard),
+                    # and the smooth r_b = sigmoid(5 (sum_i sigmoid(5 (mu_i - mu_min)) - k_min)) as a weight
+                    mk = (mu * keep * alive)[sub]
+                    trig_mu = ((mk >= args.mu_min).sum(1) >= args.k_min).cpu().numpy()
+                    rb = torch.sigmoid(5 * (torch.sigmoid(5 * (mk - args.mu_min)).mul(keep[sub]).sum(1) - args.k_min)).cpu().numpy()
+                    r.update(mu_det=float((mk >= args.mu_min).float().sum(1).mean()), trig_mu=float(trig_mu.mean()),
+                             r_soft=float(rb.mean()))
+                    # energy: |dlog10 E| < E_GOOD (the two-tier e_good); "5e" = within 5 deg and energy good
+                    eg = de < E_GOOD
+                    # The Stage 4 utilities, unscaled (the optimiser logs them x30):
+                    #   u_two_tier   mean[g + 0.3 (1 - g) q], g = soft(a < 5) soft(|dlog10 E| < 0.2), q = 1/(1 + (a/20)^2 + (e/0.5)^2)
+                    #   u_swgo       mean[r_b (g_a + 0.3 (1 - g_a) q_a)], angle only; r_b = P(>= 3 read-out detectors with
+                    #                >= 1 particle) (Poisson-binomial) or, u_swgo_step, sigmoid(5 (sum sigmoid(10 (mu - 1)) - 3))
+                    at, et = torch.as_tensor(a), torch.as_tensor(de)
+                    g2 = torch.sigmoid(5.0 - at) * torch.sigmoid((0.2 - et) / 0.05)
+                    q2 = 1.0 / (1.0 + (at / 20.0) ** 2 + (et / 0.5) ** 2)
+                    ga, qa = torch.sigmoid(5.0 - at), 1.0 / (1.0 + (at / 20.0) ** 2)
+                    rp = trigger_prob(mk.double().cpu(), 3).float()
+                    rs = torch.sigmoid(5.0 * (torch.sigmoid(10.0 * (mk.cpu() - 1.0)).sum(1) - 3.0))
+                    # drawn trigger (--counting poisson): >= 3 read-out detectors with a drawn particle (E' > 1 kernel units:
+                    # one counted particle is >> 1; background muons count too), the trigger a real array would apply
+                    td = torch.as_tensor(trig).float()
+                    r.update(ang_mean_trig=float(a[trig].mean()) if trig.any() else float("nan"),   # angle error [deg]
+                             ang_med_trig=float(np.median(a[trig])) if trig.any() else float("nan"))  # over triggered
+                    r.update(u_swgo_drawn=float((td * (ga + 0.3 * (1 - ga) * qa)).mean()))
+                    r.update(u_two_tier=float((g2 + 0.3 * (1 - g2) * q2).mean()),
+                             u_swgo=float((rp * (ga + 0.3 * (1 - ga) * qa)).mean()),
+                             u_swgo_step=float((rs * (ga + 0.3 * (1 - ga) * qa)).mean()),
+                             trig_poisson=float(rp.mean()), trig_step=float(rs.mean()))
+                    r.update(notrig_e=float(eg.mean()), allmu_e=float(np.mean(eg & trig_mu)),
+                             notrig_5e=float(np.mean(eg & (a < 5))), allmu_5e=float(np.mean(eg & (a < 5) & trig_mu)),
+                             de_med=float(np.median(de)), de_med_trig=float(np.median(de[trig_mu])) if trig_mu.any() else float("nan"))
+                    for th, kk in ((1, "1"), (2.5, "2.5"), (5, "5")):
+                        r[f"notrig_{kk}"] = float(np.mean(a < th))
+                        r[f"all_{kk}"] = float(np.mean((a < th) & trig))
+                        r[f"allmu_{kk}"] = float(np.mean((a < th) & trig_mu))
+                        r[f"rw_{kk}"] = float(np.sum(rb * (a < th)) / max(rb.sum(), 1e-9))
+                    res[rd][f"{W:g}"] = r
+        sub, res = sub0, res_all
     out[name] = res
     s = "  ".join(f"W={w}: " + " ".join(f"{rd} {100*res[rd][w]['notrig_1']:.1f}/{100*res[rd][w]['all_1']:.1f} g{res[rd][w]['ghosts']:.2f}"
                                        for rd in rds) for w in res["none"])
@@ -191,6 +207,7 @@ for li, (name, path) in enumerate(layouts.items()):
 json.dump(dict(recon_dir=args.recon_dir, event_start=args.event_start, drop_test=args.drop_test, windows_ns=args.windows, min_hit=MIN_HIT, n_events=B, counting=args.counting,
                mu_min=args.mu_min, k_min=args.k_min,
                eps_gamma=args.eps_gamma if args.counting == "poisson" else None, count_seed=args.count_seed,
-               bg_muon_scaling="per detector, distance from the axis", scores=out),
+               bg_muon_scaling="per detector, distance from the axis", scores=out,
+               **(dict(e_bins=args.e_bins, scores_by_band=by_band) if args.e_bins else {})),
           open(args.out, "w"), indent=1)
 print("[write]", args.out)

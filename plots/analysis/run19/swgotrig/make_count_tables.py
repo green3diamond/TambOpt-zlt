@@ -21,10 +21,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.d
 sys.path.insert(0, REPO)
 import modules.constants as C  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout_names import layouts  # noqa: E402
+from layout_names import layouts, run_info  # noqa: E402
 
 D = os.path.join(C.RUN_LOCATION, "diagnostics", "swgotrig")
 LAYOUTS = layouts(D)                                 # validate_count_layouts.txt order
+RUN, NSH = run_info(D, C.RUN_LOCATION)                     # "Run <N>", held-out showers scored
 COLS = [("notrig_1", "1°", lambda v: f"{100 * v:.1f}%"), ("notrig_2.5", "2.5°", lambda v: f"{100 * v:.1f}%"),
         ("notrig_5", "5°", lambda v: f"{100 * v:.1f}%"), ("u_two_tier", "Old U", lambda v: f"{v:.3f}"),
         ("u_swgo_drawn", "New U (drawn trigger)", lambda v: f"{v:.3f}"),
@@ -61,9 +62,9 @@ json.dump(dict(seeds=seeds, mean=mean, std=std), open(os.path.join(D, "validate_
 
 max_sd = {lab: max(std[k][rd][w][m] for k, _ in LAYOUTS for _, rd, w in CONDS) for m, lab, _ in COLS}
 red = lambda v: f'<span style="color:red"><b>{v}</b></span>'                 # noqa: E731
-out = [f"""## swgo_trigger validation with drawn particle counts — run 19, 21,060 held-out showers, mean of {len(seeds)} count seeds
+out = [f"""## swgo_trigger validation with drawn particle counts — {RUN.lower()}, {NSH:,} held-out showers, mean of {len(seeds)} count seeds
 
-Particle counts per species drawn from Poisson(μ) (2 m², ε_γ = 0.02) and fed to the run 19 recon (trained on noise-free
+Particle counts per species drawn from Poisson(μ) (2 m², ε_γ = 0.02) and fed to the {RUN.lower()} recon (trained on noise-free
 inputs, so accuracies are lower bounds). Trig (drawn) = share of showers with ≥ 3 read-out detectors that got a drawn
 particle (background muons count too); New U (drawn trigger) = mean[trig · (g_a + 0.3(1−g_a)q_a)], g_a = soft(a < 5°),
 q_a = 1/(1 + (a/20)²); Old U = two-tier. Optimised layouts: swgo_trigger Stage 4, 2,048 showers per step, λ = 0.3, lr 10.

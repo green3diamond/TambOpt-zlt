@@ -19,14 +19,15 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.d
 sys.path.insert(0, REPO)
 import modules.constants as C  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout_names import layouts  # noqa: E402
+from layout_names import layouts, run_info  # noqa: E402
 
 D = os.path.join(C.RUN_LOCATION, "diagnostics", "swgotrig")
 LAYOUTS = layouts(D)                                 # validate_count_layouts.txt order
+RUN, NSH = run_info(D, C.RUN_LOCATION)                     # "Run <N>", held-out showers scored
 CONDS = [("No background, all read out", "none", "0"), ("1 µs background, all read out", "none", "1000"),
          ("10 µs background, all read out", "none", "10000"), ("No background, kNN gate", "knn", "0"),
          ("1 µs background, kNN gate", "knn", "1000"), ("10 µs background, kNN gate", "knn", "10000")]
-RECONS = [("validate_count_s*_*.json", "original run 19 recon", "validation_count_triggered_notion.md"),
+RECONS = [("validate_count_s*_*.json", f"original {RUN.lower()} recon", "validation_count_triggered_notion.md"),
           ("valdrop_count_s*_*.json", "dropout fine-tuned recon", "validation_count_triggered_dropout_notion.md"),
           ("valcnt_count_s*_*.json", "drawn-count fine-tuned recon", "validation_count_triggered_count_notion.md")]
 M = ["all_1", "all_2.5", "all_5", "u_swgo_drawn", "triggered"]
@@ -70,7 +71,7 @@ def build(pattern, title, out):
          "Angle columns are computed only on showers recognised as triggered: (triggered and within X°) / triggered, "
          "triggered = ≥ 3 read-out detectors with a drawn particle (background muons count too). New U \\| trig = mean "
          "reward over triggered showers; Trig = share of all showers that trigger. Mean of " + str(len(by))
-         + " count seeds, 21,060 held-out showers. Red = best in the column (ties marked)."]
+         + f" count seeds, {NSH:,} held-out showers. Red = best in the column (ties marked)."]
     for t, rd, w in CONDS:
         rows = [(name, [f(v) for f, v in zip(FMT, val(k, rd, w))]) for k, name in LAYOUTS]
         best = [max(float(r[1][i].rstrip("%")) for r in rows) for i in range(len(M))]
@@ -91,12 +92,12 @@ def compare(pattern, title, out):
     if not old or not new:
         print(f"[skip] {pattern}: no complete seed")
         return
-    L = [f"## Drawn particle counts — default run 19 recon → {title}", "",
+    L = [f"## Drawn particle counts — default {RUN.lower()} recon → {title}", "",
          "Cells: default → fine-tuned, each as of triggered (of all showers); bold = fine-tuned better on triggered. "
          "Of triggered = (triggered and within X°) / triggered, triggered = ≥ 3 read-out detectors with a drawn particle "
          "(background muons count too); of all = within X° / all showers. New U \\| trig = mean reward over triggered "
          "showers (of all: mean[trig · reward] over all showers). Trig = share of all showers that trigger (independent "
-         f"of the recon). Mean of {len(old)} / {len(new)} count seeds, 21,060 held-out showers."]
+         f"of the recon). Mean of {len(old)} / {len(new)} count seeds, {NSH:,} held-out showers."]
     for t, rd, w in CONDS:
         L.append(f"\n### {t}\n\n| Layout | 1° | 2.5° | 5° | New U | Trig |\n| --- | --- | --- | --- | --- | --- |")
         for k, name in LAYOUTS:
