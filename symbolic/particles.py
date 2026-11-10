@@ -643,6 +643,71 @@ def fig_spread(spreads):
     return fig
 
 
+def fit_group(s, cn, r, test, tg, log):
+    """Every law of one species and class from its plane rows r (all classes; test, tg: the species' held-out
+    showers and targets) -> (res parts, laws, pooled, spreads) of that group."""
+    res, laws, pooled, spreads = {"c0": {}, "laws": {}, "spread": {}}, {}, {}, {}
+    m = r["cls"] == cn
+    B = np.load(os.path.join(RING_LAWS, f"conv_{s}", "ring_laws.npz"))[f"{s}.{cn}.rings"]
+    res["c0"][f"{s} {cn}"], pooled[(s, cn)] = ring_check(r["x"][m], {w: v[m] for w, v in r.items()}, B)
+    c0 = res["c0"][f"{s} {cn}"]
+    log.info("C0 %-8s %-8s planes %4d | median KL law: before cut %.4f after cut %.4f", s, cn, m.sum(),
+             c0["median KL data || law, before cut"], c0.get("median KL data || law, after cut", np.nan))
+    if "hist" in r:
+        mean = r["ring_energy"][m] / np.maximum(r["ring_count"][m], 1)
+        laws[f"{s}.{cn}.spread"], spreads[(s, cn)] = spread(r["hist"][m], mean, E_MIN[s])
+        res["spread"][f"{s} {cn}"] = {f"{EDGES[j]:g}-{EDGES[j + 1]:g} m": {w: v for w, v in q.items()
+                                                                          if w not in ("data", "law")}
+                                      for j, q in spreads[(s, cn)].items()}
+        w1 = [q["W1 data vs law"] for q in spreads[(s, cn)].values()]
+        log.info("spread %-8s %-8s Burr XII on %d rings | W1 in log10 E data vs law median %.4f max %.4f | c, k "
+                 "at %s", s, cn, len(w1), np.median(w1), np.max(w1), " ".join(
+                     f"{EDGES[j]:g}m {laws[f'{s}.{cn}.spread'][j][0]:.2f},{laws[f'{s}.{cn}.spread'][j][1]:.2f}"
+                     for j in SPREAD_RINGS))
+    else:
+        log.info("spread %-8s %-8s no particle histograms in the tables: not fitted", s, cn)
+    for name, (kind, y, ok) in tg.items():
+        okm = ok & (m if ok.ndim == 1 else m[:, None])
+        rr, Bl = run_law(kind, r["x_stored"] if kind == "share" else r["x"], y, okm, test, r["i"])
+        laws[f"{s}.{cn}.{name}"] = Bl
+        res["laws"][f"{s} {cn} {name}"] = rr
+        if name == "rings":
+            q = predict(kind, r["x"][m], Bl)[:, :OUTER]
+            pooled[(s, cn)]["v2 law"] = (q / q.sum(1, keepdims=True)).mean(0)
+            true, law_q = r["ring_energy"][m] / r["E_total"][m, None], predict(kind, r["x"][m], Bl)
+            rows = (r["x"][m], r["i"][m], r["k"][m], test[m])
+            lam, _ = plane_shapes(true, law_q, tilt=False)
+            laws[f"{s}.{cn}.width"], res["laws"][f"{s} {cn} width"] = ar1_law(rows[0], lam, *rows[1:])
+            lam, tau = plane_shapes(true, law_q)
+            (w_l, r_l), (w_t, r_t) = ar1_law(rows[0], lam, *rows[1:]), ar1_law(rows[0], tau, *rows[1:])
+            e_l, e_t = lam - rows[0] @ w_l[:-2], tau - rows[0] @ w_t[:-2]
+            laws[f"{s}.{cn}.shape"] = np.r_[w_l, w_t]
+            res["laws"][f"{s} {cn} shape"] = {"width": r_l, "tilt": r_t,
+                                              "residual corr width-tilt": float(np.corrcoef(e_l, e_t)[0, 1])}
+            for w in ("width", "shape"):
+                log.info("law %-8s %-8s %-12s %s", s, cn, w, json.dumps(res["laws"][f"{s} {cn} {w}"]))
+        if kind == "share":
+            log.info("law %-8s %-8s %-12s planes %4d showers %2d | bias %+.4f se %.4f R2 %.3f | %s", s, cn,
+                     name, rr["planes"], rr["showers"], rr.get("bias", np.nan), rr.get("se", np.nan),
+                     rr.get("R2", np.nan), {True: "PASS", False: "FAIL", None: "not judged"}[rr["pass"]])
+        else:
+            v = [q["pass"] for q in rr.values()]
+            log.info("law %-8s %-8s %-12s rings pass %d / judged %d (not judged %d) | worst R2 %.3f", s, cn,
+                     name, sum(q is True for q in v), sum(q is not None for q in v), sum(q is None for q in v),
+                     min((q["R2"] for q in rr.values() if q["pass"] is not None), default=np.nan))
+    return res, laws, pooled, spreads
+
+
+_GROUPS = None
+
+
+def _fit_group_job(sc):
+    """Pool worker over (species, class); the rows come from the parent through fork (_GROUPS)."""
+    data, tests, tgs, log = _GROUPS
+    s, cn = sc
+    return fit_group(s, cn, data[s], tests[s], tgs[s], log)
+
+
 def stage_fit(out, args, log):
     from symbolic import logs
     skip = set(open(args.skip).read().split()) if args.skip else set()
@@ -651,58 +716,24 @@ def stage_fit(out, args, log):
     log.info("%d shower tables (%d skipped)%s", len(files), len(skip), f", rows from {args.plane_rows}" if args.plane_rows else "")
     res, laws, pooled, spreads = {"rule": __doc__.split("Rule")[1].strip(), "showers": [os.path.basename(f) for f in files],
                                   "c0": {}, "laws": {}, "spread": {}}, {}, {}, {}
-    for s, r in data.items():
-        test = split_showers(r["i"], r["cls"], log10e)
-        tg = targets(r)
-        for cn in CLASS.values():
-            m = r["cls"] == cn
-            B = np.load(os.path.join(RING_LAWS, f"conv_{s}", "ring_laws.npz"))[f"{s}.{cn}.rings"]
-            res["c0"][f"{s} {cn}"], pooled[(s, cn)] = ring_check(r["x"][m], {w: v[m] for w, v in r.items()}, B)
-            c0 = res["c0"][f"{s} {cn}"]
-            log.info("C0 %-8s %-8s planes %4d | median KL law: before cut %.4f after cut %.4f", s, cn, m.sum(),
-                     c0["median KL data || law, before cut"], c0.get("median KL data || law, after cut", np.nan))
-            if "hist" in r:
-                mean = r["ring_energy"][m] / np.maximum(r["ring_count"][m], 1)
-                laws[f"{s}.{cn}.spread"], spreads[(s, cn)] = spread(r["hist"][m], mean, E_MIN[s])
-                res["spread"][f"{s} {cn}"] = {f"{EDGES[j]:g}-{EDGES[j + 1]:g} m": {w: v for w, v in q.items()
-                                                                                  if w not in ("data", "law")}
-                                              for j, q in spreads[(s, cn)].items()}
-                w1 = [q["W1 data vs law"] for q in spreads[(s, cn)].values()]
-                log.info("spread %-8s %-8s Burr XII on %d rings | W1 in log10 E data vs law median %.4f max %.4f | c, k "
-                         "at %s", s, cn, len(w1), np.median(w1), np.max(w1), " ".join(
-                             f"{EDGES[j]:g}m {laws[f'{s}.{cn}.spread'][j][0]:.2f},{laws[f'{s}.{cn}.spread'][j][1]:.2f}"
-                             for j in SPREAD_RINGS))
-            else:
-                log.info("spread %-8s %-8s no particle histograms in the tables: not fitted", s, cn)
-            for name, (kind, y, ok) in tg.items():
-                okm = ok & (m if ok.ndim == 1 else m[:, None])
-                rr, Bl = run_law(kind, r["x_stored"] if kind == "share" else r["x"], y, okm, test, r["i"])
-                laws[f"{s}.{cn}.{name}"] = Bl
-                res["laws"][f"{s} {cn} {name}"] = rr
-                if name == "rings":
-                    q = predict(kind, r["x"][m], Bl)[:, :OUTER]
-                    pooled[(s, cn)]["v2 law"] = (q / q.sum(1, keepdims=True)).mean(0)
-                    true, law_q = r["ring_energy"][m] / r["E_total"][m, None], predict(kind, r["x"][m], Bl)
-                    rows = (r["x"][m], r["i"][m], r["k"][m], test[m])
-                    lam, _ = plane_shapes(true, law_q, tilt=False)
-                    laws[f"{s}.{cn}.width"], res["laws"][f"{s} {cn} width"] = ar1_law(rows[0], lam, *rows[1:])
-                    lam, tau = plane_shapes(true, law_q)
-                    (w_l, r_l), (w_t, r_t) = ar1_law(rows[0], lam, *rows[1:]), ar1_law(rows[0], tau, *rows[1:])
-                    e_l, e_t = lam - rows[0] @ w_l[:-2], tau - rows[0] @ w_t[:-2]
-                    laws[f"{s}.{cn}.shape"] = np.r_[w_l, w_t]
-                    res["laws"][f"{s} {cn} shape"] = {"width": r_l, "tilt": r_t,
-                                                      "residual corr width-tilt": float(np.corrcoef(e_l, e_t)[0, 1])}
-                    for w in ("width", "shape"):
-                        log.info("law %-8s %-8s %-12s %s", s, cn, w, json.dumps(res["laws"][f"{s} {cn} {w}"]))
-                if kind == "share":
-                    log.info("law %-8s %-8s %-12s planes %4d showers %2d | bias %+.4f se %.4f R2 %.3f | %s", s, cn,
-                             name, rr["planes"], rr["showers"], rr.get("bias", np.nan), rr.get("se", np.nan),
-                             rr.get("R2", np.nan), {True: "PASS", False: "FAIL", None: "not judged"}[rr["pass"]])
-                else:
-                    v = [q["pass"] for q in rr.values()]
-                    log.info("law %-8s %-8s %-12s rings pass %d / judged %d (not judged %d) | worst R2 %.3f", s, cn,
-                             name, sum(q is True for q in v), sum(q is not None for q in v), sum(q is None for q in v),
-                             min((q["R2"] for q in rr.values() if q["pass"] is not None), default=np.nan))
+    tests = {s: split_showers(r["i"], r["cls"], log10e) for s, r in data.items()}
+    tgs = {s: targets(r) for s, r in data.items()}
+    units = [(s, cn) for s in data for cn in CLASS.values()]
+    if args.procs > 1:
+        import multiprocessing
+        global _GROUPS
+        _GROUPS = (data, tests, tgs, log)
+        with multiprocessing.get_context("fork").Pool(min(args.procs, len(units))) as pool:
+            parts = pool.map(_fit_group_job, units, chunksize=1)
+        _GROUPS = None
+    else:
+        parts = [fit_group(s, cn, data[s], tests[s], tgs[s], log) for s, cn in units]
+    for g_res, g_laws, g_pooled, g_spreads in parts:
+        for w in ("c0", "laws", "spread"):
+            res[w].update(g_res[w])
+        laws.update(g_laws)
+        pooled.update(g_pooled)
+        spreads.update(g_spreads)
     np.savez(os.path.join(out, "particle_laws.npz"), edges=EDGES, features="annuli.features",
              plane_energy=args.plane_energy, **laws)
     logs.save_fig(fig_rings(pooled), out, "c0_ring_law", log)
@@ -732,6 +763,7 @@ def main():
     b.add_argument("--plane-energy", choices=PLANE_ENERGY, default="stored",
                    help="plane energy behind the inputs of every law but kept and stored (plane_rows)")
     b.add_argument("--plane-rows", help="plane_rows file from the rows stage, instead of rebuilding them from the tables")
+    b.add_argument("--procs", type=int, default=1, help="species and class groups fitted in parallel processes")
     w = sub.add_parser("rows", help="plane_rows of every table under <out>/tables, once, for the fit stages' --plane-rows")
     w.add_argument("--out", required=True)
     w.add_argument("--skip", help="file of table names to leave out")

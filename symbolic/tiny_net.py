@@ -85,17 +85,33 @@ def table_plane_energy(args):
     return t["plane_energy"] if "plane_energy" in t.files else np.array("stored")
 
 
-def stage_law(args, log):
-    """One sum per group fitted on every shower, for draw.py's default; nothing is held out, so nothing is scored."""
+def law_group(job):
+    """One group's sum on every shower -> (group, planes, validation error, constants); torch on `threads` threads."""
+    args, g, u, threads = job
     import torch
-    torch.set_num_threads(args.workers)
+    torch.set_num_threads(threads)
+    d = energy_sr.group_data(args, g)
+    best = fit_rows(d, np.ones(len(d["fold"]), bool), u, 2, args)
+    return g, len(d["fold"]), best[0], best[2]
+
+
+def stage_law(args, log):
+    """One sum per group fitted on every shower, for draw.py's default; nothing is held out, so nothing is scored.
+    --procs > 1: the groups in parallel processes, the --workers threads shared among them."""
     u = args.terms[0]
     law = {"form": np.array("tanh"), "plane_energy": table_plane_energy(args)}
-    for g in times_sr.all_groups():
-        d = energy_sr.group_data(args, g)
-        best = fit_rows(d, np.ones(len(d["fold"]), bool), u, 2, args)
-        law[g.replace(" ", ".")] = best[2]
-        log.info("%-18s planes %d validation error %.4f", g, len(d["fold"]), best[0])
+    groups = times_sr.all_groups()
+    if args.procs > 1:
+        import multiprocessing
+        procs = min(args.procs, len(groups))
+        jobs = [(args, g, u, max(1, args.workers // procs)) for g in groups]
+        with multiprocessing.get_context("spawn").Pool(procs) as pool:
+            fitted = pool.map(law_group, jobs, chunksize=1)
+    else:
+        fitted = [law_group((args, g, u, args.workers)) for g in groups]
+    for g, planes, err, theta in fitted:
+        law[g.replace(" ", ".")] = theta
+        log.info("%-18s planes %d validation error %.4f", g, planes, err)
     np.savez(os.path.join(args.out, args.name, energy_sr.LAW), **law)
     return {"terms": u, "numbers": numbers(u) * len(times_sr.all_groups())}
 
@@ -141,6 +157,7 @@ def main():
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--save", action="store_true", help="per U and fold, the constants for draw.py --energy-law")
     ap.add_argument("--law", action="store_true", help="instead: the first --terms fitted on every shower, for draw.py's default")
+    ap.add_argument("--procs", type=int, default=1, help="--law: groups fitted in parallel processes")
     args = ap.parse_args()
     run, log = logs.start(args.name, args)
     logs.save(run, (stage_law if args.law else stage_fit)(args, log), args, log)
