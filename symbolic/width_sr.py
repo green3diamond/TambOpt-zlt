@@ -215,6 +215,8 @@ def stage_law(args, log):
         res["groups"][g] = dict(zip(("B", "C", "A", "D", "E", "F", "a", "b", "rho"), laws[g.replace(" ", ".")].tolist()))
         log.info("%-18s %s | sd planes 1 / 12 / 24: %s", g, " ".join(f"{n} {v:.3f}" for n, v in res["groups"][g].items()),
                  np.round(np.exp(a + b * np.log([1, 12, 24])), 3).tolist())
+    t = np.load(os.path.join(args.out, args.table))
+    laws["plane_energy"] = t["plane_energy"] if "plane_energy" in t.files else np.array("stored")
     np.savez(os.path.join(args.out, args.name, LAW), **laws)
     return res
 
@@ -275,13 +277,14 @@ def stage_table(args, log):
     with open(fit) as h:
         if sorted(json.load(h)["showers"]) != [os.path.basename(f) for f in files]:
             raise ValueError(f"the showers differ from those of the rings law in {fit}")
-    tabs = [dict(np.load(f)) for f in files]
-    log.info("%d shower tables", len(tabs))
-    log10e = np.array([float(t["log10E"]) for t in tabs])
-    cz = np.array([float(t["direction"][2]) for t in tabs])
+    rows, log10e, direction = particles.load_rows(files, args.plane_energy, args.plane_rows)
+    log.info("%d shower tables", len(files))
+    cz = direction[:, 2].astype(float)
     X = atmosphere.plane_depths(np.degrees(np.arccos(cz)), particles.N_PLANE)
-    laws, out = np.load(os.path.join(args.out, args.laws)), {}
-    for s, r in particles.plane_rows(tabs).items():
+    laws, out = np.load(os.path.join(args.out, args.laws)), {"plane_energy": np.array(args.plane_energy)}
+    if (str(laws["plane_energy"]) if "plane_energy" in laws.files else "stored") != args.plane_energy:
+        raise ValueError(f"the rings law in {args.laws} was fitted on another plane energy than {args.plane_energy}")
+    for s, r in rows.items():
         test = particles.split_showers(r["i"], r["cls"], log10e)
         for cn in CLASSES:
             m = r["cls"] == cn
@@ -343,6 +346,9 @@ def main():
     ap.add_argument("--table", default=TABLE, help="table file under --out")
     ap.add_argument("--laws", default=LAWS, help="table stage: rings law, relative to --out")
     ap.add_argument("--skip", help="table stage: file of table names to leave out")
+    ap.add_argument("--plane-energy", choices=("stored", "total"), default="stored",
+                    help="table/law stage: plane energy behind the inputs (particles.plane_rows)")
+    ap.add_argument("--plane-rows", help="table/law stage: plane_rows file from particles.py rows, instead of the tables")
     ap.add_argument("--group", help="search stage")
     ap.add_argument("--fold", type=int, help="search stage")
     ap.add_argument("--iterations", type=int, default=N_ITER)

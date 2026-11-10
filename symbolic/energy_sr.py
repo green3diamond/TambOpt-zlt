@@ -123,11 +123,12 @@ def stage_table(args, log):
     for f in (0, 1):
         with open(os.path.join(args.out, f"skip_fold{f}.txt")) as h:
             fold_of.update({n: f for n in h.read().split()})
-    tabs = [dict(np.load(f)) for f in files]
     shower_fold = np.array([fold_of.get(os.path.basename(f), -1) for f in files])
     laws = {f: np.load(os.path.join(args.out, f"fold{f}", "particle_laws.npz")) for f in (0, 1)}
-    out = {}
-    for s, r in particles.plane_rows(tabs).items():
+    if any((str(z["plane_energy"]) if "plane_energy" in z.files else "stored") != args.plane_energy for z in laws.values()):
+        raise ValueError(f"the fold laws were fitted on another plane energy than {args.plane_energy}")
+    out = {"plane_energy": np.array(args.plane_energy)}
+    for s, r in particles.load_rows(files, args.plane_energy, args.plane_rows)[0].items():
         y = particles.targets(r)["mean_energy"][1]
         for cn in rings_sr.CLASSES:
             m = r["cls"] == cn
@@ -141,7 +142,7 @@ def stage_table(args, log):
                         f"{key}.y": y[m], f"{key}.ref": ref, f"{key}.shower": r["i"][m]})
             log.info("%-8s %-8s planes %4d judged %4d", s, cn, m.sum(), (fold >= 0).sum())
     np.savez(os.path.join(args.out, TABLE), **out)
-    return {"groups": len(out) // 6}
+    return {"groups": (len(out) - 1) // 6}
 
 
 def stage_fit(args, log):
@@ -228,6 +229,9 @@ def main():
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--form", choices=tuple(FORMS), help="law stage")
     ap.add_argument("--skip", help="law stage: file listing the showers left out")
+    ap.add_argument("--plane-energy", choices=("stored", "total"), default="stored",
+                    help="table/law stage: plane energy behind the inputs (particles.plane_rows)")
+    ap.add_argument("--plane-rows", help="table/law stage: plane_rows file from particles.py rows, instead of the tables")
     args = ap.parse_args()
     if args.stage == "search":
         stage_search(args)

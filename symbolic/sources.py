@@ -12,6 +12,8 @@ LAB = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone"
 CORSIKA_DIR = f"{LAB}/hhanif/tambo_simulations_for_training/h5_files_v3"
 CORSIKA_NAME = {"electron": "electrons", "muon": "muons", "photon": "photons"}
 CAP = {"electron": 4096, "muon": 25088, "photon": 8064}       # cells kept per shower by the preprocessing
+CAP_NEW = {"electron": 2000, "muon": 28000, "photon": 6000}   # the per-simulation preprocessing of the v2 and 150k runs
+CAPS = {"old": CAP, "new": CAP_NEW}
 
 SRC = f"{LAB}/jagarwal/data_lane_src"
 CODE = {"repo": "TAMBO-opt-fork", "commit": "1fafe7eeeabbe1d866b2c2ced22b8b06bce8d6e3",
@@ -21,7 +23,7 @@ WEIGHTS_MD5 = {"electron": "6d48b593fe", "muon": "ed0c4c9f97", "photon": "a479c6
 STAGE0 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "scripts", "00_generate_data_dual_species.py")
 
-if tuple(CAP) != tuple(SPECIES_NAMES):
+if tuple(CAP) != tuple(SPECIES_NAMES) or tuple(CAP_NEW) != tuple(SPECIES_NAMES):
     raise RuntimeError(f"species order {tuple(CAP)} differs from constants {SPECIES_NAMES}")
 
 

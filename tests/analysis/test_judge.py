@@ -62,6 +62,52 @@ def test_per_plane_sees_plane_order_the_pooled_distance_misses():
     assert judge.per_plane(a, a) == 0.0
 
 
+def test_without_a_chain_the_symbolic_side_is_scored_and_only_reported():
+    rng = np.random.default_rng(1)
+    dirs = toy_dirs(rng, N)
+    rows = np.repeat(np.arange(N), M)
+    target = judge.observables(toy_clouds(rng, dirs), dirs, np.arange(N))
+    good = judge.observables(toy_clouds(rng, dirs[rows]), dirs, rows)
+    r = judge.score(target["abs_t1"], good["abs_t1"], None, np.arange(N), rng, n_boot=50)
+    assert "neural chain" not in r and r["symbolic"] <= 3 * r["floor symbolic"], r
+    assert judge.verdict(r, "abs_t1") == "reported"
+
+
+def toy_h5(folder, name, cells, total, d, cap):
+    import h5py
+    from symbolic import sources
+    os.makedirs(folder, exist_ok=True)
+    for s in sources.CAP_NEW:
+        with h5py.File(os.path.join(folder, f"{name}_{sources.CORSIKA_NAME[s]}.h5"), "w") as f:
+            f.attrs["nmax"] = cap if cap else sources.CAP_NEW[s]
+            v = f.create_dataset("showers", (1,), dtype=h5py.vlen_dtype(np.float32))
+            v[0] = cells.astype(np.float32).ravel()
+            f["num_points"] = np.array([len(cells)])
+            f["directions"] = np.array([d], np.float32)
+            f.create_group("plane_stats")["energy"] = total.astype(np.float32)
+
+
+def test_h5_truth_reads_stored_cells_and_refuses_inconsistent_files():
+    import tempfile
+    d = np.array([0.0, 0.6, 0.8])
+    cells = np.array([[10.0, 20.0, 3, 5.0, 1e-6], [0.0, 0.0, 3, 2.0, 1e-6], [5.0, 5.0, 7, 1.0, 2e-6]])
+    total = np.zeros(24)
+    total[3], total[7] = 8.0, 1.0
+    with tempfile.TemporaryDirectory() as tmp:
+        prim = {"sims": np.array([os.path.join(tmp, "a")]), "names": np.array(["a"]), "dirs": np.array([d])}
+        toy_h5(prim["sims"][0], "a", cells, total, d, None)
+        out = judge.read_truth_h5(prim, [0])
+        assert all(np.allclose(out[s][0], cells, atol=1e-6) for s in out)
+        for bad in (dict(total=total * 0.5), dict(cap=4096), dict(d=np.array([0.6, 0.0, 0.8]))):
+            sim = os.path.join(tmp, "b" + str(len(os.listdir(tmp))))
+            toy_h5(sim, "b", **{**dict(cells=cells, total=total, d=d, cap=None), **bad})
+            try:
+                judge.read_truth_h5({**prim, "sims": np.array([sim])}, [0])
+            except ValueError:
+                continue
+            raise AssertionError(f"accepted an inconsistent file: {list(bad)}")
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

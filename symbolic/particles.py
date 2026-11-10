@@ -57,6 +57,8 @@ N_RING = len(EDGES) - 1
 HIST = np.linspace(-6.0, 4.0, 101)                           # log10(E / ring mean); outside values go to the end bins
 PDG = {"electron": (11, -11), "muon": (13, -13), "photon": (22,)}
 CLASS = {"pdg_11": "EM", "pdg_211": "hadronic"}
+PRIMARY_CLASS = {"pdg_11": "EM", "pdg_-11": "EM", "pdg_111": "EM", "pdg_211": "hadronic", "pdg_-211": "hadronic"}
+# classes of the summary tables, as the neural surrogate's training file pools its primaries
 E_TOL = 1e-4                                                 # relative, float32 sums in the preprocessing
 OUTER = 16                                                   # rings inside 1100 m: the rings of the 2.3 ring law
 RING_LAWS = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic_trim/radial_bins"
@@ -173,6 +175,52 @@ def stage_tables(sim, out):
     np.savez_compressed(os.path.join(out, "tables", f"{cls}_{name}.npz"), **save)
 
 
+def read_summary(sim, need_done=True):
+    """Table of one shower from the h5 plane_stats alone (no particles): what the laws fitted from ring summaries
+    need. -> (table, None), or (None, reason) when the shower is unusable. need_done: require the .done marker the
+    150k runs write (the v2 runs have none)."""
+    if need_done and not os.path.exists(os.path.join(sim, ".done")):
+        return None, "no .done"
+    tab = {}
+    for s in PDG:
+        h5 = glob.glob(os.path.join(sim, f"*_{sources.CORSIKA_NAME[s]}.h5"))
+        if len(h5) != 1:
+            return None, f"{len(h5)} {s} h5 files"
+        try:
+            with h5py.File(h5[0], "r") as f:
+                d, energy = f["directions"][0].astype(np.float64), float(f["energies"][0])
+                st = {k: f["plane_stats"][k][:] for k in ("energy", "ring_energy", "ring_count", "ring_tmin", "ring_tmean")}
+        except (OSError, KeyError) as exc:
+            return None, f"{s} unreadable: {exc!r}"[:200]
+        if not all(np.isfinite(st[k]).all() for k in ("energy", "ring_energy", "ring_count")):
+            return None, f"{s} non-finite energies or counts"
+        tab.update({f"{s}.E_total": st["energy"].astype(np.float64), f"{s}.ring_energy": st["ring_energy"].astype(np.float64),
+                    f"{s}.ring_count": st["ring_count"].astype(np.float64), f"{s}.ring_tmin": st["ring_tmin"],
+                    f"{s}.ring_tmean": st["ring_tmean"]})
+    tab.update({"direction": d / np.linalg.norm(d), "log10E": np.log10(energy)})
+    return tab, None
+
+
+def stage_summary(sims, out):
+    """Summary tables of a list of shower directories -> <out>/tables/<class>_<sim>.npz (plane_rows reads them like
+    stage A's, without the kept, stored and spread fields); one JSON line per skipped shower, then a count."""
+    os.makedirs(os.path.join(out, "tables"), exist_ok=True)
+    git = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    done = 0
+    for sim in sims:
+        sim = os.path.normpath(sim)
+        primary = next(p for p in sim.split(os.sep) if p.startswith("pdg_"))
+        tab, why = read_summary(sim)
+        if tab is None:
+            print(json.dumps({"sim": sim, "skipped": why}), flush=True)
+            continue
+        name = os.path.basename(sim)
+        np.savez_compressed(os.path.join(out, "tables", f"{PRIMARY_CLASS[primary]}_{name}.npz"), git=git, sim=sim,
+                            primary=primary, **{"class": PRIMARY_CLASS[primary]}, edges=EDGES, **tab)
+        done += 1
+    print(json.dumps({"tables": done, "of": len(sims)}), flush=True)
+
+
 def stage_truth(sim, out):
     """The true stored cells of one shower (all species, old caps) -> <out>/truth/<class>_<sim>.npz (judge.py)."""
     cls = CLASS[os.path.relpath(sim, RAW).split(os.sep)[0]]
@@ -186,8 +234,17 @@ def stage_truth(sim, out):
     print(name, cls, "done", flush=True)
 
 
-def plane_rows(tabs):
-    """Per species: one row per usable plane (shower i, class, plane k, features x, its tables)."""
+PLANE_ENERGY = ("stored", "total")
+
+
+def plane_rows(tabs, energy="stored"):
+    """Per species: one row per usable plane (shower i, class, plane k, features x, its tables). energy: the plane
+    energy behind the inputs (age from the Xmax fitted to it, ln plane energy), stored after the cap or total (every
+    particle, as plane_stats). x_stored, the inputs from the stored energy, is kept for the kept and stored laws when
+    the tables have it. Rows: planes with >= annuli.MIN_CELLS particles and stored energy (total energy if the tables
+    carry no stored energy)."""
+    if energy not in PLANE_ENERGY:
+        raise ValueError(f"plane energy {energy!r} not in {PLANE_ENERGY}")
     from symbolic import annuli, atmosphere, longitudinal
     rows = {s: [] for s in PDG}
     k = np.arange(N_PLANE)
@@ -196,20 +253,77 @@ def plane_rows(tabs):
         X = atmosphere.plane_depths(np.degrees(np.arccos([cz])), N_PLANE)[0]
         r_ref = np.array([lateral.r_m_ref(p, cz) for p in k], np.float64)
         t_light = (k + 1) * atmosphere.PLANE_SPACING / annuli.C_LIGHT
-        for s in PDG:
-            E = t[f"{s}.E_stored"]
+        def inputs(E):
             fit = longitudinal.fit_one(X, longitudinal.log_energy(E))
             age = longitudinal.age(X, fit[1][0] if fit else np.nan)
+            return annuli.features(age, np.full(N_PLANE, float(t["log10E"])), np.full(N_PLANE, cz),
+                                   np.log(np.where(E > 0, E, 1.0)), r_ref)
+
+        for s in PDG:
+            has_stored = f"{s}.E_stored" in t
+            E = t[f"{s}.E_stored"] if has_stored else t[f"{s}.E_total"]
             ok = (t[f"{s}.ring_count"].sum(1) >= annuli.MIN_CELLS) & (E > 0)
-            x = annuli.features(age, np.full(N_PLANE, float(t["log10E"])), np.full(N_PLANE, cz),
-                                np.log(np.where(E > 0, E, 1.0)), r_ref)
             lead, mean = ((np.maximum(t[f"{s}.ring_{w}"] - t_light[:, None], 0.0) * 1e9) for w in ("tmin", "tmean"))
-            r = {"i": np.full(N_PLANE, i), "cls": np.full(N_PLANE, str(t["class"])), "k": k, "x": x,
-                 "lead": np.log10(1 + lead), "delay": np.log10(1 + mean),
+            r = {"i": np.full(N_PLANE, i), "cls": np.full(N_PLANE, str(t["class"])), "k": k,
+                 "x": inputs(t[f"{s}.E_{energy}"]), "lead": np.log10(1 + lead), "delay": np.log10(1 + mean),
                  **{w: t[f"{s}.{w}"] for w in ("E_total", "E_cut", "E_stored", "ring_energy", "ring_count",
-                                               "ring_energy_cut", "hist")}}
+                                               "ring_energy_cut", "hist") if f"{s}.{w}" in t}}
+            if has_stored:
+                r["x_stored"] = r["x"] if energy == "stored" else inputs(t[f"{s}.E_stored"])
             rows[s].append({w: v[ok] for w, v in r.items()})
     return {s: {w: np.concatenate([r[w] for r in rs]) for w in rs[0]} for s, rs in rows.items()}
+
+
+def _rows_chunk(job):
+    """Pool worker: plane_rows of a chunk of table files, shower index shifted to the chunk's offset."""
+    files, energy, offset = job
+    rows = plane_rows([dict(np.load(f)) for f in files], energy)
+    for r in rows.values():
+        r["i"] = r["i"] + offset
+    return rows
+
+
+def build_rows(files, energy, workers=1, chunk=200):
+    """plane_rows of every table file, built in parallel chunks; equal to plane_rows on all tables at once."""
+    from multiprocessing import Pool
+    jobs = [(files[a:a + chunk], energy, a) for a in range(0, len(files), chunk)]
+    with Pool(workers) as pool:
+        parts = pool.map(_rows_chunk, jobs)
+    return {s: {w: np.concatenate([p[s][w] for p in parts]) for w in parts[0][s]} for s in PDG}
+
+
+def stage_rows(args):
+    """plane_rows of every table under <out>/tables (minus --skip) -> <out>/plane_rows_<energy>.npz, with the shower
+    list, log10 E and direction, for the fit stages' --plane-rows."""
+    skip = set(open(args.skip).read().split()) if args.skip else set()
+    files = [f for f in sorted(glob.glob(os.path.join(args.out, "tables", "*.npz"))) if os.path.basename(f) not in skip]
+    rows = build_rows(files, args.plane_energy, args.workers)
+    meta = [np.load(f) for f in files]
+    path = os.path.join(args.out, f"plane_rows_{args.plane_energy}.npz")
+    np.savez(path, plane_energy=args.plane_energy, showers=np.array([os.path.basename(f) for f in files]),
+             log10E=np.array([float(t["log10E"]) for t in meta]), direction=np.array([t["direction"] for t in meta]),
+             **{f"{s}.{w}": v for s, r in rows.items() for w, v in r.items()})
+    print(json.dumps({"rows": path, "showers": len(files), "planes": {s: len(r["k"]) for s, r in rows.items()}}), flush=True)
+
+
+def load_rows(files, energy, rows=None):
+    """(plane_rows, log10 E per shower, direction per shower) of the table files: from the tables, or from a
+    stage_rows file, which must hold exactly these showers on this plane energy."""
+    if rows is None:
+        tabs = [dict(np.load(f)) for f in files]
+        return (plane_rows(tabs, energy), np.array([float(t["log10E"]) for t in tabs]),
+                np.array([t["direction"] for t in tabs]))
+    z = np.load(rows)
+    if str(z["plane_energy"]) != energy:
+        raise ValueError(f"{rows} holds plane energy {z['plane_energy']}, not {energy}")
+    if z["showers"].tolist() != [os.path.basename(f) for f in files]:
+        raise ValueError(f"{rows} holds other showers than the tables of this stage")
+    data = {s: {} for s in PDG}
+    for key in z.files:
+        s, _, w = key.partition(".")
+        if s in data:
+            data[s][w] = z[key]
+    return data, z["log10E"], z["direction"]
 
 
 def targets(r):
@@ -218,8 +332,9 @@ def targets(r):
     with np.errstate(divide="ignore", invalid="ignore"):
         mean_e = np.log(e / n)
     every = np.ones(len(e), bool)
-    return {"kept": ("share", r["E_cut"] / r["E_total"], every),
-            "stored": ("share", r["E_stored"] / r["E_total"], every),
+    shares = {w: ("share", r[f"E_{q}"] / r["E_total"], every) for w, q in (("kept", "cut"), ("stored", "stored"))
+              if f"E_{q}" in r}
+    return {**shares,
             "rings": ("split", e / r["E_total"][:, None], every),
             "mean_energy": ("ring", mean_e, (n > 0) & np.isfinite(mean_e)),
             "lead": ("ring", r["lead"], np.isfinite(r["lead"]) & (n > 0)),
@@ -385,7 +500,8 @@ def ring_check(x, r, B):
     from scipy.special import softmax
     law = softmax(x @ B, axis=1)
     out, pooled = {}, {}
-    for name, e in (("before cut", r["ring_energy"][:, :OUTER]), ("after cut", r["ring_energy_cut"][:, :OUTER])):
+    sets = [("before cut", r["ring_energy"])] + ([("after cut", r["ring_energy_cut"])] if "ring_energy_cut" in r else [])
+    for name, e in ((n, v[:, :OUTER]) for n, v in sets):
         tot = e.sum(1)
         q = e[tot > 0] / tot[tot > 0, None]
         kl = np.sum(q * (np.log(q + SHARE_EPS) - np.log(law[tot > 0] + SHARE_EPS)), 1)
@@ -490,7 +606,8 @@ def fig_rings(pooled):
         for name, col, ls, label in (("before cut", "black", "-", "data, before cut"),
                                      ("after cut", "#2a78d6", "--", "data, after cut"), ("law", "#eb6834", "-", "2.3 law"),
                                      ("v2 law", "#1b9e77", ":", "v2 ring law")):
-            ax.step(lo + 1, p[name], where="post", color=col, ls=ls, lw=1.4, label=label)
+            if name in p:
+                ax.step(lo + 1, p[name], where="post", color=col, ls=ls, lw=1.4, label=label)
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_title(f"{s}s, {cn}", fontsize=10)
@@ -530,10 +647,8 @@ def stage_fit(out, args, log):
     from symbolic import logs
     skip = set(open(args.skip).read().split()) if args.skip else set()
     files = [f for f in sorted(glob.glob(os.path.join(args.out, "tables", "*.npz"))) if os.path.basename(f) not in skip]
-    tabs = [dict(np.load(f)) for f in files]
-    log.info("%d shower tables (%d skipped)", len(tabs), len(skip))
-    log10e = np.array([float(t["log10E"]) for t in tabs])
-    data = plane_rows(tabs)
+    data, log10e, _ = load_rows(files, args.plane_energy, args.plane_rows)
+    log.info("%d shower tables (%d skipped)%s", len(files), len(skip), f", rows from {args.plane_rows}" if args.plane_rows else "")
     res, laws, pooled, spreads = {"rule": __doc__.split("Rule")[1].strip(), "showers": [os.path.basename(f) for f in files],
                                   "c0": {}, "laws": {}, "spread": {}}, {}, {}, {}
     for s, r in data.items():
@@ -545,20 +660,23 @@ def stage_fit(out, args, log):
             res["c0"][f"{s} {cn}"], pooled[(s, cn)] = ring_check(r["x"][m], {w: v[m] for w, v in r.items()}, B)
             c0 = res["c0"][f"{s} {cn}"]
             log.info("C0 %-8s %-8s planes %4d | median KL law: before cut %.4f after cut %.4f", s, cn, m.sum(),
-                     c0["median KL data || law, before cut"], c0["median KL data || law, after cut"])
-            mean = r["ring_energy"][m] / np.maximum(r["ring_count"][m], 1)
-            laws[f"{s}.{cn}.spread"], spreads[(s, cn)] = spread(r["hist"][m], mean, E_MIN[s])
-            res["spread"][f"{s} {cn}"] = {f"{EDGES[j]:g}-{EDGES[j + 1]:g} m": {w: v for w, v in q.items()
-                                                                              if w not in ("data", "law")}
-                                          for j, q in spreads[(s, cn)].items()}
-            w1 = [q["W1 data vs law"] for q in spreads[(s, cn)].values()]
-            log.info("spread %-8s %-8s Burr XII on %d rings | W1 in log10 E data vs law median %.4f max %.4f | c, k at "
-                     "%s", s, cn, len(w1), np.median(w1), np.max(w1), " ".join(
-                         f"{EDGES[j]:g}m {laws[f'{s}.{cn}.spread'][j][0]:.2f},{laws[f'{s}.{cn}.spread'][j][1]:.2f}"
-                         for j in SPREAD_RINGS))
+                     c0["median KL data || law, before cut"], c0.get("median KL data || law, after cut", np.nan))
+            if "hist" in r:
+                mean = r["ring_energy"][m] / np.maximum(r["ring_count"][m], 1)
+                laws[f"{s}.{cn}.spread"], spreads[(s, cn)] = spread(r["hist"][m], mean, E_MIN[s])
+                res["spread"][f"{s} {cn}"] = {f"{EDGES[j]:g}-{EDGES[j + 1]:g} m": {w: v for w, v in q.items()
+                                                                                  if w not in ("data", "law")}
+                                              for j, q in spreads[(s, cn)].items()}
+                w1 = [q["W1 data vs law"] for q in spreads[(s, cn)].values()]
+                log.info("spread %-8s %-8s Burr XII on %d rings | W1 in log10 E data vs law median %.4f max %.4f | c, k "
+                         "at %s", s, cn, len(w1), np.median(w1), np.max(w1), " ".join(
+                             f"{EDGES[j]:g}m {laws[f'{s}.{cn}.spread'][j][0]:.2f},{laws[f'{s}.{cn}.spread'][j][1]:.2f}"
+                             for j in SPREAD_RINGS))
+            else:
+                log.info("spread %-8s %-8s no particle histograms in the tables: not fitted", s, cn)
             for name, (kind, y, ok) in tg.items():
                 okm = ok & (m if ok.ndim == 1 else m[:, None])
-                rr, Bl = run_law(kind, r["x"], y, okm, test, r["i"])
+                rr, Bl = run_law(kind, r["x_stored"] if kind == "share" else r["x"], y, okm, test, r["i"])
                 laws[f"{s}.{cn}.{name}"] = Bl
                 res["laws"][f"{s} {cn} {name}"] = rr
                 if name == "rings":
@@ -585,9 +703,11 @@ def stage_fit(out, args, log):
                     log.info("law %-8s %-8s %-12s rings pass %d / judged %d (not judged %d) | worst R2 %.3f", s, cn,
                              name, sum(q is True for q in v), sum(q is not None for q in v), sum(q is None for q in v),
                              min((q["R2"] for q in rr.values() if q["pass"] is not None), default=np.nan))
-    np.savez(os.path.join(out, "particle_laws.npz"), edges=EDGES, features="annuli.features", **laws)
+    np.savez(os.path.join(out, "particle_laws.npz"), edges=EDGES, features="annuli.features",
+             plane_energy=args.plane_energy, **laws)
     logs.save_fig(fig_rings(pooled), out, "c0_ring_law", log)
-    logs.save_fig(fig_spread(spreads), out, "energy_spread", log)
+    if spreads:
+        logs.save_fig(fig_spread(spreads), out, "energy_spread", log)
     return res
 
 
@@ -600,13 +720,31 @@ def main():
     t = sub.add_parser("truth", help="true stored cells, one shower directory per call")
     t.add_argument("sim")
     t.add_argument("--out", default=FOLDER)
+    m = sub.add_parser("summary", help="summary tables (plane_stats only) of the shower directories listed in a file")
+    m.add_argument("--list", required=True, help="file, one shower directory per line")
+    m.add_argument("--out", required=True)
+    m.add_argument("--task", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", 0)))
+    m.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     b = sub.add_parser("fit", help="stage B, laws from every table under <out>/tables")
     b.add_argument("--out", default=FOLDER)
     b.add_argument("--name", default="fit", help="output folder under <out>")
     b.add_argument("--skip", help="file of table names to leave out of the fit")
+    b.add_argument("--plane-energy", choices=PLANE_ENERGY, default="stored",
+                   help="plane energy behind the inputs of every law but kept and stored (plane_rows)")
+    b.add_argument("--plane-rows", help="plane_rows file from the rows stage, instead of rebuilding them from the tables")
+    w = sub.add_parser("rows", help="plane_rows of every table under <out>/tables, once, for the fit stages' --plane-rows")
+    w.add_argument("--out", required=True)
+    w.add_argument("--skip", help="file of table names to leave out")
+    w.add_argument("--plane-energy", choices=PLANE_ENERGY, default="stored")
+    w.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     args = ap.parse_args()
-    if args.stage == "tables":
+    if args.stage == "rows":
+        stage_rows(args)
+    elif args.stage == "tables":
         stage_tables(args.sim, args.out)
+    elif args.stage == "summary":
+        sims = open(args.list).read().split()
+        stage_summary(sims[args.task::args.tasks], args.out)
     elif args.stage == "truth":
         stage_truth(args.sim, args.out)
     else:

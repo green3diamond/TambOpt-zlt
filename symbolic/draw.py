@@ -14,8 +14,11 @@ energy, inputs annuli.features; then, with the laws of particles.py (fitted on t
                              edge), uniform azimuth
   6. times                   axis light time + lead + Exp(mean delay - lead) (lead and delay laws)
   7. render                  the preprocessing with the OLD caps (render.render, sources.CAP); each plane's stored
-                             energy rescaled to E_k
-Gate: every drawn shower's stored plane energies equal the sampled E_k.
+                             energy rescaled to E_k. With --caps new: the caps of the v2 and 150k per-simulation
+                             preprocessing (sources.CAP_NEW) and no rescale, the render decides what is stored, as
+                             for CORSIKA (E_k then only sets the energy before the cut)
+Gate: every drawn shower's stored plane energies equal the sampled E_k (old caps), or stay at or below the drawn
+energy before the cut (new caps).
 Stages: energies (sample once and save), draw (task i of N takes every N-th primary, workers within a task, one seed
 per primary so the split does not matter), merge (padded clouds.npz with the suite's keys).
 """
@@ -60,10 +63,16 @@ def load_laws(root, path=LAWS):
     for s in SPECIES_NAMES:
         for cn in planes.CLASS.values():
             law = {w: z[f"{s}.{cn}.{w}"] for w in LAW_NAMES}
+            law["plane_energy"] = fitted_on(z)
             for w in ("mean_energy", "lead", "delay"):
                 law[w] = fill_rings(law[w])
             out[(s, cn)] = law
     return out
+
+
+def fitted_on(z):
+    """The plane energy a law file's inputs were fitted on (files from before the choice: stored)."""
+    return str(z["plane_energy"]) if "plane_energy" in z.files else "stored"
 
 
 def width_law_path(laws, width_law):
@@ -111,10 +120,10 @@ def ring_means(law, x, k):
     return law["mean_energy"] @ x
 
 
-def plane_particles(rng, k, x, e_k, law, s, log_lam=None):
+def plane_particles(rng, k, x, e_k, law, s, log_lam=None, x_stored=None):
     """Particles (n, 5) [plane k, across, along, energy, time] of one plane before the preprocessing; log_lam: the
-    plane's log10 width, None for the rings law unstretched."""
-    e_tot = e_k / softmax(x @ law["stored"])[0]
+    plane's log10 width, None for the rings law unstretched; x_stored: the inputs of the stored law if not x."""
+    e_tot = e_k / softmax((x if x_stored is None else x_stored) @ law["stored"])[0]
     shares = softmax(x @ law["rings"])
     shares = shares if log_lam is None else particles.stretch(shares, log_lam)
     lead_y, delay_y = ring_times(law, x, k)
@@ -142,22 +151,39 @@ def ring_particles(rng, k, e_ring, mean, spread, e_min, lead, tau):
     return np.column_stack([np.full(len(j), k), r * np.cos(phi), r * np.sin(phi), e, t])
 
 
+def plane_inputs(X, xmax, l, u, e_k, ks, law):
+    """Inputs of the stored law (from the stored plane energies e_k) and of every other law (from the plane energy
+    the laws were fitted on: stored, or total = stored / stored share)."""
+    age, r_ref = longitudinal.age(X, xmax), np.array([lateral.r_m_ref(k, u) for k in ks])
+    feats = lambda e: annuli.features(age, np.full(len(ks), l), np.full(len(ks), u), np.log(e), r_ref)
+    x_s = feats(e_k)
+    if law["plane_energy"] == "stored":
+        return x_s, x_s
+    return x_s, feats(e_k / softmax(x_s @ law["stored"], axis=1)[:, 0])
+
+
 def shower(job):
     """Stored cells per species of one primary -> (index, {species: cells}, seconds, particles drawn)."""
-    i, seed, l, u, cn, X, d, E, xmax, laws = job
+    i, seed, l, u, cn, X, d, E, xmax, laws, *rest = job
+    caps = rest[0] if rest else "old"
     rng = np.random.default_rng([seed, i])
     t0, out, n_part = time.time(), {}, 0
     for s in SPECIES_NAMES:
         ks = np.nonzero(E[s] > 0)[0]
-        x = annuli.features(longitudinal.age(X[ks], xmax[s]), np.full(len(ks), l), np.full(len(ks), u),
-                            np.log(E[s][ks]), np.array([lateral.r_m_ref(k, u) for k in ks]))
         law, w = laws[(s, cn)], laws[(s, cn)]["along"]
+        x_s, x = plane_inputs(X[ks], xmax[s], l, u, E[s][ks], ks, law)
         ll = width_sr.law_mean(w, ks, x[:, 3], x[:, 1]) + width_sr.law_sd(w, ks) * sampler.ar1(1, N_PLANES, w[-1], rng)[0][ks]
-        p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a]) for a, k in enumerate(ks)]
+        p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a], x_stored=x_s[a]) for a, k in enumerate(ks)]
         p = np.concatenate(p) if p else np.zeros((0, 5))
         n_part += len(p)
-        cells = render.render(p, d, sources.CAP[s]) if len(p) else np.zeros((0, 5))
+        cells = render.render(p, d, sources.CAPS[caps][s]) if len(p) else np.zeros((0, 5))
         k = cells[:, 2].astype(int)
+        if caps == "new":
+            drawn = np.bincount(p[:, 0].astype(int), p[:, 3], N_PLANES) if len(p) else np.zeros(N_PLANES)
+            if (np.bincount(k, cells[:, 3], N_PLANES) > drawn * (1 + 1e-9) + 1e-9).any():
+                raise ValueError(f"primary {i} {s}: stored energy above the drawn energy")
+            out[s] = cells
+            continue
         stored = np.bincount(k, cells[:, 3], N_PLANES)
         scale = np.divide(E[s], stored, out=np.zeros(N_PLANES), where=stored > 0)
         cells[:, 3] *= scale[k]
@@ -210,18 +236,23 @@ def draw_laws(root, laws_path=LAWS, width_law=None, time_law=None, energy_law=No
     """The laws of every (species, class) with the width, time and mean energy laws the draw uses."""
     laws = load_laws(root, laws_path)
     z_w = np.load(os.path.join(root, width_law_path(laws_path, width_law)))
+    on = {"particle laws": next(iter(laws.values()))["plane_energy"], "width law": fitted_on(z_w)}
     for (s, cn), law in laws.items():
         law["along"] = z_w[f"{s}.{cn}"]
     time_law = time_law_path(laws_path, time_law)
     if time_law:
         z_t = np.load(os.path.join(root, time_law))
+        on["time law"] = fitted_on(z_t)
         for (s, cn), law in laws.items():
             law["time"] = {"form": str(z_t["form"]), **{w: z_t[f"{s}.{cn}.{w}"] for w in times_sr.TIMES}}
     energy_law = energy_law_path(laws_path, energy_law)
     if energy_law:
         z_e = np.load(os.path.join(root, energy_law))
+        on["energy law"] = fitted_on(z_e)
         for (s, cn), law in laws.items():
             law["energy"] = {"form": str(z_e["form"]), "theta": z_e[f"{s}.{cn}"]}
+    if len(set(on.values())) > 1:
+        raise ValueError(f"laws fitted on different plane energies: {on}")
     return laws
 
 
@@ -231,7 +262,7 @@ def stage_draw(out, args, log):
     mine = np.arange(len(z["rows"]))[args.task::args.tasks]
     jobs = [(i, args.seed, float(z["l"][i]), float(z["u"][i]), planes.CLASS[int(z["labels"][i])], z["X"][i],
              z["dirs"][i], {s: z[f"{s}.E"][i] for s in SPECIES_NAMES}, {s: float(z[f"{s}.xmax"][i]) for s in SPECIES_NAMES},
-             laws) for i in mine]
+             laws, args.caps) for i in mine]
     cells = {s: {} for s in SPECIES_NAMES}
     secs, n_part = [], []
     with Pool(args.workers) as pool:
@@ -291,6 +322,8 @@ def main():
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--clouds", default="clouds.npz", help="merge stage: output file name")
+    ap.add_argument("--caps", choices=("old", "new"), default="old",
+                    help="draw stage: render caps, old (h5_files_v3, rescaled to E_k) or new (v2 / 150k, no rescale)")
     ap.add_argument("--width-law", help="draw stage: width_sr.py law, relative to --out; required with a non-default --laws")
     ap.add_argument("--time-law", help="draw stage: times_sr.py law, relative to --out, or none for the ring-by-ring laws; required with a non-default --laws")
     ap.add_argument("--energy-law", help="draw stage: energy_sr.py or tiny_net.py law, relative to --out, or none for the ring-by-ring laws; required with a non-default --laws")

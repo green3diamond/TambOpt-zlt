@@ -187,6 +187,90 @@ def test_too_few_held_out_showers_are_not_judged():
     assert particles.run_law("ring", x, y[:, None], np.ones((len(y), 1), bool), test, unit)[0]["ring 0"]["pass"] is None
 
 
+def toy_table(rng, stored=True):
+    """One shower's table: a smooth profile along the shower, every ring filled, stored 90% of total if kept."""
+    k = np.arange(particles.N_PLANE)
+    e_tot = 1e5 * np.exp(-0.5 * ((k - 10) / 4.0) ** 2) + 1.0
+    t = {"direction": np.array([0.0, 0.6, 0.8]), "log10E": 5.8, "class": "EM"}
+    for s in particles.PDG:
+        t[f"{s}.E_total"] = e_tot
+        t[f"{s}.ring_energy"] = np.outer(e_tot, np.full(particles.N_RING, 1 / particles.N_RING))
+        t[f"{s}.ring_count"] = np.full((particles.N_PLANE, particles.N_RING), 50.0)
+        t[f"{s}.ring_tmin"] = t[f"{s}.ring_tmean"] = np.zeros((particles.N_PLANE, particles.N_RING))
+        if stored:
+            t.update({f"{s}.E_stored": 0.9 * e_tot, f"{s}.E_cut": 0.95 * e_tot,
+                      f"{s}.ring_energy_cut": 0.95 * t[f"{s}.ring_energy"],
+                      f"{s}.hist": np.ones((particles.N_PLANE, particles.N_RING, len(particles.HIST) - 1))})
+    return t
+
+
+def test_plane_rows_total_energy_moves_only_the_plane_energy_input():
+    t = toy_table(np.random.default_rng(0))
+    a, b = particles.plane_rows([t], "stored")["electron"], particles.plane_rows([t], "total")["electron"]
+    assert np.array_equal(a["k"], b["k"])                                          # same planes
+    assert np.allclose(b["x"][:, 6] - a["x"][:, 6], -np.log(0.9))                  # ln plane energy: total = stored / 0.9
+    assert np.allclose(np.delete(b["x"], 6, 1), np.delete(a["x"], 6, 1), atol=1e-6)  # age: same shape, same Xmax
+    assert np.array_equal(b["x_stored"], a["x"])                                   # kept and stored laws keep stored inputs
+
+
+def test_plane_rows_without_stored_energy_has_no_share_targets():
+    r = particles.plane_rows([toy_table(np.random.default_rng(0), stored=False)], "total")["electron"]
+    assert "x_stored" not in r and len(r["k"]) == particles.N_PLANE
+    assert set(particles.targets(r)) == {"rings", "mean_energy", "lead", "delay"}
+
+
+def summary_dir(tmp, n=5):
+    """n summary tables (no stored energy) of different energies and zeniths under <tmp>/tables."""
+    os.makedirs(os.path.join(tmp, "tables"))
+    for j in range(n):
+        t = toy_table(np.random.default_rng(j), stored=False)
+        c = 0.5 + 0.1 * j
+        t["direction"], t["log10E"] = np.array([0.0, np.sqrt(1 - c * c), c]), 5.0 + 0.3 * j
+        t["class"] = ("EM", "hadronic")[j % 2]
+        for s in particles.PDG:
+            t[f"{s}.E_total"] = t[f"{s}.E_total"] * (1 + j)
+            t[f"{s}.ring_energy"] = t[f"{s}.ring_energy"] * (1 + j)
+        np.savez(os.path.join(tmp, "tables", f"t{j}.npz"), **t)
+    return sorted(os.path.join(tmp, "tables", f) for f in os.listdir(os.path.join(tmp, "tables")))
+
+
+def same(a, b):
+    """Bitwise equal, NaN equal to NaN for float arrays."""
+    return np.array_equal(a, b, equal_nan=a.dtype.kind == "f")
+
+
+def test_cached_rows_equal_plane_rows_on_all_tables():
+    import argparse
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        files = summary_dir(tmp)
+        direct = particles.plane_rows([dict(np.load(f)) for f in files], "total")
+        chunked = particles.build_rows(files, "total", workers=2, chunk=2)    # chunks of 2, 2, 1 showers
+        particles.stage_rows(argparse.Namespace(out=tmp, skip=None, plane_energy="total", workers=2))
+        cached, log10e, direction = particles.load_rows(files, "total", os.path.join(tmp, "plane_rows_total.npz"))
+        for s in particles.PDG:
+            assert set(direct[s]) == set(chunked[s]) == set(cached[s])
+            for w in direct[s]:
+                assert same(direct[s][w], chunked[s][w]) and same(direct[s][w], cached[s][w]), (s, w)
+        assert np.array_equal(log10e, [float(np.load(f)["log10E"]) for f in files])
+        assert np.array_equal(direction, [np.load(f)["direction"] for f in files])
+
+
+def test_cached_rows_refuse_other_showers_or_energy():
+    import argparse
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        files = summary_dir(tmp, n=3)
+        particles.stage_rows(argparse.Namespace(out=tmp, skip=None, plane_energy="total", workers=1))
+        path = os.path.join(tmp, "plane_rows_total.npz")
+        for args in ((files[:2], "total"), (files, "stored")):
+            try:
+                particles.load_rows(*args, path)
+            except ValueError:
+                continue
+            raise AssertionError(f"accepted {args}")
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

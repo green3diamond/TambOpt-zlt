@@ -79,12 +79,18 @@ def fit_rows(d, rows, u, f, args):
     return min(fits, key=lambda q: q[0])
 
 
+def table_plane_energy(args):
+    """The plane energy behind energy_sr's table inputs, recorded with the law."""
+    t = np.load(os.path.join(args.out, energy_sr.TABLE))
+    return t["plane_energy"] if "plane_energy" in t.files else np.array("stored")
+
+
 def stage_law(args, log):
     """One sum per group fitted on every shower, for draw.py's default; nothing is held out, so nothing is scored."""
     import torch
     torch.set_num_threads(args.workers)
     u = args.terms[0]
-    law = {"form": np.array("tanh")}
+    law = {"form": np.array("tanh"), "plane_energy": table_plane_energy(args)}
     for g in times_sr.all_groups():
         d = energy_sr.group_data(args, g)
         best = fit_rows(d, np.ones(len(d["fold"]), bool), u, 2, args)
@@ -103,7 +109,7 @@ def stage_fit(args, log):
     scores, ratios = {}, {}
     for u in args.terms:
         scores[u] = {}
-        laws = {f: {"form": np.array("tanh")} for f in (0, 1)}
+        laws = {f: {"form": np.array("tanh"), "plane_energy": table_plane_energy(args)} for f in (0, 1)}
         for g, d in data.items():
             pred = np.full(d["y"].shape, np.nan)
             for f in (0, 1):

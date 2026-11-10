@@ -94,6 +94,36 @@ def test_width_law_must_come_with_non_default_laws():
     raise AssertionError("a fold's laws must not fall back to the default width law")
 
 
+def test_total_energy_inputs_divide_by_the_stored_share():
+    law = toy_law()
+    X, ks, e_k = np.linspace(300, 900, 3), np.array([4, 8, 12]), np.array([10.0, 100.0, 1000.0])
+    x_s, x_t = draw.plane_inputs(X, 600.0, 5.8, 0.8, e_k, ks, {**law, "plane_energy": "total"})
+    assert np.allclose(x_t[:, 6] - x_s[:, 6], -np.log(0.9))                       # total = stored / 0.9
+    assert np.allclose(np.delete(x_t, 6, 1), np.delete(x_s, 6, 1))
+    x_s2, x_2 = draw.plane_inputs(X, 600.0, 5.8, 0.8, e_k, ks, {**law, "plane_energy": "stored"})
+    assert np.array_equal(x_2, x_s2) and np.array_equal(x_s2, x_s)
+    p = draw.plane_particles(np.random.default_rng(1), 6, x_t[0], 900.0, law, "electron", x_stored=x_s[0])
+    assert np.isclose(p[:, 3].sum(), 900.0 / 0.9, rtol=1e-6)                       # stored law reads x_stored
+
+
+def test_new_caps_store_what_the_render_keeps_without_rescaling():
+    from modules.constants import SPECIES_NAMES
+    from symbolic import width_sr
+    law = {**toy_law(), "plane_energy": "stored", "along": np.r_[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -20.0, 0.0, 0.0]}
+    laws = {(s, cn): law for s in SPECIES_NAMES for cn in ("EM", "hadronic")}
+    E = {s: np.r_[np.zeros(5), np.full(3, 50.0), np.zeros(16)] for s in SPECIES_NAMES}
+    X = np.linspace(600, 1600, 24)
+    d = np.array([0.0, 0.6, 0.8])
+    job = (0, 1, 5.5, 0.8, "EM", X, d, E, {s: 900.0 for s in SPECIES_NAMES}, laws)
+    _, old, _, _ = draw.shower(job)
+    _, new, _, _ = draw.shower((*job, "new"))
+    for s in SPECIES_NAMES:
+        k = old[s][:, 2].astype(int)
+        assert np.allclose(np.bincount(k, old[s][:, 3], 24)[5:8], 50.0)            # old: rescaled to E_k
+        e_new = np.bincount(new[s][:, 2].astype(int), new[s][:, 3], 24)[5:8]
+        assert (e_new < 50.0 / 0.9 + 1e-6).all() and (e_new > 0.8 * 50.0 / 0.9).all()   # new: what the render keeps
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

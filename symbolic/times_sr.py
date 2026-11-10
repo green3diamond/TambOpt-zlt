@@ -391,9 +391,8 @@ def stage_law(args, log):
             skip = set(h.read().split())
     from symbolic import particles
     files = [f for f in sorted(glob.glob(os.path.join(args.out, "tables", "*.npz"))) if os.path.basename(f) not in skip]
-    tabs = [dict(np.load(f)) for f in files]
-    laws = {"form": np.array(args.form)}
-    for s, r in particles.plane_rows(tabs).items():
+    laws = {"form": np.array(args.form), "plane_energy": np.array(args.plane_energy)}
+    for s, r in particles.load_rows(files, args.plane_energy, args.plane_rows)[0].items():
         for cn in rings_sr.CLASSES:
             m = r["cls"] == cn
             for w in TIMES:
@@ -427,6 +426,9 @@ def main():
     ap.add_argument("--searched", action="store_true", help="common stage: include the shared shape's search")
     ap.add_argument("--form", choices=tuple(FORMS), help="law stage")
     ap.add_argument("--skip", help="law stage: file listing the showers left out")
+    ap.add_argument("--plane-energy", choices=("stored", "total"), default="stored",
+                    help="table/law stage: plane energy behind the inputs (particles.plane_rows)")
+    ap.add_argument("--plane-rows", help="table/law stage: plane_rows file from particles.py rows, instead of the tables")
     args = ap.parse_args()
     if args.stage == "table":
         stage_table(args, logs.start("sr_times_table", args)[1])

@@ -11,6 +11,12 @@ Stages:
          pooled over its DRAWS draws per primary.
   clouds target and symbolic clouds in the chain's order (primary by primary, DRAWS entries each), for detector.py.
          -> particles/judge/clouds_{target,symbolic}.npz
+  primaries  a held-out list instead of folds (the 150k runs): the listed summary tables -> <folder>/primaries.npz,
+         one fold (0), with each shower's simulation directory. Then run with --truth h5: the target is the shower's
+         own stored cells in its h5 files (the v2 / 150k per-simulation preprocessing, caps sources.CAP_NEW; render
+         reproduces them, render closure 10-31), the laws' fit list (--fit) must not contain a judged shower, and the
+         symbolic draw uses draw.py --caps new. --chain none scores the symbolic draw alone (no neural chain trained
+         on these caps yet): its W1, floors and medians, verdict "reported".
 
 Rule (fixed before the run): a row PASSES when the symbolic W1 is at most the chain's (suite.py's rule); it is CLEAR when
 the 95% interval of the difference, resampling primaries (the same resample for both sources), excludes 0. Rows JUDGED
@@ -58,7 +64,7 @@ def fold_of(cls, l, u):
 
 
 def stage_split(out, args, log):
-    files = sorted(glob.glob(os.path.join(args.out, FOLDER, "tables", "*.npz")))
+    files = sorted(glob.glob(os.path.join(args.out, args.folder, "tables", "*.npz")))
     t = [np.load(f) for f in files]
     names = np.array([os.path.basename(f) for f in files])
     cls = np.array([str(z["class"]) for z in t])
@@ -72,13 +78,13 @@ def stage_split(out, args, log):
     prim = {"names": names[keep], "cls": cls[keep], "labels": np.array([LABEL[c] for c in cls[keep]]), "l": l[keep],
             "u": u[keep], "dirs": dirs[keep], "fold": fold,
             "X": atmosphere.plane_depths(np.degrees(np.arccos(u[keep])), N_PLANES)}
-    np.savez(os.path.join(args.out, FOLDER, "primaries.npz"), rows=np.arange(keep.sum()), **prim)
+    np.savez(os.path.join(args.out, args.folder, "primaries.npz"), rows=np.arange(keep.sum()), **prim)
     res = {"tables": len(names), "above the range": int((~keep).sum())}
     for f in (0, 1):
         m = fold == f
-        np.savez(os.path.join(args.out, FOLDER, f"primaries_fold{f}.npz"), rows=np.flatnonzero(m),
+        np.savez(os.path.join(args.out, args.folder, f"primaries_fold{f}.npz"), rows=np.flatnonzero(m),
                  **{k: v[m] for k, v in prim.items()})
-        with open(os.path.join(args.out, FOLDER, f"skip_fold{f}.txt"), "w") as fh:
+        with open(os.path.join(args.out, args.folder, f"skip_fold{f}.txt"), "w") as fh:
             fh.write("\n".join(prim["names"][m]) + "\n")
         res[f"fold {f}"] = {f"{c} {b}": int((m & (prim["cls"] == c) & sel(prim["u"])).sum()) for c in LABEL
                             for b, sel in suite.BANDS.items()}
@@ -86,15 +92,66 @@ def stage_split(out, args, log):
     return res
 
 
+def stage_primaries(out, args, log):
+    """The held-out showers named in --list (summary table names under --tables), one fold, in log10 E range."""
+    names = sorted(set(open(args.list).read().split()))
+    t = [np.load(os.path.join(args.tables, n)) for n in names]
+    names = np.array(names)
+    cls = np.array([str(z["class"]) for z in t])
+    l = np.array([float(z["log10E"]) for z in t])
+    dirs = np.array([z["direction"] for z in t])
+    if not np.isclose(np.linalg.norm(dirs, axis=1), 1).all():
+        raise ValueError("directions that are not unit vectors")
+    keep = l < args.top
+    u = dirs[keep, 2]
+    prim = {"names": names[keep], "sims": np.array([str(z["sim"]) for z in t])[keep], "cls": cls[keep],
+            "labels": np.array([LABEL[c] for c in cls[keep]]), "l": l[keep], "u": u, "dirs": dirs[keep],
+            "fold": np.zeros(keep.sum(), int), "X": atmosphere.plane_depths(np.degrees(np.arccos(u)), N_PLANES)}
+    os.makedirs(os.path.join(args.out, args.folder), exist_ok=True)
+    np.savez(os.path.join(args.out, args.folder, "primaries.npz"), rows=np.arange(keep.sum()), **prim)
+    res = {"listed": len(names), "above the range": int((~keep).sum()),
+           "judged": {f"{c} {b}": int(((prim["cls"] == c) & sel(u)).sum()) for c in LABEL for b, sel in suite.BANDS.items()}}
+    log.info("%s", res)
+    return res
+
+
+def read_truth_h5(prim, rows):
+    """Per species the stored cells of each judged shower from its own h5 file, checked against the file: as many
+    cells as num_points, at or below the cap, per-plane energy at or below plane_stats' energy before the cut, the
+    direction as in the primaries."""
+    import h5py
+    out = {s: [] for s in SPECIES_NAMES}
+    for r in rows:
+        for s in SPECIES_NAMES:
+            path = glob.glob(os.path.join(str(prim["sims"][r]), f"*_{sources.CORSIKA_NAME[s]}.h5"))
+            if len(path) != 1:
+                raise ValueError(f"{prim['sims'][r]}: {len(path)} {s} h5 files")
+            with h5py.File(path[0], "r") as f:
+                n, cap = int(f["num_points"][0]), int(f.attrs["nmax"])
+                c = np.asarray(f["showers"][0], np.float64).reshape(n, -1)
+                total = f["plane_stats"]["energy"][:].astype(np.float64)
+                d = f["directions"][0].astype(np.float64)
+            if cap != sources.CAP_NEW[s] or n > cap:
+                raise ValueError(f"{prim['names'][r]} {s}: cap {cap} (expected {sources.CAP_NEW[s]}), {n} cells")
+            if not np.allclose(d / np.linalg.norm(d), prim["dirs"][r], atol=1e-6):
+                raise ValueError(f"{prim['names'][r]} {s}: direction differs from the primaries")
+            c = positive(c)
+            e = np.bincount(np.rint(c[:, 2]).astype(int), c[:, 3], N_PLANES)
+            if (e > total * (1 + E_TOL) + 1e-6).any():
+                raise ValueError(f"{prim['names'][r]} {s}: stored energy above the energy before the cut")
+            out[s].append(c)
+    return out
+
+
 def positive(cells):
     return cells[cells[:, 3] > 0].astype(np.float64)
 
 
-def read_truth(root, prim, rows):
+def read_truth(root, prim, rows, folder=FOLDER):
     """Per species the target's cells at the primaries `rows`, each checked against its shower's table."""
     out = {s: [] for s in SPECIES_NAMES}
     for r in rows:
-        z, t = (np.load(os.path.join(root, FOLDER, d, str(prim["names"][r]))) for d in ("truth", "tables"))
+        z, t = (np.load(os.path.join(root, folder, d, str(prim["names"][r]))) for d in ("truth", "tables"))
         for s in SPECIES_NAMES:
             c = positive(z[f"{s}.cells"])
             e = np.bincount(np.rint(c[:, 2]).astype(int), c[:, 3], N_PLANES)
@@ -173,7 +230,11 @@ def median(o):
 
 
 def score(target, symbolic, neural, primaries, rng, n_boot=BOOT):
-    """One observable, one group: W1, floors, medians, and the resampled symbolic minus chain difference."""
+    """One observable, one group: W1, floors, medians, and the resampled symbolic minus chain difference; neural
+    None: the symbolic side alone."""
+    if neural is None:
+        return {"symbolic": dist(target, symbolic), "symbolic per plane": per_plane(target, symbolic),
+                "floor symbolic": floor(symbolic), "median target": median(target), "median symbolic": median(symbolic)}
     size = int(primaries.max()) + 1
     d = []
     for _ in range(n_boot):
@@ -188,7 +249,7 @@ def score(target, symbolic, neural, primaries, rng, n_boot=BOOT):
 
 
 def verdict(r, name):
-    if name not in JUDGED:
+    if name not in JUDGED or "neural chain" not in r:
         return "reported"
     lo, hi = r["difference 95%"]
     return ("PASS" if r["symbolic"] <= r["neural chain"] else "FAIL") + (" clear" if lo > 0 or hi < 0 else "")
@@ -205,7 +266,7 @@ def one_group(key):
     rng = np.random.default_rng(seed)
     res = {"primaries": len(primaries)}
     for name in (*JUDGED, *REPORTED):
-        o = [keep(_DATA[src][s][name]) for src in ("target", *SOURCES)]
+        o = [keep(_DATA[src][s][name]) if src in _DATA else None for src in ("target", *SOURCES)]
         res[name] = score(*o, primaries, rng, n_boot)
         res[name]["verdict"] = verdict(res[name], name)
     return s, cn, band, res
@@ -219,6 +280,8 @@ def fig_rows(res):
     x = np.arange(len(keys))
     for ax, name in zip(axes.flat, names):
         for o, src in enumerate(SOURCES):
+            if src not in res[keys[0][0]][keys[0][1]][keys[0][2]][name]:
+                continue
             pos = x + 0.2 * (o - 0.5)
             ax.scatter(pos, [res[s][cn][b][name][src] for s, cn, b in keys], color=suite.COLORS[src], s=14, label=src)
             ax.scatter(pos, [res[s][cn][b][name][f"floor {src}"] for s, cn, b in keys], color=suite.COLORS[src], s=20,
@@ -243,22 +306,40 @@ def judged_laws_apart(root, prim, folds):
             raise ValueError(f"fold {f}: the laws were fitted on judged showers")
 
 
+def fit_apart(fit, prim):
+    """Laws fitted on the showers of a fit's results.json must not include a judged shower."""
+    with open(fit) as fh:
+        seen = set(json.load(fh)["showers"])
+    if seen & set(prim["names"]):
+        raise ValueError(f"the laws in {fit} were fitted on judged showers")
+
+
 def stage_run(out, args, log):
-    z = np.load(os.path.join(args.out, FOLDER, "primaries.npz"))
+    z = np.load(os.path.join(args.out, args.folder, "primaries.npz"))
     prim = {k: z[k] for k in z.files}
-    judged_laws_apart(args.out, prim, args.folds)
+    if args.truth == "h5":
+        if not args.fit:
+            raise ValueError("--truth h5 needs --fit, the results.json of the laws' fit")
+        for f in args.fit:
+            fit_apart(f, prim)
+    else:
+        judged_laws_apart(args.out, prim, args.folds)
     judged = np.flatnonzero(np.isin(prim["fold"], args.folds))
-    log.info("%d judged primaries, folds %s", len(judged), args.folds)
+    log.info("%d judged primaries, folds %s, truth %s, chain %s", len(judged), args.folds, args.truth, args.chain)
     sym_rows, sym = read_symbolic(args.out, args.folds, args.source)
-    neu_rows, neu = read_chain(args.out, judged)
+    neu_rows, neu = read_chain(args.out, judged) if args.chain != "none" else (None, None)
     for src, r in (("symbolic", sym_rows), ("neural chain", neu_rows)):
+        if r is None:
+            continue
         if not np.array_equal(np.unique(r, return_counts=True)[0], judged) or (np.bincount(r)[judged] != args.draws).any():
             raise ValueError(f"{src}: expected {args.draws} draws at every judged primary")
-    target = read_truth(args.out, prim, judged)
-    log.info("sources read, truth checked against the tables")
+    target = read_truth_h5(prim, judged) if args.truth == "h5" else read_truth(args.out, prim, judged, args.folder)
+    log.info("sources read, truth checked")
+    _DATA.clear()
     _DATA.update(prim=prim, judged=np.isin(np.arange(len(prim["fold"])), judged))
     for src, c, r in (("target", target, judged), ("symbolic", sym, sym_rows), ("neural chain", neu, neu_rows)):
-        _DATA[src] = {s: observables(c[s], prim["dirs"], r) for s in SPECIES_NAMES}
+        if c is not None:
+            _DATA[src] = {s: observables(c[s], prim["dirs"], r) for s in SPECIES_NAMES}
     del target, sym, neu
     keys = [(s, cn, b, args.seed + j, args.boot) for j, (s, cn, b) in enumerate(
         (s, cn, b) for s in SPECIES_NAMES for cn in LABEL for b in suite.BANDS)]
@@ -267,15 +348,17 @@ def stage_run(out, args, log):
         for s, cn, band, r in pool.imap_unordered(one_group, keys):
             res[s][cn][band] = r
             log.info("%s %s %s (%d primaries) | %s", s, cn, band, r["primaries"], " | ".join(
-                f"{n} {r[n]['symbolic']:.3g} vs {r[n]['neural chain']:.3g} (floor {r[n]['floor symbolic']:.2g} / "
-                f"{r[n]['floor neural chain']:.2g}) {r[n]['verdict']}" for n in (*JUDGED, *REPORTED)))
+                f"{n} {r[n]['symbolic']:.3g} vs {r[n].get('neural chain', np.nan):.3g} (floor {r[n]['floor symbolic']:.2g}"
+                f" / {r[n].get('floor neural chain', np.nan):.2g}) {r[n]['verdict']}" for n in (*JUDGED, *REPORTED)))
     logs.save_fig(fig_rows(res), out, "w1_rows", log)
-    return {"rule": __doc__.split("Rule (fixed before the run): ")[1].strip(), "folds": args.folds,
-            "judged": int(len(judged)), "results": res}
+    return {"rule": __doc__.split("Rule (fixed before the run): ")[1].strip(), "folds": args.folds, "truth": args.truth,
+            "chain": args.chain, "judged": int(len(judged)), "results": res}
 
 
 def stage_clouds(out, args, log):
-    z = np.load(os.path.join(args.out, FOLDER, "primaries.npz"))
+    if args.truth == "h5":
+        raise NotImplementedError("clouds for the detector row with the new caps: not built yet")
+    z = np.load(os.path.join(args.out, args.folder, "primaries.npz"))
     prim = {k: z[k] for k in z.files}
     rows = np.repeat(prim["rows"], args.draws)
     if not np.array_equal(np.load(os.path.join(args.out, CHAIN))["rows"], rows):
@@ -284,19 +367,19 @@ def stage_clouds(out, args, log):
     order = np.argsort(sym_rows, kind="stable")
     if not np.array_equal(sym_rows[order], rows):
         raise ValueError("the symbolic draws do not cover every primary DRAWS times")
-    target = read_truth(args.out, prim, prim["rows"])
+    target = read_truth(args.out, prim, prim["rows"], args.folder)
     for name, per in (("target", {s: [target[s][r] for r in rows] for s in SPECIES_NAMES}),
                       (f"symbolic{args.suffix}", {s: [sym[s][j] for j in order] for s in SPECIES_NAMES})):
         pad = {f"{s}.points": np.stack([np.pad(c, ((0, sources.CAP[s] - len(c)), (0, 0))) for c in per[s]]).astype(np.float32)
                for s in SPECIES_NAMES}
-        np.savez(os.path.join(args.out, FOLDER, f"clouds_{name}.npz"), rows=rows, **pad)
+        np.savez(os.path.join(args.out, args.folder, f"clouds_{name}.npz"), rows=rows, **pad)
         log.info("clouds_%s: %d entries", name, len(rows))
     return {"entries": int(len(rows))}
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=("split", "run", "clouds"))
+    ap.add_argument("stage", choices=("split", "primaries", "run", "clouds"))
     ap.add_argument("--out", required=True, help="the symbolic_trim root")
     ap.add_argument("--name", default="run", help="output folder under particles/judge/")
     ap.add_argument("--source", default="judge_fold{}", help="run and clouds stages: draw folder under particles/draw, {} the fold")
@@ -306,9 +389,18 @@ def main():
     ap.add_argument("--boot", type=int, default=BOOT)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
+    ap.add_argument("--folder", default=FOLDER, help="judge folder under --out (primaries, results)")
+    ap.add_argument("--truth", choices=("tables", "h5"), default="tables",
+                    help="run stage: target cells re-rendered with the old caps (tables) or the h5 files' own stored cells")
+    ap.add_argument("--chain", choices=("given", "none"), default="given", help="run stage: neural chain, or none")
+    ap.add_argument("--fit", nargs="+", help="run stage, --truth h5: the results.json of every fit behind the laws")
+    ap.add_argument("--tables", help="primaries stage: summary tables folder")
+    ap.add_argument("--list", help="primaries stage: file of held-out table names")
+    ap.add_argument("--top", type=float, default=chain.TOP, help="primaries stage: judged below this log10 E")
     args = ap.parse_args()
-    out, log = logs.start(os.path.join(FOLDER, args.name if args.stage == "run" else args.stage + args.suffix), args)
-    logs.save(out, {"split": stage_split, "run": stage_run, "clouds": stage_clouds}[args.stage](out, args, log), args, log)
+    out, log = logs.start(os.path.join(args.folder, args.name if args.stage == "run" else args.stage + args.suffix), args)
+    logs.save(out, {"split": stage_split, "primaries": stage_primaries, "run": stage_run,
+                    "clouds": stage_clouds}[args.stage](out, args, log), args, log)
 
 
 if __name__ == "__main__":
