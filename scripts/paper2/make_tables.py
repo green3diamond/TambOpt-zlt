@@ -215,11 +215,13 @@ def pair(fm, c8, n, k, sc, fmt, colour=True):
 
 
 def label(n, rec, site):
-    """the four description cells; layouts of the layout figure underlined (\\uline breaks across lines)"""
-    cs = cells(n, rec)
-    if n in SEL[site]:
-        cs = [f"\\uline{{{c}}}" if c else c for c in cs]
-    return " & ".join(cs)
+    """one cell: optimizer | utility | test case | start, '--' where a field does not apply; layouts of the layout
+    figure underlined (\\uline breaks across lines)"""
+    o, u, c, st = cells(n, rec)
+    if not n.startswith("opt_"):
+        o = ""
+    lab = " $|$ ".join(x if x else "--" for x in (o, u, c, st))
+    return f"\\uline{{{lab}}}" if n in SEL[site] else lab
 
 
 ANG = [("w1", 100, "{:.1f}"), ("w2.5", 100, "{:.1f}"), ("w5", 100, "{:.1f}"), ("med", 1, "{:.2f}"),
@@ -298,18 +300,17 @@ def is_setup19(n):          # 12 km disk / annulus / triplet layouts not in the 
 
 
 # ── LaTeX ────────────────────────────────────────────────────────────────────────────────────────────────────────
-DESC = (r">{\raggedright\arraybackslash}p{1.1cm}>{\raggedright\arraybackslash}p{1.2cm}"     # optimizer, utility
-        r">{\raggedright\arraybackslash}p{1.35cm}>{\raggedright\arraybackslash}p{0.85cm}")    # test case, start
-DESC_HEAD = "Optimizer & Utility & Test case & Start"
+DESC = r">{\raggedright\arraybackslash}p{4.2cm}"           # layout: optimizer | utility | test case | start
+DESC_HEAD = r"Layout: optimizer $|$ utility $|$ test case $|$ start"
 H_ANG = DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & $|\Delta\log_{10}E|<0.2$ & Trigger & $N_\mathrm{trig}$ \\"
 H_U4 = DESC_HEAD + r" & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & 3-tier \\"
 H_U7 = DESC_HEAD + r" & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & 3-tier & Trig.\ $5^\circ$ P & Trig.\ $5^\circ$ step & Trig.\ $1^\circ$ P \\"
 H_TU = DESC_HEAD + r" & Trig.\ $5^\circ$ P & Trig.\ $5^\circ$ step & Trig.\ $1^\circ$ P \\"
-H_BG = (r" & & & & \multicolumn{3}{c}{$<1^\circ$ [\%]} & \multicolumn{3}{c}{Median [$^\circ$]} & \multicolumn{3}{c}{Trigger [\%]} \\" + "\n"
+H_BG = (r" & \multicolumn{3}{c}{$<1^\circ$ [\%]} & \multicolumn{3}{c}{Median [$^\circ$]} & \multicolumn{3}{c}{Trigger [\%]} \\" + "\n"
         + DESC_HEAD + r" & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s \\")
-H_ANAV = (r" & & & & \multicolumn{2}{c}{DeepSets} & \multicolumn{2}{c}{Analytical v1} & \multicolumn{2}{c}{Analytical v2} & \multicolumn{2}{c}{Analytical v3} \\" + "\n"
+H_ANAV = (r" & \multicolumn{2}{c}{DeepSets} & \multicolumn{2}{c}{Analytical v1} & \multicolumn{2}{c}{Analytical v2} & \multicolumn{2}{c}{Analytical v3} \\" + "\n"
           + DESC_HEAD + r" & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] \\")
-H_ANA = (r" & & & & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \\" + "\n"
+H_ANA = (r" & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \\" + "\n"
          + DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] \\")
 WRITTEN = []
 
@@ -387,22 +388,22 @@ write("r19_cmp_util", "float", 4, H_U4, body(setup19, lambda n: util_row(n, fm, 
       f"Table~\\ref{{tab:r19_util}}.", "tab:r19_cmp_util")
 bg_names19 = [n for n in NAMES[19] if not is_trigopt19(n)]
 write("r19_bg_ang", "long", 7, H_ANG,
-      stacked([(t, body(bg_names19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 11),
+      stacked([(t, body(bg_names19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
       f"{S19}, cosmic background + kNN gate: angular scores (all showers), energy score and trigger, as in "
       f"Table~\\ref{{tab:r19_ang}}.", "tab:r19_bg_ang")
 write("r19_bg_util", "long", 4, H_U4,
-      stacked([(t, body(bg_names19, lambda n, p=p: util_row(n, *W[19][p], 19, U4))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
+      stacked([(t, body(bg_names19, lambda n, p=p: util_row(n, *W[19][p], 19, U4))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 5),
       f"{S19}, cosmic background + kNN gate: accuracy utilities, as in Table~\\ref{{tab:r19_util}}.", "tab:r19_bg_util")
 modes = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
 write("r19_trig_ang", "float", 7, H_ANG,
-      stacked([(t, body(trig19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in modes], 11),
+      stacked([(t, body(trig19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in modes], 8),
       f"{S19}: angular scores (all showers), energy score and trigger of the trigger-optimized layouts.", "tab:r19_trig_ang")
 write("r19_trig_util", "float", 4, H_U4,
-      stacked([(t, body(trig19, lambda n, p=p: util_row(n, *W[19][p], 19, U4))) for t, p in modes], 8),
+      stacked([(t, body(trig19, lambda n, p=p: util_row(n, *W[19][p], 19, U4))) for t, p in modes], 5),
       f"{S19}: accuracy utilities of the trigger-optimized layouts.", "tab:r19_trig_util")
 write("r19_trigut", "long", 3, H_TU,
       stacked([(t, body(bg_names19, lambda n, p=p: util_row(n, *W[19][p], 19, UT[4:])) + "\n\\hline\n"
-                + body(trig19, lambda n, p=p: util_row(n, *W[19][p], 19, UT[4:]))) for t, p in modes], 7),
+                + body(trig19, lambda n, p=p: util_row(n, *W[19][p], 19, UT[4:]))) for t, p in modes], 4),
       f"{S19}: trigger utility at $5^\\circ$ (Poisson and step trigger) and $1^\\circ$ (Poisson), per-shower means in "
       f"$[0,1]$, of every layout; in each block fixed layouts, then accuracy-optimized, then trigger-optimized.",
       "tab:r19_trigut")
@@ -416,11 +417,11 @@ write("r20_util", "long", 7, H_U7, body(NAMES[20], lambda n: util_row(n, fm, c8,
       f"Table~\\ref{{tab:r20_ang}}; all but the original utility are per-shower means in $[0,1]$.", "tab:r20_util",
       sep="1.5pt")
 write("r20_bg_ang", "long", 7, H_ANG,
-      stacked([(t, body(NAMES[20], lambda n, p=p: ang_row(n, *W[20][p], 20))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 11),
+      stacked([(t, body(NAMES[20], lambda n, p=p: ang_row(n, *W[20][p], 20))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
       f"{S20}, cosmic background + kNN gate: angular scores (triggered showers), energy score and trigger, as in "
       f"Table~\\ref{{tab:r20_ang}}.", "tab:r20_bg_ang")
 write("r20_bg_util", "long", 7, H_U7,
-      stacked([(t, body(NAMES[20], lambda n, p=p: util_row(n, *W[20][p], 20, UT))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 11),
+      stacked([(t, body(NAMES[20], lambda n, p=p: util_row(n, *W[20][p], 20, UT))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
       f"{S20}, cosmic background + kNN gate: utilities, as in Table~\\ref{{tab:r20_util}}.", "tab:r20_bg_util",
       sep="1.5pt")
 

@@ -114,4 +114,62 @@ if d20["fm"] or d20["c8"]:
     ax[1].set_title("disk size (triplets: at the radius they cover)")
     src_legend(fig)
     fig.savefig(f"{FIG}/exp20.pdf")
+# ── the layouts themselves: one row per experiment, real layout files on the detector region ─────────────────────
+import torch
+SITES = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tmp_rings/sites"
+
+
+def name_of(n):
+    m = re.fullmatch(r"disk_r(\d+)", n)
+    if m:
+        return f"disk {int(m[1]) / 1000:g} km" if int(m[1]) >= 1000 else f"disk {m[1]} m"
+    m = re.fullmatch(r"annulus_rin(\d+)_R(\d+)_n\d+", n)
+    if m:
+        return f"annulus {int(m[1]) / 1000:g}–{int(m[2]) / 1000:g} km" if int(m[1]) else f"disk {int(m[2]) / 1000:g} km"
+    m = re.fullmatch(r"tri33disk_R(\d+)_r(\d+)", n)
+    if m:
+        return f"33 triplets ({m[2]} m) in {int(m[1]) / 1000:g} km disk" if int(m[1]) >= 1000 else \
+            f"33 triplets ({m[2]} m) in {m[1]} m disk"
+    m = re.fullmatch(r"tri33_r(\d+)", n)
+    if m:
+        return f"33 triplets ({m[1]} m)"
+    m = re.fullmatch(r"clu(\d+)x(\d+)_r(\d+)", n)
+    if m:
+        return f"{m[1]} clusters of {m[2]} ({m[3]} m)"
+    return n
+
+
+def layout_rows(run, rows, fname):
+    """rows: [(row title, [layout names])]; each panel: the layout on the detector region (grey), title: name and the
+    share within 1 and 5 deg of the flow-matching showers (all showers on the 12 km plane, triggered on Malata)"""
+    d = load(run)["fm"]
+    tris = np.load(f"{SITES}/{'plane' if run == 19 else 'malata'}.npz")["tris"]
+    sc = 1000.0 if run == 19 else 1.0
+    cE, cN = tris[:, :, 0].mean(1) / sc, tris[:, :, 1].mean(1) / sc
+    ncol = max(len(r[1]) for r in rows)
+    fig, ax = plt.subplots(len(rows), ncol, figsize=(1.75 * ncol, 2.05 * len(rows)), layout="constrained", squeeze=False)
+    for i, (title, names) in enumerate(rows):
+        for j in range(ncol):
+            a = ax[i, j]
+            if j >= len(names) or names[j] not in d:
+                a.axis("off"); continue
+            n = names[j]; r = d[n]
+            L = torch.load(r["path"], map_location="cpu", weights_only=False)
+            a.scatter(cE, cN, s=(0.3 if run == 19 else 1), color="0.85", lw=0, rasterized=True)
+            a.scatter(np.asarray(L["x"]) / sc, np.asarray(L["y"]) / sc, s=2.5, color="0.15", lw=0)
+            a.set_title(f"{name_of(n)}\n1°: {100 * r['w1']:.1f}%  5°: {100 * r['w5']:.1f}%", fontsize=6.5)
+            a.set_aspect("equal"); a.grid(False); a.tick_params(labelsize=5.5)
+        ax[i, 0].set_ylabel(f"{title}\nNorth [{'km' if run == 19 else 'm'}]", fontsize=7)
+    fig.savefig(f"{FIG}/{fname}.pdf", dpi=300)
+    plt.close(fig)
+
+
+layout_rows(19, [("(a) disk size", ["disk_r500", "disk_r1000", "disk_r2000", "disk_r3000", "disk_r6000", "disk_r9000"]),
+                 ("(b) disk with a hole", ["annulus_rin0_R6000_n100", "annulus_rin2000_R6000_n100",
+                                           "annulus_rin3000_R6000_n100", "annulus_rin4000_R6000_n100",
+                                           "annulus_rin500_R2000_n99", "annulus_rin1500_R2000_n99"]),
+                 ("(c) clustering", ["tri33_r10", "tri33_r100", "tri33disk_R500_r25", "tri33disk_R1000_r25",
+                                     "clu20x5_r500", "clu25x4_r500"])], "exp19_layouts")
+layout_rows(20, [("(a) disk size", ["disk_r100", "disk_r150", "disk_r200", "disk_r300", "disk_r400"]),
+                 ("(b) clustering", ["tri33_r10", "tri33_r25", "tri33disk_R150_r25"])], "exp20_layouts")
 print("ok")
