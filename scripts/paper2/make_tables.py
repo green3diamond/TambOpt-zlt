@@ -397,7 +397,7 @@ APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores only in the 
 
 # headline selection (main-text table and, on the 12 km plane, the layout figure)
 HEAD_GROUPS = {19: ("orig", "twotier_l0p3", "twotier_l0", "threetier"),
-               20: ("orig", "trig5_step")}
+               20: ("orig", "trig5_poisson", "trig5_step")}
 
 
 def start_twin(n):
@@ -409,14 +409,16 @@ def start_twin(n):
 
 def head_rows(site, names):
     """the fixed layouts of the layout figure, then for each utility the best optimized layout (largest flow-matching
-    share within 1 deg) and the same run from the centre start where it exists"""
+    share within 1 deg) among the runs that were also started from the centre, and that centre run; construction-
+    constrained runs (cable) are left to the constraint table"""
     f_ = W[site][""][0]
     best = lambda cand: max(cand, key=lambda n: f_[n]["w1"]) if cand else None
     fixed = [n for n in names if not n.startswith("opt_")]
     rows = [n for n in fixed if n in SEL[site]]
     for g in HEAD_GROUPS[site]:
-        cand = [n for n in names if n.startswith("opt_") and not n.startswith("opt_regress")
-                and (n.startswith("opt_trg_") if g == "trigger_only" else optimized_for(n) == g)]
+        cand = [n for n in names if n.startswith("opt_") and not n.startswith("opt_regress") and "_cab" not in n
+                and (n.startswith("opt_trg_") if g == "trigger_only" else optimized_for(n) == g)
+                and start_twin(n) != n and start_twin(n) in names]
         b = best(cand)
         for n in ([b, start_twin(b)] if b else []):
             if n and n in names and n not in rows:
@@ -466,8 +468,8 @@ def headline(site, names):
             + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in none + bgc + bgc) + r" \\")
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
     sel = (f"the layouts of Fig.~\\ref{{fig:r{site}_layouts}}: the fixed layouts and, for each utility, the best layout "
-           f"optimized for it (largest flow-matching share within $1^\\circ$) with the same run from the centre start"
-           + ("" if site == 19 else " where one exists"))
+           f"optimized for it among the runs also started from the centre (largest flow-matching share within "
+           f"$1^\\circ$), followed by its centre-start run")
     bgs = "share within $1^\\circ$ and median" + ("" if site == 19 else " and trigger rate")
     write(f"r{site}_head", "float", len(none) + 2 * nb, head, body(rows, row),
           f"{sname}: {sel}. Angular scores ({sh}){'' if site == 19 else ' and trigger rate'} without background; "
