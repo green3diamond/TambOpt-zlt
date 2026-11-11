@@ -39,7 +39,7 @@ PART = {"access": "access", "contour": "contour rows", "pads": "pads", "slope": 
         "e500_567": r"$\log E$ 5.00--5.67", "e567_633": r"$\log E$ 5.67--6.33", "e633_700": r"$\log E$ 6.33--7.00"}
 FIXED = {"grid": "Grid", "ugrid": "Uniform grid", "centre": "Centre cluster"}
 
-# layouts of the layout figures (4 x 4: fixed on top, optimized below); underlined in the tables
+# layouts of the layout figures (4 x 4: fixed on top, optimized below)
 SEL = {
     19: ["grid", "ugrid", "disk_r6000", "annulus_rin2000", "core_r300", "clu20x5_r500", "tri33_r10",
          "tri33disk_R1000_r25", "opt_current_lr10_grid", "opt_current_lr10_center_p1", "opt_twotier_l0p3_lr10_grid",
@@ -77,7 +77,7 @@ def fixed_label(n):
 
 
 def optimized_for(n):
-    """utility key a layout was optimized for (underlined in the utility tables), or None"""
+    """utility key a layout was optimized for, or None"""
     s = n[4:]
     if s.startswith("current"):
         return "orig"
@@ -112,7 +112,7 @@ def cells(n, rec):
     c, nlb = run_cfg(rec["path"])
     s = n[4:]
     opt = {"sgd": "SGD", "adam": "Adam"}.get(c.get("optim", "adam"), str(c.get("optim")))
-    opt += " + L-BFGS" if nlb else ""       # spaces: \\uline only breaks at spaces
+    opt += " + L-BFGS" if nlb else ""       # spaces: the description column may wrap
     init = str(c.get("init", ""))
     start = {"grid": "grid", "center": "centre"}.get(init, "unif.\\ grid" if init.endswith("ugrid.pt") else init)
     if s.startswith("current"):
@@ -172,16 +172,13 @@ def opt_key(n):
 
 
 # ── cells ────────────────────────────────────────────────────────────────────────────────────────────────────────
-G0 = 0.01           # log colour scale: relative shortfall g from the column best, t = 1 - log(1+g/G0)/log(1+gmax/G0)
-
-
 def heat(s, v, best, gmax, high_good):
-    """3-colour scale (red - yellow - green, lightened) as a \\hm{colour}{text} box; logarithmic in the relative
-    shortfall from the column best: values near the best are spread out, low ones compressed."""
+    """3-colour scale (red - yellow - green, lightened) as a \\hm{colour}{text} box, linear between the worst (red)
+    and the best (green) value of the column: t = 1 - g / gmax, g the relative shortfall from the best."""
     if v != v:
         return s
     g = (best - v) / abs(best) if high_good else (v - best) / abs(best)
-    t = 1.0 if gmax <= 0 else 1 - np.log1p(max(g, 0) / G0) / np.log1p(gmax / G0)
+    t = 1.0 if gmax <= 0 else 1 - max(g, 0) / gmax
     c = f"red!{200 * (0.5 - t):.0f}!yellow" if t < 0.5 else f"green!{200 * (t - 0.5):.0f}!yellow"
     return f"\\hm{{{c}!45!white}}{{{s}}}"
 
@@ -217,13 +214,12 @@ def pair(fm, c8, n, k, sc, fmt, colour=True):
 
 
 def label(n, rec, site):
-    """one cell: optimizer | utility | test case | start, '--' where a field does not apply; layouts of the layout
-    figure underlined (\\uline breaks across lines)"""
+    """one cell: optimizer | utility | test case | start, '--' where a field does not apply"""
     o, u, c, st = cells(n, rec)
     if not n.startswith("opt_"):
         o = ""
     lab = " $|$ ".join(x if x else "--" for x in (o, u, c, st))
-    return f"\\uline{{{lab}}}" if n in SEL[site] else lab
+    return lab
 
 
 ANG = [("w1", 100, "{:.1f}"), ("w2.5", 100, "{:.1f}"), ("w5", 100, "{:.1f}"), ("med", 1, "{:.2f}"),
@@ -231,8 +227,8 @@ ANG = [("w1", 100, "{:.1f}"), ("w2.5", 100, "{:.1f}"), ("w5", 100, "{:.1f}"), ("
 
 
 def name_label(n, site):
-    """fixed-layout tables: the layout name, underlined if in the layout figure"""
-    return f"\\uline{{{fixed_label(n)}}}" if n in SEL[site] else fixed_label(n)
+    """fixed-layout tables: the layout name"""
+    return fixed_label(n)
 
 
 ANG_MAIN = [c for c in ANG if c[0] != "w2.5"]          # main text: the 2.5 deg share is in the appendix tables (_all)
@@ -244,11 +240,10 @@ def ang_row(n, fm, c8, site, name=False, cols=ANG):
 
 
 def util_row(n, fm, c8, site, cols, name=False):
-    uk = optimized_for(n) if n.startswith("opt_") else None
     cs = []
     for k in cols:
         c = pair(fm, c8, n, k, 1, "{:.2f}" if k == "orig" else "{:.3f}")
-        cs.append(f"\\underline{{{c}}}" if k == uk else c)
+        cs.append(c)
     return (name_label(n, site) if name else label(n, fm[n], site)) + " & " + " & ".join(cs) + r" \\"
 
 
@@ -334,7 +329,7 @@ def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None, landsca
                f"\\caption{{{cap}}}\n\\label{{{lab}}}\\\\\n\\hline\n{head}\n\\hline\n\\endfirsthead\n"
                f"\\hline\n{head}\n\\hline\n\\endhead\n\\hline\n\\endfoot\n{rows}\n\\end{{longtable}}\n\\endgroup\n")
     else:
-        tex = (f"\\begin{{table}}\n\\centering\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{tabular}}{{{spec}}}\n"
+        tex = (f"\\begin{{table}}[H]\n\\centering\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{tabular}}{{{spec}}}\n"
                f"\\hline\n{head}\n\\hline\n{rows}\n\\\\[-1.5ex]\\hline\n\\end{{tabular}}\n"
                f"\\caption{{{cap}}}\n\\label{{{lab}}}\n\\end{{table}}\n")
     if landscape:       # rotated page(s) (pdflscape): wide tables
@@ -405,18 +400,17 @@ def start_twin(n):
 
 
 def head_rows(site, names):
-    """12 km: the fixed layouts of the figure, then for each utility the best optimized layout (largest flow-matching
-    share within 1 deg) and the same run from the centre start. Malata: uniform grid, best other fixed layout, best
-    layout per utility."""
+    """the fixed layouts of the layout figure, then for each utility the best optimized layout (largest flow-matching
+    share within 1 deg) and the same run from the centre start where it exists"""
     f_ = W[site][""][0]
     best = lambda cand: max(cand, key=lambda n: f_[n]["w1"]) if cand else None
     fixed = [n for n in names if not n.startswith("opt_")]
-    rows = [n for n in fixed if n in SEL[19]] if site == 19 else ["ugrid", best([n for n in fixed if n != "ugrid"])]
+    rows = [n for n in fixed if n in SEL[site]]
     for g in HEAD_GROUPS[site]:
         cand = [n for n in names if n.startswith("opt_") and not n.startswith("opt_regress")
                 and (n.startswith("opt_trg_") if g == "trigger_only" else optimized_for(n) == g)]
         b = best(cand)
-        for n in ([b, start_twin(b)] if (b and site == 19) else [b]):
+        for n in ([b, start_twin(b)] if b else []):
             if n and n in names and n not in rows:
                 rows.append(n)
     return rows
@@ -438,13 +432,12 @@ for _s in (19, 20):         # the background comparison (main text) shows these
 def cells_of(site, p, n, cols, util, hide, mark=None):
     """value cells of one layout; cells in `hide` left empty, the others added to `mark`"""
     f_, c_ = W[site][p]
-    uk = optimized_for(n) if (util and n.startswith("opt_")) else None
     cs = []
     for k, sc, fmt in cols:
         if (site, p, n, k) in hide:
             cs.append(""); continue
         c = pair(f_, c_, n, k, sc, fmt, colour=k != "ntrig")
-        cs.append(f"\\underline{{{c}}}" if k == uk else c)
+        cs.append(c)
         if mark is not None:
             mark.add((site, p, n, k))
     return cs
@@ -463,11 +456,9 @@ def headline(site, names):
     head = (r" & \multicolumn{%d}{c}{No background} & \multicolumn{2}{c}{$<1^\circ$, background + kNN} \\" % len(none)
             + "\n" + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in none) + r" & 1\,$\mu$s & 10\,$\mu$s \\")
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
-    sel = (f"the layouts of Fig.~\\ref{{fig:r19_layouts}}: the fixed layouts and, for each utility, the best layout "
-           f"optimized for it (largest flow-matching share within $1^\\circ$) with the same run from the centre start"
-           if site == 19 else
-           f"the uniform grid, the best other fixed layout and, for each utility, the best layout optimized for it "
-           f"(largest flow-matching share within $1^\\circ$)")
+    sel = (f"the fixed layouts of Fig.~\\ref{{fig:r{site}_layouts}} and, for each utility, the best layout optimized "
+           f"for it (largest flow-matching share within $1^\\circ$) with the same run from the centre start"
+           + ("" if site == 19 else " where one exists"))
     write(f"r{site}_head", "float", len(none) + 2, head, body(rows, row),
           f"{sname}: {sel}; angular scores ({sh})"
           f"{'' if site == 19 else ' and trigger rate'} without background, and the share within $1^\\circ$ with a 1 "
@@ -512,7 +503,7 @@ scores_table(20, NAMES[20], UT, "1pt", "2.7cm")
 
 def bg_row(n, site):
     cs = [pair(*W[site][p], n, k, sc, f) for k, sc, f in BG_COLS[site] for p in ("", "bg1_", "bg10_")]
-    return label(n, W[site][""][0][n], site).replace("\\uline", "") + " & " + " & ".join(cs) + r" \\"
+    return label(n, W[site][""][0][n], site) + " & " + " & ".join(cs) + r" \\"
 
 
 for site, sname, sel_txt in ((19, S19, "share of all showers within $1^\\circ$ and median angular error (trigger rate: "
@@ -538,10 +529,8 @@ SRC = {"ds": W[20][""], "v1": (tv("scoresana_20_*.json"), tv("scoresc8ana_20_*.j
        "v3": (tv("scoresanav3_20_*.json"), tv("scoresc8anav3_20_*.json"))}
 
 
-def ana_row(n, cols, ul):
+def ana_row(n, cols, ul=False):
     lab = label(n, W[20][""][0][n], 20)
-    if not ul:
-        lab = lab.replace("\\uline", "")
     return lab + " & " + " & ".join(pair(*SRC[m], n, k, sc, f) for m, k, sc, f in cols) + r" \\"
 
 
