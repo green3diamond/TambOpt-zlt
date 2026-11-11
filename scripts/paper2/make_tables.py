@@ -494,16 +494,14 @@ def scores_table(site, names, uts, sep, wdesc, landscape=True):
             + " & ".join(UT_HEAD[UT.index(k)] for k in uts) + r" \\")
 
     def row(n):
-        cs = (cells_of(site, "", n, cols, False, MAINCELLS, PRINTED)
-              + cells_of(site, "", n, ucols, True, MAINCELLS, PRINTED))
+        cs = cells_of(site, "", n, cols, False, set()) + cells_of(site, "", n, ucols, True, set())
         return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
     moved = "share within $2.5^\\circ$ and trigger rate" if "trig" in APPX[site] else "share within $2.5^\\circ$"
     write(f"r{site}_scores", "long", len(cols) + len(uts), head, body(names, row),
           f"{sname}, no background: angular scores ({sh}), energy score{'' if 'trig' in APPX[site] else ', trigger'} and "
           f"utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every "
-          f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:all}}. Empty cells: in "
-          f"Table~\\ref{{tab:r{site}_head}}.",
+          f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:all}}.",
           f"tab:r{site}_scores", sep=sep, desc=r">{\raggedright\arraybackslash}p{%s}" % wdesc, landscape=landscape)
 
 
@@ -622,14 +620,14 @@ write("r20_anav", "float", 8, H_ANAV,
       f"of Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular error. v2 and v3 were run on "
       f"these layouts only.", "tab:r20_anav")
 def ana_v1_row(n):
-    cs = ["" if (n in figs20 and k in ("w1", "med")) else pair(*SRC["v1"], n, k, sc, f) for _, k, sc, f in full("v1")]
+    cs = [pair(*SRC["v1"], n, k, sc, f) for _, k, sc, f in full("v1")]
     return label(n, W[20][""][0][n], 20) + " & " + " & ".join(cs) + r" \\"
 
 
 write("r20_ana", "long", 4, DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] \\",
       body(NAMES[20], ana_v1_row),
       f"{S20}, no background: analytical v1 (Sec.~\\ref{{sec:analytic}}) on the triggered showers, every layout. DeepSets: "
-      f"Table~\\ref{{tab:r20_scores}}; empty cells: in Table~\\ref{{tab:r20_anav}}.", "tab:r20_ana")
+      f"Table~\\ref{{tab:r20_scores}}.", "tab:r20_ana")
 
 # layout sweeps of the fixed-layout experiments (Sec. 4.1 plots): every layout, one block per sweep
 def sweep_label(n):
@@ -667,17 +665,16 @@ def sweeps(run, cols):
                + sorted([n for n in fm if n.startswith("clu")], key=num))]
     row = lambda n: sweep_label(n) + " & " + " & ".join(pair(fm, c8, n, k, sc, f, colour=k != "ntrig")
                                                         for k, sc, f in cols) + r" \\"
-    in_main = lambda n: re.sub(r"^(annulus_rin\d+)_R6000_n100$", r"\1", n) in main19     # same layout files and showers
-    groups = [(t, [n for n in g if not in_main(n)]) for t, g in groups]
-    return stacked([(t, "\n".join(row(n) for n in g)) for t, g in groups if g], 1 + len(cols))
+    ref = r"\multicolumn{%d}{l}{\textit{reference}} \\" % (1 + len(cols)) + "\n" + row("grid") + "\n\\hline\\hline\n"
+    return ref + stacked([(t, "\n".join(row(n) for n in g)) for t, g in groups if g], 1 + len(cols))
 
 
 write("r19_sweeps", "long", 11, r"Layout & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & "
       r"$|\Delta\log_{10}E|<0.2$ & Trigger & $N_\mathrm{trig}$ & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & "
       r"3-tier \\", sweeps(19, ANG + [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT[:4]]),
       f"{S19}, no background: every layout of the sweeps of Figs.~\\ref{{fig:exp19}} and~\\ref{{fig:exp19_layouts}} "
-      f"(99 or 100 detectors) that is not in Table~\\ref{{tab:r19_scores}}; angular scores (all showers), energy score, "
-      f"trigger and accuracy utilities (Sec.~\\ref{{sec:utilities}}). Bold and colour over the sweep layouts.", "tab:r19_sweeps",
+      f"(99 or 100 detectors), grid for reference; angular scores (all showers), energy score, trigger and accuracy "
+      f"utilities (Sec.~\\ref{{sec:utilities}}). Bold and colour over the sweep layouts.", "tab:r19_sweeps",
       desc="l", landscape=True)
 
 # appendix: complete scores of every layout, one block per background window (bold and colour per block)
@@ -687,7 +684,7 @@ MODES = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
 def app_row(site, p, n, cols, util):
     """appendix row; values printed in the main text or the full scores table left empty; None if nothing is left"""
     f_, _ = W[site][p]
-    cs = cells_of(site, p, n, cols, util, MAINCELLS | PRINTED)
+    cs = cells_of(site, p, n, cols, util, set())
     if not any(cs):
         return None
     return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
@@ -706,8 +703,7 @@ def full_body(site, p, cols, util):
 for site, sname, sh in ((19, S19, "all showers"), (20, S20, "triggered showers")):
     extra = "; trigger-optimized layouts below the second line" if site == 19 else ""
     win = (r"without background and with a 1 or 10\,$\mu$s readout window and the kNN gate "
-           f"(Sec.~\\ref{{sec:r{site}_bg}}); bold and colour per block{extra}. Empty cells: in "
-           f"Tables~\\ref{{tab:r{site}_head}} and~\\ref{{tab:r{site}_scores}}")
+           f"(Sec.~\\ref{{sec:r{site}_bg}}); bold and colour per block{extra}")
     for kind, cols, util, head, nd, sep in (("ang", ANG, False, H_ANG, 7, "2pt"), ("util", UCOLS, True, H_U7, 7, "1.5pt")):
         blocks = [(t, full_body(site, p, cols, util)) for t, p in MODES]
         what = (f"angular scores ({sh}), energy score and trigger" if kind == "ang" else
