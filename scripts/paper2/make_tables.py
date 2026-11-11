@@ -295,7 +295,7 @@ def is_trigopt19(n):        # 12 km trigger-optimized layouts: appendix
     return "swgotrig" in n
 
 
-def is_setup19(n):          # 12 km disk / annulus / triplet layouts not in the figure: Sec. 4.1
+def is_setup19(n):          # 12 km disk / annulus / triplet layouts not in the figure: only in the sweep table
     return not n.startswith("opt_") and n not in SEL[19] and re.match(r"(disk|annulus|tri33)", n)
 
 
@@ -315,9 +315,9 @@ H_ANA = (r" & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \
 WRITTEN = []
 
 
-def write(name, kind, ndata, head, rows, cap, lab, sep="2pt"):
+def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None):
     """complete table -> tables_2/<name>.tex; kind 'long' (longtable over pages) or 'float' (table float)"""
-    spec = DESC + "r" * ndata
+    spec = (desc or DESC) + "r" * ndata
     if kind == "long":
         tex = (f"\\begingroup\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{longtable}}{{{spec}}}\n"
                f"\\caption{{{cap}}}\n\\label{{{lab}}}\\\\\n\\hline\n{head}\n\\hline\n\\endfirsthead\n"
@@ -372,7 +372,6 @@ NAMES = {s: order(W[s][""][0]) for s in (19, 20)}
 # 12 km plane
 fm, c8 = W[19][""]
 main19 = [n for n in NAMES[19] if not is_trigopt19(n) and not is_setup19(n)]
-setup19 = [n for n in NAMES[19] if is_setup19(n)]
 trig19 = [n for n in NAMES[19] if is_trigopt19(n)]
 U4 = UT[:4]
 write("r19_ang", "long", 7, H_ANG, body(main19, lambda n: ang_row(n, fm, c8, 19)),
@@ -380,12 +379,6 @@ write("r19_ang", "long", 7, H_ANG, body(main19, lambda n: ang_row(n, fm, c8, 19)
 write("r19_util", "long", 4, H_U4, body(main19, lambda n: util_row(n, fm, c8, 19, U4)),
       f"{S19}, no background: accuracy utilities (Sec.~\\ref{{sec:utilities}}) of every layout on the showers of "
       f"Table~\\ref{{tab:r19_ang}}; all but the original utility are per-shower means in $[0,1]$.", "tab:r19_util")
-write("r19_cmp_ang", "float", 7, H_ANG, body(setup19, lambda n: ang_row(n, fm, c8, 19)),
-      f"{S19}, no background: disk, annulus and triplet layouts not in Table~\\ref{{tab:r19_ang}}; angular scores (all "
-      f"showers), energy score and trigger. Bold and colour over all layouts of the run.", "tab:r19_cmp_ang")
-write("r19_cmp_util", "float", 4, H_U4, body(setup19, lambda n: util_row(n, fm, c8, 19, U4)),
-      f"{S19}, no background: accuracy utilities of the layouts of Table~\\ref{{tab:r19_cmp_ang}}, as in "
-      f"Table~\\ref{{tab:r19_util}}.", "tab:r19_cmp_util")
 bg_names19 = [n for n in NAMES[19] if not is_trigopt19(n)]
 write("r19_bg_ang", "long", 7, H_ANG,
       stacked([(t, body(bg_names19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
@@ -469,6 +462,57 @@ write("r20_anav", "float", 8, H_ANAV,
 write("r20_ana", "long", 8, H_ANA, body(NAMES[20], lambda n: ana_row(n, full("ds") + full("v1"), True)),
       f"{S20}, no background: DeepSets vs analytical v1 (Sec.~\\ref{{sec:analytic}}) on the triggered showers, every "
       f"layout.", "tab:r20_ana")
+
+# layout sweeps of the fixed-layout experiments (Sec. 4.1 plots): every layout, one block per sweep
+def sweep_label(n):
+    m = re.fullmatch(r"disk_r(\d+)", n)
+    if m:
+        return f"Disk {int(m[1]) / 1000:g}\\,km" if int(m[1]) >= 1000 else f"Disk {m[1]}\\,m"
+    m = re.fullmatch(r"annulus_rin(\d+)_R(\d+)_n\d+", n)
+    if m:
+        return (f"Annulus {int(m[1]) / 1000:g}--{int(m[2]) / 1000:g}\\,km" if int(m[1])
+                else f"Disk {int(m[2]) / 1000:g}\\,km (no hole)")
+    m = re.fullmatch(r"tri33disk_R(\d+)_r(\d+)", n)
+    if m:
+        return f"33 triplets ({m[2]}\\,m) in {int(m[1]) / 1000:g}\\,km disk"
+    m = re.fullmatch(r"tri33_r(\d+)", n)
+    if m:
+        return f"33 triplets ({m[1]}\\,m)"
+    m = re.fullmatch(r"clu(\d+)x(\d+)_r(\d+)", n)
+    if m:
+        return f"{m[1]} clusters of {m[2]} ({m[3]}\\,m)"
+    return FIXED.get(n, n)
+
+
+def sweeps(run, cols):
+    """rows of every sweep layout (grid for reference, then one block per sweep) for the columns cols"""
+    tag = "ext" if run == 19 else "extd_"
+    fm = trig_view({k: v for p in sorted(glob.glob(f"{D}/{tag}{run}_*.json")) for k, v in json.load(open(p)).items()},
+                   acc=run != 19)
+    c8 = trig_view({k: v for p in sorted(glob.glob(f"{D}/extc8ft_{run}_*.json")) for k, v in json.load(open(p)).items()},
+                   acc=run != 19)
+    num = lambda n: [int(x) for x in re.findall(r"\d+", n)]
+    groups = [("disk size", sorted([n for n in fm if n.startswith("disk_r")], key=num)),
+              ("disk with a hole", sorted([n for n in fm if n.startswith("annulus")], key=lambda n: (-num(n)[1], num(n)[0]))),
+              ("clustering", sorted([n for n in fm if n.startswith("tri33_")], key=num)
+               + sorted([n for n in fm if n.startswith("tri33disk")], key=num)
+               + sorted([n for n in fm if n.startswith("clu")], key=num))]
+    row = lambda n: sweep_label(n) + " & " + " & ".join(pair(fm, c8, n, k, sc, f, colour=k != "ntrig")
+                                                        for k, sc, f in cols) + r" \\"
+    ref = r"\multicolumn{%d}{l}{\textit{reference}} \\" % (1 + len(cols)) + "\n" + row("grid") + "\n\\hline\\hline\n"
+    return ref + stacked([(t, "\n".join(row(n) for n in g)) for t, g in groups if g], 1 + len(cols))
+
+
+SW_CAP = (f"{S19}, no background: every layout of the sweeps of Figs.~\\ref{{fig:exp19}} and~\\ref{{fig:exp19_layouts}} "
+          f"(99 or 100 detectors), grid for reference; ")
+write("r19_sweeps_ang", "long", 7, r"Layout & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & "
+      r"$|\Delta\log_{10}E|<0.2$ & Trigger & $N_\mathrm{trig}$ \\", sweeps(19, ANG),
+      SW_CAP + "angular scores (all showers), energy score and trigger. Bold and colour over the layouts of this table.",
+      "tab:r19_sweeps_ang", desc="l")
+write("r19_sweeps_util", "long", 4, r"Layout & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & 3-tier \\",
+      sweeps(19, [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT[:4]]),
+      SW_CAP + "accuracy utilities (Sec.~\\ref{sec:utilities}). Bold and colour over the layouts of this table.",
+      "tab:r19_sweeps_util", desc="l")
 
 # figures
 figure(19, W[19][""][0], main19)
