@@ -32,6 +32,14 @@ def load(run):
         ps = glob.glob(f"{D}/{pre}{run}_*.json") or (glob.glob(f"{D}/ext{run}_*.json") if k == "fm" else [])
         for p in ps:                                     # fm falls back to the older all-shower scoring
             d.update(json.load(open(p)))
+        # reference: the uniform grid from the main scoring (same showers; shared layouts agree exactly)
+        main = (f"scoresc8ft_{run}_*.json" if k == "c8" else
+                f"scoresd_{run}_*.json" if glob.glob(f"{D}/scoresd_{run}_*.json") else f"scores{run}_*.json")
+        for p in sorted(glob.glob(f"{D}/{main}")):
+            if "c8test" not in p:
+                r = json.load(open(p))
+                if "ugrid" in r:
+                    d["ugrid"] = r["ugrid"]
         out[k] = trig_view(d, acc=run != 19)
     return out
 
@@ -58,8 +66,8 @@ def draw(axrow, data, fams, xlabel, logx, grid=True):
             axrow[0].plot(x, 100 * g("w5"), ls=ls, marker=mk, ms=2.5, color=c, alpha=0.45)
             axrow[1].plot(x, g("med"), ls=ls, marker=mk, ms=2.5, color=c)
             axrow[2].plot(x, 100 * g("trig"), ls=ls, marker=mk, ms=2.5, color=c)
-        if grid and "grid" in d:
-            r = d["grid"]
+        if grid and "ugrid" in d:
+            r = d["ugrid"]
             for a, vals in ((axrow[0], (100 * r["w1"],)), (axrow[1], (r["med"],)), (axrow[2], (100 * r["trig"],))):
                 for v in vals:
                     a.axhline(v, color="0.5", ls=ls, lw=0.8)
@@ -76,7 +84,7 @@ def draw(axrow, data, fams, xlabel, logx, grid=True):
 def src_legend(fig):
     from matplotlib.lines import Line2D
     h = [Line2D([], [], color="k", ls=ls, label=nm) for _, ls, nm in SRC.values()]
-    h.append(Line2D([], [], color="0.5", lw=0.8, label="grid"))
+    h.append(Line2D([], [], color="0.5", lw=0.8, label="uniform grid"))
     fig.legend(handles=h, loc="outside lower center", ncol=3, fontsize=7.5)
 
 
