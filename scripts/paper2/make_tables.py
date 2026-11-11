@@ -228,18 +228,23 @@ ANG = [("w1", 100, "{:.1f}"), ("w2.5", 100, "{:.1f}"), ("w5", 100, "{:.1f}"), ("
        ("e02", 100, "{:.1f}"), ("trig", 100, "{:.1f}"), ("ntrig", 1, "{:.0f}")]
 
 
-def ang_row(n, fm, c8, site):
-    return label(n, fm[n], site) + " & " + " & ".join(
+def name_label(n, site):
+    """fixed-layout tables: the layout name, underlined if in the layout figure"""
+    return f"\\uline{{{fixed_label(n)}}}" if n in SEL[site] else fixed_label(n)
+
+
+def ang_row(n, fm, c8, site, name=False):
+    return (name_label(n, site) if name else label(n, fm[n], site)) + " & " + " & ".join(
         pair(fm, c8, n, k, sc, f, colour=k != "ntrig") for k, sc, f in ANG) + r" \\"
 
 
-def util_row(n, fm, c8, site, cols):
+def util_row(n, fm, c8, site, cols, name=False):
     uk = optimized_for(n) if n.startswith("opt_") else None
     cs = []
     for k in cols:
         c = pair(fm, c8, n, k, 1, "{:.2f}" if k == "orig" else "{:.3f}")
         cs.append(f"\\underline{{{c}}}" if k == uk else c)
-    return label(n, fm[n], site) + " & " + " & ".join(cs) + r" \\"
+    return (name_label(n, site) if name else label(n, fm[n], site)) + " & " + " & ".join(cs) + r" \\"
 
 
 def body(names, row):
@@ -374,19 +379,30 @@ fm, c8 = W[19][""]
 main19 = [n for n in NAMES[19] if not is_trigopt19(n) and not is_setup19(n)]
 trig19 = [n for n in NAMES[19] if is_trigopt19(n)]
 U4 = UT[:4]
-write("r19_ang", "long", 7, H_ANG, body(main19, lambda n: ang_row(n, fm, c8, 19)),
-      f"{S19}, no background: angular scores (all showers), energy score and trigger of every layout.", "tab:r19_ang")
-write("r19_util", "long", 4, H_U4, body(main19, lambda n: util_row(n, fm, c8, 19, U4)),
-      f"{S19}, no background: accuracy utilities (Sec.~\\ref{{sec:utilities}}) of every layout on the showers of "
-      f"Table~\\ref{{tab:r19_ang}}; all but the original utility are per-shower means in $[0,1]$.", "tab:r19_util")
+fix19 = [n for n in main19 if not n.startswith("opt_")]
+opt19 = [n for n in main19 if n.startswith("opt_")]
+nm = lambda h: "Layout" + h[len(DESC_HEAD):]
+write("r19_fixed_ang", "long", 7, nm(H_ANG), body(fix19, lambda n: ang_row(n, fm, c8, 19, True)),
+      f"{S19}, no background: angular scores (all showers), energy score and trigger of the fixed layouts.",
+      "tab:r19_fixed_ang", desc="l")
+write("r19_fixed_util", "long", 4, nm(H_U4), body(fix19, lambda n: util_row(n, fm, c8, 19, U4, True)),
+      f"{S19}, no background: accuracy utilities (Sec.~\\ref{{sec:utilities}}) of the fixed layouts on the showers of "
+      f"Table~\\ref{{tab:r19_fixed_ang}}; all but the original utility are per-shower means in $[0,1]$.",
+      "tab:r19_fixed_util", desc="l")
+write("r19_opt_ang", "long", 7, H_ANG, body(opt19, lambda n: ang_row(n, fm, c8, 19)),
+      f"{S19}, no background: angular scores (all showers), energy score and trigger of the optimized layouts.",
+      "tab:r19_opt_ang")
+write("r19_opt_util", "long", 4, H_U4, body(opt19, lambda n: util_row(n, fm, c8, 19, U4)),
+      f"{S19}, no background: accuracy utilities of the optimized layouts, as in Table~\\ref{{tab:r19_fixed_util}}.",
+      "tab:r19_opt_util")
 bg_names19 = [n for n in NAMES[19] if not is_trigopt19(n)]
 write("r19_bg_ang", "long", 7, H_ANG,
       stacked([(t, body(bg_names19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
       f"{S19}, cosmic background + kNN gate: angular scores (all showers), energy score and trigger, as in "
-      f"Table~\\ref{{tab:r19_ang}}.", "tab:r19_bg_ang")
+      f"Tables~\\ref{{tab:r19_fixed_ang}} and~\\ref{{tab:r19_opt_ang}}.", "tab:r19_bg_ang")
 write("r19_bg_util", "long", 4, H_U4,
       stacked([(t, body(bg_names19, lambda n, p=p: util_row(n, *W[19][p], 19, U4))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 5),
-      f"{S19}, cosmic background + kNN gate: accuracy utilities, as in Table~\\ref{{tab:r19_util}}.", "tab:r19_bg_util")
+      f"{S19}, cosmic background + kNN gate: accuracy utilities, as in Table~\\ref{{tab:r19_fixed_util}}.", "tab:r19_bg_util")
 modes = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
 write("r19_trig_ang", "float", 7, H_ANG,
       stacked([(t, body(trig19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in modes], 8),
@@ -403,19 +419,28 @@ write("r19_trigut", "long", 3, H_TU,
 
 # Malata
 fm, c8 = W[20][""]
-write("r20_ang", "long", 7, H_ANG, body(NAMES[20], lambda n: ang_row(n, fm, c8, 20)),
-      f"{S20}, no background: angular scores (triggered showers), energy score and trigger of every layout.", "tab:r20_ang")
-write("r20_util", "long", 7, H_U7, body(NAMES[20], lambda n: util_row(n, fm, c8, 20, UT)),
-      f"{S20}, no background: utilities (Sec.~\\ref{{sec:utilities}}) of every layout on the showers of "
-      f"Table~\\ref{{tab:r20_ang}}; all but the original utility are per-shower means in $[0,1]$.", "tab:r20_util",
-      sep="1.5pt")
+fix20 = [n for n in NAMES[20] if not n.startswith("opt_")]
+opt20 = [n for n in NAMES[20] if n.startswith("opt_")]
+write("r20_fixed_ang", "long", 7, nm(H_ANG), body(fix20, lambda n: ang_row(n, fm, c8, 20, True)),
+      f"{S20}, no background: angular scores (triggered showers), energy score and trigger of the fixed layouts.",
+      "tab:r20_fixed_ang", desc="l")
+write("r20_fixed_util", "long", 7, nm(H_U7), body(fix20, lambda n: util_row(n, fm, c8, 20, UT, True)),
+      f"{S20}, no background: utilities (Sec.~\\ref{{sec:utilities}}) of the fixed layouts on the showers of "
+      f"Table~\\ref{{tab:r20_fixed_ang}}; all but the original utility are per-shower means in $[0,1]$.",
+      "tab:r20_fixed_util", desc="l")
+write("r20_opt_ang", "long", 7, H_ANG, body(opt20, lambda n: ang_row(n, fm, c8, 20)),
+      f"{S20}, no background: angular scores (triggered showers), energy score and trigger of the optimized layouts.",
+      "tab:r20_opt_ang")
+write("r20_opt_util", "long", 7, H_U7, body(opt20, lambda n: util_row(n, fm, c8, 20, UT)),
+      f"{S20}, no background: utilities of the optimized layouts, as in Table~\\ref{{tab:r20_fixed_util}}.",
+      "tab:r20_opt_util", sep="1.5pt")
 write("r20_bg_ang", "long", 7, H_ANG,
       stacked([(t, body(NAMES[20], lambda n, p=p: ang_row(n, *W[20][p], 20))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
       f"{S20}, cosmic background + kNN gate: angular scores (triggered showers), energy score and trigger, as in "
-      f"Table~\\ref{{tab:r20_ang}}.", "tab:r20_bg_ang")
+      f"Tables~\\ref{{tab:r20_fixed_ang}} and~\\ref{{tab:r20_opt_ang}}.", "tab:r20_bg_ang")
 write("r20_bg_util", "long", 7, H_U7,
       stacked([(t, body(NAMES[20], lambda n, p=p: util_row(n, *W[20][p], 20, UT))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
-      f"{S20}, cosmic background + kNN gate: utilities, as in Table~\\ref{{tab:r20_util}}.", "tab:r20_bg_util",
+      f"{S20}, cosmic background + kNN gate: utilities, as in Table~\\ref{{tab:r20_fixed_util}}.", "tab:r20_bg_util",
       sep="1.5pt")
 
 
