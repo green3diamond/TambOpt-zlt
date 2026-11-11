@@ -344,8 +344,8 @@ def main():
     ap.add_argument("--draws", type=int, default=1, help="energies stage: draws per primary of --primaries")
     ap.add_argument("--fits", help="energies stage: fits file of fit_profiles.py --stage tables (total plane energy) "
                     "instead of the default training fits")
-    ap.add_argument("--noise", choices=("plane", "peak"), default="plane",
-                    help="energies stage: plane noise per plane number (adopted) or per position relative to the peak")
+    ap.add_argument("--noise", choices=("plane", "peak", "skew"), default="plane",
+                    help="energies stage: plane noise per plane number (adopted), or per position relative to the peak: normal (peak) or Johnson SU (skew)")
     ap.add_argument("--laws", default=LAWS, help="draw stage: particle laws, relative to --out")
     ap.add_argument("--task", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", 0)))
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))

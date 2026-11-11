@@ -359,6 +359,32 @@ def test_peak_noise_keeps_early_scatter_away_from_the_peak():
         raise AssertionError("an unknown noise model was accepted")
 
 
+def test_skew_noise_keeps_the_energy_of_low_skewed_leftovers():
+    rng = np.random.default_rng(23)
+    n = 4000
+    X = np.tile(atm.plane_depths([80.0], 24), (n, 1))
+    xmax, L, R, lnn = rng.uniform(300, 1500, n), np.full(n, 200.0), np.zeros(n), rng.uniform(10, 12, n)
+    curve = lnn[:, None] + longitudinal.shape(X, xmax[:, None], L[:, None], R[:, None])
+    r = 1.0 - rng.exponential(1.0, curve.shape)                                  # mean 0, sd 1, skewed low
+    d = {"X": X, **{s: {"E": np.exp(curve + r), "ln_n": lnn, "theta": np.column_stack([xmax, L, R])}
+                    for s in sources.SPECIES_NAMES}}
+    t = sampler.peak_position(X, xmax, L)
+    ok = np.isfinite(curve)
+    true = np.exp(r[ok]).mean()                                                  # e / 2
+    skew = sampler.plane_residuals(d, np.arange(n), "skew")["photon"]
+    peak = sampler.plane_residuals(d, np.arange(n), "peak")["photon"]
+    z = rng.normal(size=t.shape)
+    e_skew = np.exp(sampler.skew_noise(skew, t, z)[ok]).mean()
+    bias, sd = sampler.at_peak(peak, t)
+    e_peak = np.exp((bias + sd * z)[ok]).mean()
+    assert abs(e_skew / true - 1) < 0.05 and e_peak / true > 1.1, (e_skew / true, e_peak / true)
+    at = skew["at"][1:-1]                                                        # a bin's own median t: its law alone
+    tt, rr = np.repeat(at[:, None], 200, 1), np.tile(np.linspace(-3.0, 0.9, 200), (len(at), 1))
+    back = sampler.skew_noise(skew, tt, sampler.skew_scores(skew, tt, rr))
+    assert np.allclose(back, rr, atol=1e-6), np.max(np.abs(back - rr))
+    assert abs(skew["rho"]) < 0.05                                                # independent leftovers
+
+
 def test_peak_and_plane_noise_draw_the_same_curve_without_noise():
     rng = np.random.default_rng(22)
     n = 1500

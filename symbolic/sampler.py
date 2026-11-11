@@ -2,7 +2,9 @@
 profile curve at the plane depths, then a per-plane correction and AR(1) noise. Fitted per class.
 The correction and noise size are set per plane number (noise "plane", the adopted model) or per position relative
 to the shower's own peak, t = (X - Xmax) / L (noise "peak"): with "plane", a plane number that is early in some
-showers and at the peak in others carries the early planes' large scatter to the peak."""
+showers and at the peak in others carries the early planes' large scatter to the peak. Noise "skew": per bin of t a
+Johnson SU for the leftovers instead of a normal (they are skewed low near the peak, and a symmetric noise on ln E
+inflates the summed energy)."""
 import numpy as np
 from scipy import special
 
@@ -16,6 +18,7 @@ MAX_REDRAWS = 100
 BLOCK = len(longitudinal.NAMES) + 1     # numbers per species: the profile, then the start depth
 PEAK_EDGES = np.array([-np.inf, -3, -2, -1, -0.5, 0, 0.5, 1, 2, 3, 4, 6, np.inf])
 MIN_BIN = 50               # leftovers a bin of t needs; emptier bins take the pooled bias and sd
+MAX_SKEW_FIT = 20000       # leftovers per bin the Johnson SU is fitted on (seeded subsample)
 
 
 def load(path, e_max=LOG10_E_MAX):
@@ -72,12 +75,65 @@ def at_peak(p, t):
     return np.interp(t, p["at"], p["bias_t"]), np.interp(t, p["at"], p["sd_t"])
 
 
+def _ones(n):
+    return np.ones((n, 1))
+
+
+def skew_bins(t, r, rng):
+    """Per bin of t: the median t (as peak_bins) and a Johnson SU of the leftovers r (at most MAX_SKEW_FIT of them,
+    seeded subsample); bins with fewer than MIN_BIN share one Johnson SU of all leftovers."""
+    at, _, _ = peak_bins(t, r)
+    ok = np.isfinite(t) & np.isfinite(r)
+    b = np.digitize(t, PEAK_EDGES) - 1
+
+    def fitted(x):
+        x = x if len(x) <= MAX_SKEW_FIT else rng.choice(x, MAX_SKEW_FIT, replace=False)
+        return cp.Margin("jsu").fit(_ones(len(x)), x)
+    pooled = None
+    margins = []
+    for k in range(len(PEAK_EDGES) - 1):
+        x = r[ok & (b == k)]
+        if len(x) >= MIN_BIN:
+            margins.append(fitted(x))
+        else:
+            pooled = pooled or fitted(r[ok])
+            margins.append(pooled)
+    return at, margins
+
+
+def skew_scores(p, t, r):
+    """Normal scores of leftovers r through the Johnson SU of their own bin of t (NaN where r or t is not finite)."""
+    z = np.full(r.shape, np.nan)
+    ok = np.isfinite(t) & np.isfinite(r)
+    b = np.digitize(t, PEAK_EDGES) - 1
+    for k, m in enumerate(p["margins"]):
+        sel = ok & (b == k)
+        if sel.any():
+            z[sel] = m.score(_ones(sel.sum()), r[sel])
+    return z
+
+
+def skew_noise(p, t, z):
+    """Leftovers at positions t from normal numbers z: each bin's Johnson SU quantile, linear in t between the two
+    neighbouring bins' median t, flat beyond the outer bins."""
+    at = p["at"]
+    u = special.ndtr(z).ravel()
+    Q = np.stack([m.ppf(_ones(len(u)), u) for m in p["margins"]]).reshape(len(at), *z.shape)
+    i1 = np.clip(np.searchsorted(at, t), 1, len(at) - 1)
+    i0 = i1 - 1
+    w = np.clip((t - at[i0]) / (at[i1] - at[i0]), 0.0, 1.0)
+    q0 = np.take_along_axis(Q, i0[None], 0)[0]
+    q1 = np.take_along_axis(Q, i1[None], 0)[0]
+    return (1 - w) * q0 + w * q1
+
+
 def plane_residuals(d, rows, noise="plane"):
     """Per species: mean and sd of log E_k minus the curve, per plane number (noise "plane") or per position
     relative to the shower's own peak (noise "peak"), and the plane-to-plane correlation of the standardized
-    leftovers."""
+    leftovers (noise "skew": of their normal scores through each bin's Johnson SU)."""
     X = d["X"][rows]
     out = {}
+    rng = np.random.default_rng(0)
     for s in SPECIES_NAMES:
         th = d[s]["theta"][rows]
         with np.errstate(all="ignore"):
@@ -89,11 +145,17 @@ def plane_residuals(d, rows, noise="plane"):
             at, bias_t, sd_t = peak_bins(t, r)
             p = {"noise": "peak", "at": at, "bias_t": bias_t, "sd_t": sd_t}
             bias, sd = at_peak(p, np.where(np.isfinite(t), t, 0.0))
+        elif noise == "skew":
+            t = peak_position(X, th[:, 0], th[:, 1])
+            at, margins = skew_bins(t, r, rng)
+            p = {"noise": "skew", "at": at, "margins": margins}
+            bias, sd = 0.0, 1.0
+            r = skew_scores(p, t, r)
         elif noise == "plane":
             bias, sd = np.nanmean(r, 0), np.nanstd(r, 0)
             p = {"bias": np.nan_to_num(bias), "sd": np.nan_to_num(sd)}
         else:
-            raise ValueError(f"noise {noise!r}: plane or peak")
+            raise ValueError(f"noise {noise!r}: plane, peak or skew")
         u = (r - bias) / sd
         min_pair = min(MIN_PAIR, len(rows) // 10)
         rhos = [np.corrcoef(u[ok, k], u[ok, k + 1])[0, 1] for k in range(r.shape[1] - 1)
@@ -173,10 +235,16 @@ def sample(model, l, u, X, rng):
     out = {}
     for i, (s, y) in enumerate(to_profiles(lat, l, X).items()):
         p = model["planes"][s]
-        if p.get("noise") == "peak":
+        if p.get("noise") in ("peak", "skew"):
             xmax, L = longitudinal.from_latent(species_block(lat, i)[0], l)[:2]
             t = peak_position(X, xmax, L)
-            bias, sd = at_peak(p, np.where(np.isfinite(t), t, 0.0))
+            t = np.where(np.isfinite(t), t, 0.0)
+        if p.get("noise") == "skew":
+            y = y + skew_noise(p, t, ar1(len(l), y.shape[1], p["rho"], rng))
+            out[s] = np.where(np.isfinite(y), np.exp(np.where(np.isfinite(y), y, 0.0)), 0.0)
+            continue
+        if p.get("noise") == "peak":
+            bias, sd = at_peak(p, t)
         else:
             bias, sd = p["bias"], p["sd"]
         y = y + bias + sd * ar1(len(l), y.shape[1], p["rho"], rng)
