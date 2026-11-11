@@ -235,7 +235,7 @@ def name_label(n, site):
     return f"\\uline{{{fixed_label(n)}}}" if n in SEL[site] else fixed_label(n)
 
 
-ANG_MAIN = [c for c in ANG if c[0] != "w2.5"]          # main text: the 2.5 deg share is in the appendix (_w25)
+ANG_MAIN = [c for c in ANG if c[0] != "w2.5"]          # main text: the 2.5 deg share is in the appendix tables (_all)
 
 
 def ang_row(n, fm, c8, site, name=False, cols=ANG):
@@ -389,7 +389,7 @@ trig19 = [n for n in NAMES[19] if is_trigopt19(n)]
 U4 = UT[:4]
 COLHEAD = {"w1": r"$<1^\circ$", "w2.5": r"$<2.5^\circ$", "w5": r"$<5^\circ$", "med": r"Median [$^\circ$]",
            "e02": r"$|\Delta\log_{10}E|<0.2$", "trig": "Trigger", "ntrig": r"$N_\mathrm{trig}$"}
-APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores moved to the appendix table (_w25)
+APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores only in the appendix tables (_all)
 
 
 def scores_table(site, names, uts, sep, wdesc, landscape=True):
@@ -409,46 +409,14 @@ def scores_table(site, names, uts, sep, wdesc, landscape=True):
     write(f"r{site}_scores", "long", len(cols) + len(uts), head, body(names, row),
           f"{sname}, no background: angular scores ({sh}), energy score{'' if 'trig' in APPX[site] else ', trigger'} and "
           f"utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every "
-          f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:w25}}.",
+          f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:all}}.",
           f"tab:r{site}_scores", sep=sep, desc=r">{\raggedright\arraybackslash}p{%s}" % wdesc, landscape=landscape)
 
 
 scores_table(19, main19, U4, "1pt", "2.9cm", landscape=False)
-bg_names19 = [n for n in NAMES[19] if not is_trigopt19(n)]
-write("r19_bg_ang", "long", 7, H_ANG,
-      stacked([(t, body(bg_names19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
-      f"{S19}, cosmic background + kNN gate: angular scores (all showers), energy score and trigger, as in "
-      f"Table~\\ref{{tab:r19_scores}}.", "tab:r19_bg_ang")
-write("r19_bg_util", "long", 4, H_U4,
-      stacked([(t, body(bg_names19, lambda n, p=p: util_row(n, *W[19][p], 19, U4))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 5),
-      f"{S19}, cosmic background + kNN gate: accuracy utilities, as in Table~\\ref{{tab:r19_scores}}.", "tab:r19_bg_util")
-modes = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
-write("r19_trig_ang", "float", 7, H_ANG,
-      stacked([(t, body(trig19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in modes], 8),
-      f"{S19}: angular scores (all showers), energy score and trigger of the trigger-optimized layouts.", "tab:r19_trig_ang")
-write("r19_trig_util", "float", 4, H_U4,
-      stacked([(t, body(trig19, lambda n, p=p: util_row(n, *W[19][p], 19, U4))) for t, p in modes], 5),
-      f"{S19}: accuracy utilities of the trigger-optimized layouts.", "tab:r19_trig_util")
-write("r19_trigut", "long", 3, H_TU,
-      stacked([(t, body(bg_names19, lambda n, p=p: util_row(n, *W[19][p], 19, UT[4:])) + "\n\\hline\n"
-                + body(trig19, lambda n, p=p: util_row(n, *W[19][p], 19, UT[4:]))) for t, p in modes], 4),
-      f"{S19}: trigger utility at $5^\\circ$ (Poisson and step trigger) and $1^\\circ$ (Poisson), per-shower means in "
-      f"$[0,1]$, of every layout; in each block fixed layouts, then accuracy-optimized, then trigger-optimized.",
-      "tab:r19_trigut")
-
 # Malata
 fm, c8 = W[20][""]
 scores_table(20, NAMES[20], UT, "1pt", "2.7cm")
-write("r20_bg_ang", "long", 7, H_ANG,
-      stacked([(t, body(NAMES[20], lambda n, p=p: ang_row(n, *W[20][p], 20))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
-      f"{S20}, cosmic background + kNN gate: angular scores (triggered showers), energy score and trigger, as in "
-      f"Table~\\ref{{tab:r20_scores}}.", "tab:r20_bg_ang")
-write("r20_bg_util", "long", 7, H_U7,
-      stacked([(t, body(NAMES[20], lambda n, p=p: util_row(n, *W[20][p], 20, UT))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
-      f"{S20}, cosmic background + kNN gate: utilities, as in Table~\\ref{{tab:r20_scores}}.", "tab:r20_bg_util",
-      sep="1.5pt")
-
-
 # background comparison: layouts of the figure, no background / 1 us / 10 us side by side
 BG_COLS = {19: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}")),            # 12 km: trigger rate in the appendix
            20: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}"), ("trig", 100, "{:.1f}"))}
@@ -460,7 +428,7 @@ def bg_row(n, site):
 
 
 for site, sname, sel_txt in ((19, S19, "share of all showers within $1^\\circ$ and median angular error (trigger rate: "
-                                       "App.~\\ref{app:bg})"),
+                                       "App.~\\ref{app:all})"),
                              (20, S20, "share of the triggered showers within $1^\\circ$, their median angular error and "
                                        "expected trigger rate")):
     figs = [n for n in NAMES[site] if n in SEL[site]]
@@ -541,27 +509,37 @@ def sweeps(run, cols):
     return ref + stacked([(t, "\n".join(row(n) for n in g)) for t, g in groups if g], 1 + len(cols))
 
 
-SW_CAP = (f"{S19}, no background: every layout of the sweeps of Figs.~\\ref{{fig:exp19}} and~\\ref{{fig:exp19_layouts}} "
-          f"(99 or 100 detectors), grid for reference; ")
-write("r19_sweeps_ang", "long", 7, r"Layout & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & "
-      r"$|\Delta\log_{10}E|<0.2$ & Trigger & $N_\mathrm{trig}$ \\", sweeps(19, ANG),
-      SW_CAP + "angular scores (all showers), energy score and trigger. Bold and colour over the layouts of this table.",
-      "tab:r19_sweeps_ang", desc="l")
-write("r19_sweeps_util", "long", 4, r"Layout & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & 3-tier \\",
-      sweeps(19, [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT[:4]]),
-      SW_CAP + "accuracy utilities (Sec.~\\ref{sec:utilities}). Bold and colour over the layouts of this table.",
-      "tab:r19_sweeps_util", desc="l")
+write("r19_sweeps", "long", 11, r"Layout & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & "
+      r"$|\Delta\log_{10}E|<0.2$ & Trigger & $N_\mathrm{trig}$ & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & "
+      r"3-tier \\", sweeps(19, ANG + [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT[:4]]),
+      f"{S19}, no background: every layout of the sweeps of Figs.~\\ref{{fig:exp19}} and~\\ref{{fig:exp19_layouts}} "
+      f"(99 or 100 detectors), grid for reference; angular scores (all showers), energy score, trigger and accuracy "
+      f"utilities (Sec.~\\ref{{sec:utilities}}). Bold and colour over the layouts of this table.", "tab:r19_sweeps",
+      desc="l", landscape=True)
 
-# appendix: share within 2.5 deg of the main-text layouts (no background)
-for site, names, sname, sh in ((19, main19, S19, "all showers"), (20, NAMES[20], S20, "triggered showers")):
-    f_, c_ = W[site][""]
-    ks = [c for c in ANG if c[0] in APPX[site]]
-    what = (f"share of the {sh} within $2.5^\\circ$ [\\%]" + (" and expected trigger rate (Poisson, 2\\,m$^2$, $k=3$) [\\%]"
-                                                             if "trig" in APPX[site] else ""))
-    write(f"r{site}_w25", "long", len(ks), DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in ks) + r" \\",
-          body(names, lambda n: label(n, f_[n], site) + " & " + " & ".join(pair(f_, c_, n, k, sc, f) for k, sc, f in ks)
-               + r" \\"),
-          f"{sname}, no background: {what} for the layouts of Table~\\ref{{tab:r{site}_scores}}.", f"tab:r{site}_w25")
+# appendix: complete scores of every layout, one block per background window (bold and colour per block)
+MODES = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
+
+
+def full_body(site, p, row):
+    names = [n for n in NAMES[site] if not (site == 19 and is_trigopt19(n))]
+    out = body(names, lambda n: row(n, p))
+    if site == 19:          # 12 km trigger-optimized layouts below a second line
+        out += "\n\\hline\n" + body([n for n in NAMES[19] if is_trigopt19(n)], lambda n: row(n, p))
+    return out
+
+
+for site, sname, sh in ((19, S19, "all showers"), (20, S20, "triggered showers")):
+    extra = "; trigger-optimized layouts below the second line" if site == 19 else ""
+    win = (r"without background and with a 1 or 10\,$\mu$s readout window and the kNN gate "
+           f"(Sec.~\\ref{{sec:r{site}_bg}}); bold and colour per block{extra}")
+    write(f"r{site}_all_ang", "long", 7, H_ANG,
+          stacked([(t, full_body(site, p, lambda n, p_: ang_row(n, *W[site][p_], site))) for t, p in MODES], 8),
+          f"{sname}: angular scores ({sh}), energy score and trigger of every layout, {win}.", f"tab:r{site}_all_ang")
+    write(f"r{site}_all_util", "long", 7, H_U7,
+          stacked([(t, full_body(site, p, lambda n, p_: util_row(n, *W[site][p_], site, UT))) for t, p in MODES], 8),
+          f"{sname}: utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) "
+          f"of every layout, {win}.", f"tab:r{site}_all_util", sep="1.5pt")
 
 # figures
 figure(19, W[19][""][0], main19)
