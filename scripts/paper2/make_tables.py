@@ -349,8 +349,12 @@ def figure(site, res, names):
     site_npz = np.load(f"{SITES}/{'plane' if site == 19 else 'malata'}.npz")
     tris = site_npz["tris"]; sc = 1000.0 if site == 19 else 1.0
     cE, cN = tris[:, :, 0].mean(1) / sc, tris[:, :, 1].mean(1) / sc
-    fig, ax = plt.subplots(4, 4, figsize=(10, 10.6), constrained_layout=True)
     panels = SEL[site]
+    nf = sum(1 for n in panels if not n.startswith("opt_"))
+    ncol = 4 if len(panels) == 16 else max(nf, len(panels) - nf)      # 12 km 4 x 4; Malata fixed row / optimized row
+    nrow = -(-len(panels) // ncol)
+    fig, ax = plt.subplots(nrow, ncol, figsize=(10, 10.6) if ncol == 4 else (10, 2.75 * nrow + 0.3),
+                           constrained_layout=True)
     for a, n in zip(ax.flat, panels):
         if n not in res:
             a.axis("off"); continue
@@ -359,8 +363,10 @@ def figure(site, res, names):
         a.scatter(cE, cN, s=(0.3 if site == 19 else 4), color="0.85", lw=0, rasterized=True)
         a.scatter(x, y, s=7, color="tab:blue" if n.startswith("opt_") else "0.15", lw=0)
         o, u, cs, st = cells(n, res[n])
-        lab = plain(fixed_label(n) if not n.startswith("opt_") else ", ".join(x for x in (u, cs, o, st) if x))
-        a.set_title(f"{lab}\n1°: {100 * res[n]['w1']:.1f}%  5°: {100 * res[n]['w5']:.1f}%", fontsize=7.5)
+        lab = plain(fixed_label(n) if not n.startswith("opt_") else
+                    ", ".join(x for x in (u, cs) if x) + "\n" + ", ".join(x for x in (o, st) if x))
+        a.set_title(f"{lab}\n1°: {100 * res[n]['w1']:.1f}%  5°: {100 * res[n]['w5']:.1f}%",
+                    fontsize=7.5 if ncol == 4 else 6.5)
         a.set_aspect("equal"); a.tick_params(labelsize=6.5)
     u = "km" if site == 19 else "m"
     for a in ax[-1]:
@@ -417,16 +423,12 @@ def head_rows(site, names):
 
 
 HEAD = {19: head_rows(19, main19), 20: head_rows(20, NAMES[20])}
-SEL[19] = HEAD[19]          # the 12 km layout figure shows exactly the headline layouts, in its order
+SEL[19], SEL[20] = HEAD[19], HEAD[20]     # the layout figures show exactly the headline layouts, in its order
 print("12 km headline / figure layouts:", " ".join(HEAD[19]))
 
 MAINCELLS = set()   # (site, mode, layout, key) printed in a main-text table (headline, background comparison)
 PRINTED = set()     # printed in the appendix's full scores table: not repeated in the complete tables
 UCOLS = [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT]
-BG_COLS = {19: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}")),            # 12 km: trigger rate in the appendix
-           20: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}"), ("trig", 100, "{:.1f}"))}
-for _s in (19, 20):         # the background comparison (main text) shows these
-    MAINCELLS.update((_s, p, n, k) for n in NAMES[_s] if n in SEL[_s] for k, _, _ in BG_COLS[_s] for p in ("", "bg1_", "bg10_"))
 
 
 def cells_of(site, p, n, cols, util, hide, mark=None):
@@ -444,26 +446,33 @@ def cells_of(site, p, n, cols, util, hide, mark=None):
 
 
 def headline(site, names):
+    """main-text table per site: the headline layouts (HEAD), angular scores without background and, for the 1 and
+    10 us readout windows with the kNN gate, the share within 1 deg and the median (and the trigger rate on Malata)"""
     f_, _ = W[site][""]
     rows = HEAD[site]
     none = [c for c in ANG if c[0] in (("w1", "w5", "med") if site == 19 else ("w1", "w5", "med", "trig"))]
-    w1 = [c for c in ANG if c[0] == "w1"]
+    bgc = [c for c in ANG if c[0] in (("w1", "med") if site == 19 else ("w1", "med", "trig"))]
 
     def row(n):
-        cs = (cells_of(site, "", n, none, False, set(), MAINCELLS) + cells_of(site, "bg1_", n, w1, False, set(), MAINCELLS)
-              + cells_of(site, "bg10_", n, w1, False, set(), MAINCELLS))
+        cs = cells_of(site, "", n, none, False, set(), MAINCELLS)
+        for p in ("bg1_", "bg10_"):
+            cs += cells_of(site, p, n, bgc, False, set(), MAINCELLS)
         return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
-    head = (r" & \multicolumn{%d}{c}{No background} & \multicolumn{2}{c}{$<1^\circ$, background + kNN} \\" % len(none)
-            + "\n" + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in none) + r" & 1\,$\mu$s & 10\,$\mu$s \\")
+    nb = len(bgc)
+    head = (r" & \multicolumn{%d}{c}{No background} & \multicolumn{%d}{c}{1\,$\mu$s background + kNN} & "
+            r"\multicolumn{%d}{c}{10\,$\mu$s background + kNN} \\" % (len(none), nb, nb) + "\n"
+            + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in none + bgc + bgc) + r" \\")
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
-    sel = (f"the fixed layouts of Fig.~\\ref{{fig:r{site}_layouts}} and, for each utility, the best layout optimized "
-           f"for it (largest flow-matching share within $1^\\circ$) with the same run from the centre start"
+    sel = (f"the layouts of Fig.~\\ref{{fig:r{site}_layouts}}: the fixed layouts and, for each utility, the best layout "
+           f"optimized for it (largest flow-matching share within $1^\\circ$) with the same run from the centre start"
            + ("" if site == 19 else " where one exists"))
-    write(f"r{site}_head", "float", len(none) + 2, head, body(rows, row),
-          f"{sname}: {sel}; angular scores ({sh})"
-          f"{'' if site == 19 else ' and trigger rate'} without background, and the share within $1^\\circ$ with a 1 "
-          f"or 10\\,$\\mu$s readout window and the kNN gate. App.~\\ref{{app:scores}} lists every layout.",
-          f"tab:r{site}_head")
+    bgs = "share within $1^\\circ$ and median" + ("" if site == 19 else " and trigger rate")
+    write(f"r{site}_head", "float", len(none) + 2 * nb, head, body(rows, row),
+          f"{sname}: {sel}. Angular scores ({sh}){'' if site == 19 else ' and trigger rate'} without background; "
+          f"{bgs} with a 1 or 10\\,$\\mu$s readout window and the kNN gate (Sec.~\\ref{{sec:r{site}_bg}}). "
+          f"App.~\\ref{{app:scores}} lists every layout.", f"tab:r{site}_head",
+          sep="1pt" if site == 20 else "2pt",
+          desc=r">{\raggedright\arraybackslash}p{%s}" % ("2.9cm" if site == 20 else "4.2cm"))
 
 
 headline(19, main19)
@@ -490,7 +499,7 @@ def scores_table(site, names, uts, sep, wdesc, landscape=True):
           f"{sname}, no background: angular scores ({sh}), energy score{'' if 'trig' in APPX[site] else ', trigger'} and "
           f"utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every "
           f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:all}}. Empty cells: in "
-          f"Tables~\\ref{{tab:r{site}_head}} and~\\ref{{tab:r{site}_bg}}.",
+          f"Table~\\ref{{tab:r{site}_head}}.",
           f"tab:r{site}_scores", sep=sep, desc=r">{\raggedright\arraybackslash}p{%s}" % wdesc, landscape=landscape)
 
 
@@ -498,26 +507,6 @@ scores_table(19, main19, U4, "1pt", "2.9cm", landscape=False)
 # Malata
 fm, c8 = W[20][""]
 scores_table(20, NAMES[20], UT, "1pt", "2.7cm")
-# background comparison: layouts of the figure, no background / 1 us / 10 us side by side
-
-
-def bg_row(n, site):
-    cs = [pair(*W[site][p], n, k, sc, f) for k, sc, f in BG_COLS[site] for p in ("", "bg1_", "bg10_")]
-    return label(n, W[site][""][0][n], site) + " & " + " & ".join(cs) + r" \\"
-
-
-for site, sname, sel_txt in ((19, S19, "share of all showers within $1^\\circ$ and median angular error (trigger rate: "
-                                       "App.~\\ref{app:all})"),
-                             (20, S20, "share of the triggered showers within $1^\\circ$, their median angular error and "
-                                       "expected trigger rate")):
-    figs = [n for n in NAMES[site] if n in SEL[site]]
-    nb = len(BG_COLS[site])
-    write(f"r{site}_bg", "float", 3 * nb, H_BG if nb == 3 else H_BG.split(r" & \multicolumn{3}{c}{Trigger [\%]}")[0] + r" \\"
-          + "\n" + DESC_HEAD + r" & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s \\",
-          body(figs, lambda n, s=site: bg_row(n, s)),
-          f"{sname}: layouts of Fig.~\\ref{{fig:r{site}_layouts}} without background (none) and with a 1 or "
-          f"10\\,$\\mu$s readout window and the kNN gate; {sel_txt}.", f"tab:r{site}_bg", sep="1.1pt")
-
 # analytical reconstruction (Malata, no background): DeepSets vs TamboDirReco port, triggered showers
 def tv(pat):
     return trig_view({n: v for p in sorted(glob.glob(f"{D}/{pat}")) for n, v in json.load(open(p)).items()
@@ -628,7 +617,7 @@ for site, sname, sh in ((19, S19, "all showers"), (20, S20, "triggered showers")
     extra = "; trigger-optimized layouts below the second line" if site == 19 else ""
     win = (r"without background and with a 1 or 10\,$\mu$s readout window and the kNN gate "
            f"(Sec.~\\ref{{sec:r{site}_bg}}); bold and colour per block{extra}. Empty cells: in "
-           f"Tables~\\ref{{tab:r{site}_head}}, \\ref{{tab:r{site}_bg}} and~\\ref{{tab:r{site}_scores}}")
+           f"Tables~\\ref{{tab:r{site}_head}} and~\\ref{{tab:r{site}_scores}}")
     for kind, cols, util, head, nd, sep in (("ang", ANG, False, H_ANG, 7, "2pt"), ("util", UCOLS, True, H_U7, 7, "1.5pt")):
         blocks = [(t, full_body(site, p, cols, util)) for t, p in MODES]
         what = (f"angular scores ({sh}), energy score and trigger" if kind == "ang" else
