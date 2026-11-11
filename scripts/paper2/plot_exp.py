@@ -50,7 +50,7 @@ def series(d, pat, key_fn):
     return sorted(pts, key=lambda t: t[0])
 
 
-def draw(axrow, data, fams, xlabel, logx, grid=True):
+def draw(axrow, data, fams, xlabel, logx, grid=True, legend=True):
     """fams: list of (label, colour, pattern, x-function)."""
     for src, (_, ls, sname) in SRC.items():
         d = data[src]
@@ -78,7 +78,8 @@ def draw(axrow, data, fams, xlabel, logx, grid=True):
     axrow[0].set_ylabel(r"within $1^\circ$ (dark), $5^\circ$ (light) [%]")
     axrow[1].set_ylabel(r"median error [$^\circ$]"); axrow[1].set_yscale("log")
     axrow[2].set_ylabel("trigger [%]")
-    axrow[0].legend(loc="best")
+    if legend:
+        axrow[0].legend(loc="best")
 
 
 def src_legend(fig):
@@ -115,11 +116,9 @@ if d19["fm"] or d19["c8"]:
 d20 = load(20)
 if d20["fm"] or d20["c8"]:
     fig, ax = plt.subplots(1, 3, figsize=(10, 3.6), layout="constrained")
-    draw(ax, d20, [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1])),
-                   ("33 triplets, uniform", "tab:green", r"tri33_r(\d+)", lambda m: 400.0),
-                   ("33 triplets in 150 m disk", "tab:purple", r"tri33disk_R150_r(\d+)", lambda m: 150.0)],
-         "disk radius [m]", False)
-    ax[1].set_title("disk size (triplets: at the radius they cover)")
+    draw(ax, d20, [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]))],
+         "disk radius [m]", False, legend=False)
+    ax[1].set_title("disk size")
     src_legend(fig)
     fig.savefig(f"{FIG}/exp20.pdf")
 # ── the layouts themselves: one row per experiment, real layout files on the detector region ─────────────────────
