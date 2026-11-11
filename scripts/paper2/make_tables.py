@@ -397,7 +397,7 @@ APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores only in the 
 
 # headline selection (main-text table and, on the 12 km plane, the layout figure)
 HEAD_GROUPS = {19: ("orig", "twotier_l0p3", "twotier_l0", "threetier"),
-               20: ("orig", "trig5_poisson", "trig5_step")}
+               20: ("orig", "trig5_step")}
 
 
 def start_twin(n):
