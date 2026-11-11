@@ -387,25 +387,33 @@ fm, c8 = W[19][""]
 main19 = [n for n in NAMES[19] if not is_trigopt19(n) and not is_setup19(n)]
 trig19 = [n for n in NAMES[19] if is_trigopt19(n)]
 U4 = UT[:4]
-def scores_table(site, names, uts, sep, wdesc):
-    """one table per site: every main-text layout (fixed above the line, optimized below), scores without the 2.5 deg
-    share (appendix) and the utilities uts"""
+COLHEAD = {"w1": r"$<1^\circ$", "w2.5": r"$<2.5^\circ$", "w5": r"$<5^\circ$", "med": r"Median [$^\circ$]",
+           "e02": r"$|\Delta\log_{10}E|<0.2$", "trig": "Trigger", "ntrig": r"$N_\mathrm{trig}$"}
+APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores moved to the appendix table (_w25)
+
+
+def scores_table(site, names, uts, sep, wdesc, landscape=True):
+    """one table per site: every main-text layout (fixed above the line, optimized below), the scores not in APPX
+    and the utilities uts"""
     f_, c_ = W[site][""]
-    head = (r" & \multicolumn{%d}{c}{Scores} & \multicolumn{%d}{c}{Utilities} \\" % (len(ANG_MAIN), len(uts)) + "\n"
-            + H_ANG_MAIN[:-3] + " & " + " & ".join(UT_HEAD[UT.index(k)] for k in uts) + r" \\")
+    cols = [c for c in ANG if c[0] not in APPX[site]]
+    head = (r" & \multicolumn{%d}{c}{Scores} & \multicolumn{%d}{c}{Utilities} \\" % (len(cols), len(uts)) + "\n"
+            + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in cols) + " & "
+            + " & ".join(UT_HEAD[UT.index(k)] for k in uts) + r" \\")
 
     def row(n):
         u = util_row(n, f_, c_, site, uts)
-        return ang_row(n, f_, c_, site, cols=ANG_MAIN)[:-3] + u[len(label(n, f_[n], site)):]
+        return ang_row(n, f_, c_, site, cols=cols)[:-3] + u[len(label(n, f_[n], site)):]
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
-    write(f"r{site}_scores", "long", len(ANG_MAIN) + len(uts), head, body(names, row),
-          f"{sname}, no background: angular scores ({sh}), energy score, trigger and utilities "
-          f"(Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every layout; "
-          f"fixed layouts above the line, optimized below. Share within $2.5^\\circ$: App.~\\ref{{app:w25}}.",
-          f"tab:r{site}_scores", sep=sep, desc=r">{\raggedright\arraybackslash}p{%s}" % wdesc, landscape=True)
+    moved = "share within $2.5^\\circ$ and trigger rate" if "trig" in APPX[site] else "share within $2.5^\\circ$"
+    write(f"r{site}_scores", "long", len(cols) + len(uts), head, body(names, row),
+          f"{sname}, no background: angular scores ({sh}), energy score{'' if 'trig' in APPX[site] else ', trigger'} and "
+          f"utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every "
+          f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:w25}}.",
+          f"tab:r{site}_scores", sep=sep, desc=r">{\raggedright\arraybackslash}p{%s}" % wdesc, landscape=landscape)
 
 
-scores_table(19, main19, U4, "2pt", "4.2cm")
+scores_table(19, main19, U4, "1pt", "2.9cm", landscape=False)
 bg_names19 = [n for n in NAMES[19] if not is_trigopt19(n)]
 write("r19_bg_ang", "long", 7, H_ANG,
       stacked([(t, body(bg_names19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
@@ -442,18 +450,26 @@ write("r20_bg_util", "long", 7, H_U7,
 
 
 # background comparison: layouts of the figure, no background / 1 us / 10 us side by side
+BG_COLS = {19: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}")),            # 12 km: trigger rate in the appendix
+           20: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}"), ("trig", 100, "{:.1f}"))}
+
+
 def bg_row(n, site):
-    cs = [pair(*W[site][p], n, k, sc, f) for k, sc, f in (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}"),
-                                                          ("trig", 100, "{:.1f}")) for p in ("", "bg1_", "bg10_")]
+    cs = [pair(*W[site][p], n, k, sc, f) for k, sc, f in BG_COLS[site] for p in ("", "bg1_", "bg10_")]
     return label(n, W[site][""][0][n], site).replace("\\uline", "") + " & " + " & ".join(cs) + r" \\"
 
 
-for site, sname, sel_txt in ((19, S19, "share of all showers within $1^\\circ$, median angular error"),
-                             (20, S20, "share of the triggered showers within $1^\\circ$, their median angular error")):
+for site, sname, sel_txt in ((19, S19, "share of all showers within $1^\\circ$ and median angular error (trigger rate: "
+                                       "App.~\\ref{app:bg})"),
+                             (20, S20, "share of the triggered showers within $1^\\circ$, their median angular error and "
+                                       "expected trigger rate")):
     figs = [n for n in NAMES[site] if n in SEL[site]]
-    write(f"r{site}_bg", "float", 9, H_BG, body(figs, lambda n, s=site: bg_row(n, s)),
+    nb = len(BG_COLS[site])
+    write(f"r{site}_bg", "float", 3 * nb, H_BG if nb == 3 else H_BG.split(r" & \multicolumn{3}{c}{Trigger [\%]}")[0] + r" \\"
+          + "\n" + DESC_HEAD + r" & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s \\",
+          body(figs, lambda n, s=site: bg_row(n, s)),
           f"{sname}: layouts of Fig.~\\ref{{fig:r{site}_layouts}} without background (none) and with a 1 or "
-          f"10\\,$\\mu$s readout window and the kNN gate; {sel_txt} and expected trigger rate.", f"tab:r{site}_bg", sep="1.1pt")
+          f"10\\,$\\mu$s readout window and the kNN gate; {sel_txt}.", f"tab:r{site}_bg", sep="1.1pt")
 
 # analytical reconstruction (Malata, no background): DeepSets vs TamboDirReco port, triggered showers
 def tv(pat):
@@ -537,13 +553,15 @@ write("r19_sweeps_util", "long", 4, r"Layout & Orig. & 2-tier $\lambda{=}0.3$ & 
       "tab:r19_sweeps_util", desc="l")
 
 # appendix: share within 2.5 deg of the main-text layouts (no background)
-H_W25 = DESC_HEAD + r" & $<2.5^\circ$ \\"
 for site, names, sname, sh in ((19, main19, S19, "all showers"), (20, NAMES[20], S20, "triggered showers")):
     f_, c_ = W[site][""]
-    write(f"r{site}_w25", "long", 1, H_W25, body(names, lambda n: label(n, f_[n], site) + " & "
-                                                   + pair(f_, c_, n, "w2.5", 100, "{:.1f}") + r" \\"),
-          f"{sname}, no background: share of the {sh} within $2.5^\\circ$ [\\%] for the layouts of Sec.~\\ref{{sec:r{site}}}.",
-          f"tab:r{site}_w25")
+    ks = [c for c in ANG if c[0] in APPX[site]]
+    what = (f"share of the {sh} within $2.5^\\circ$ [\\%]" + (" and expected trigger rate (Poisson, 2\\,m$^2$, $k=3$) [\\%]"
+                                                             if "trig" in APPX[site] else ""))
+    write(f"r{site}_w25", "long", len(ks), DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in ks) + r" \\",
+          body(names, lambda n: label(n, f_[n], site) + " & " + " & ".join(pair(f_, c_, n, k, sc, f) for k, sc, f in ks)
+               + r" \\"),
+          f"{sname}, no background: {what} for the layouts of Table~\\ref{{tab:r{site}_scores}}.", f"tab:r{site}_w25")
 
 # figures
 figure(19, W[19][""][0], main19)
