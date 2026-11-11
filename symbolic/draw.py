@@ -221,7 +221,7 @@ def given_primaries(args):
     return tuple(z[k][idx] for k in ("rows", "l", "u", "labels", "X", "dirs"))
 
 
-def sample_energies(root, l, u, X, lab, rng, fits=None):
+def sample_energies(root, l, u, X, lab, rng, fits=None, noise="plane"):
     """Plane energies {species: (n, planes)}, Xmax {species: (n,)} and the plane energy kind ("stored" for the
     default training file; a fits file of fit_profiles.py --stage tables: "total", fitted on its own showers, all
     of them up to its top) from the Part-1 sampler, class by class."""
@@ -235,7 +235,7 @@ def sample_energies(root, l, u, X, lab, rng, fits=None):
         tr, top = sampler.load(fits, e_max=e_max), np.inf
     for c in planes.CLASS:
         m = lab == c
-        e, lat = sampler.sample(sampler.fit(tr, c, top=top), l[m], u[m], X[m], rng)
+        e, lat = sampler.sample(sampler.fit(tr, c, top=top, noise=noise), l[m], u[m], X[m], rng)
         for j, s in enumerate(SPECIES_NAMES):
             E[s][m] = e[s]
             xmax[s][m] = longitudinal.from_latent(sampler.species_block(lat, j)[0], l[m])[0]
@@ -249,12 +249,12 @@ def energy_kind(z):
 
 def stage_energies(out, args, log):
     rows, l, u, lab, X, dirs = given_primaries(args) if args.primaries else scored_primaries(args)
-    E, xmax, kind = sample_energies(args.out, l, u, X, lab, np.random.default_rng(args.seed), args.fits)
+    E, xmax, kind = sample_energies(args.out, l, u, X, lab, np.random.default_rng(args.seed), args.fits, args.noise)
     np.savez(os.path.join(out, "energies.npz"), rows=rows, labels=lab, l=l, u=u, X=X, dirs=dirs,
-             plane_energy=np.array(kind), **{f"{s}.E": E[s] for s in SPECIES_NAMES},
+             plane_energy=np.array(kind), noise=np.array(args.noise), **{f"{s}.E": E[s] for s in SPECIES_NAMES},
              **{f"{s}.xmax": xmax[s] for s in SPECIES_NAMES})
-    log.info("sampled %s plane energies of %d primaries", kind, len(rows))
-    return {"primaries": int(len(rows)), "seed": args.seed, "plane_energy": kind, "fits": args.fits}
+    log.info("sampled %s plane energies of %d primaries, %s noise", kind, len(rows), args.noise)
+    return {"primaries": int(len(rows)), "seed": args.seed, "plane_energy": kind, "fits": args.fits, "noise": args.noise}
 
 
 def draw_laws(root, laws_path=LAWS, width_law=None, time_law=None, energy_law=None):
@@ -344,6 +344,8 @@ def main():
     ap.add_argument("--draws", type=int, default=1, help="energies stage: draws per primary of --primaries")
     ap.add_argument("--fits", help="energies stage: fits file of fit_profiles.py --stage tables (total plane energy) "
                     "instead of the default training fits")
+    ap.add_argument("--noise", choices=("plane", "peak"), default="plane",
+                    help="energies stage: plane noise per plane number (adopted) or per position relative to the peak")
     ap.add_argument("--laws", default=LAWS, help="draw stage: particle laws, relative to --out")
     ap.add_argument("--task", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", 0)))
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))

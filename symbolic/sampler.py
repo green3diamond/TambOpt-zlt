@@ -1,5 +1,8 @@
 """Draws the energy per plane for a primary: 5 numbers per species (profile + start depth) from the copula, the
-profile curve at the plane depths, then a per-plane correction and AR(1) noise. Fitted per class."""
+profile curve at the plane depths, then a per-plane correction and AR(1) noise. Fitted per class.
+The correction and noise size are set per plane number (noise "plane", the adopted model) or per position relative
+to the shower's own peak, t = (X - Xmax) / L (noise "peak"): with "plane", a plane number that is early in some
+showers and at the peak in others carries the early planes' large scatter to the peak."""
 import numpy as np
 from scipy import special
 
@@ -11,6 +14,8 @@ TOP = 6.125                # log10 E; the training file's top bin is under-fille
 MIN_PAIR = 1000
 MAX_REDRAWS = 100
 BLOCK = len(longitudinal.NAMES) + 1     # numbers per species: the profile, then the start depth
+PEAK_EDGES = np.array([-np.inf, -3, -2, -1, -0.5, 0, 0.5, 1, 2, 3, 4, 6, np.inf])
+MIN_BIN = 50               # leftovers a bin of t needs; emptier bins take the pooled bias and sd
 
 
 def load(path, e_max=LOG10_E_MAX):
@@ -38,8 +43,39 @@ def class_rows(d, c, top=TOP, keep=None):
             "l": d["meta"]["log10_E"][m], "u": d["meta"]["cos_zenith"][m]}
 
 
-def plane_residuals(d, rows):
-    """Per species: mean and sd per plane of log E_k minus the curve, and their plane-to-plane correlation."""
+def peak_position(X, xmax, L):
+    """t = (X - Xmax) / L of every plane, (n, planes)."""
+    with np.errstate(all="ignore"):
+        return (X - xmax[:, None]) / L[:, None]
+
+
+def peak_bins(t, r):
+    """Per bin of t (PEAK_EDGES): the median t, mean and sd of the leftovers r. A bin with fewer than MIN_BIN takes
+    the pooled mean and sd, placed at its middle (open outer bins: one unit beyond their edge)."""
+    ok = np.isfinite(t) & np.isfinite(r)
+    b = np.digitize(t, PEAK_EDGES) - 1
+    pooled = (np.mean(r[ok]), np.std(r[ok]))
+    at, bias, sd = [], [], []
+    for k in range(len(PEAK_EDGES) - 1):
+        m = ok & (b == k)
+        if m.sum() >= MIN_BIN:
+            at.append(np.median(t[m])), bias.append(np.mean(r[m])), sd.append(np.std(r[m]))
+            continue
+        lo, hi = PEAK_EDGES[k], PEAK_EDGES[k + 1]
+        at.append(hi - 1.0 if not np.isfinite(lo) else lo + 1.0 if not np.isfinite(hi) else 0.5 * (lo + hi))
+        bias.append(pooled[0]), sd.append(pooled[1])
+    return np.array(at), np.array(bias), np.array(sd)
+
+
+def at_peak(p, t):
+    """Bias and sd of the peak noise model p read off at positions t (linear between bins, flat beyond)."""
+    return np.interp(t, p["at"], p["bias_t"]), np.interp(t, p["at"], p["sd_t"])
+
+
+def plane_residuals(d, rows, noise="plane"):
+    """Per species: mean and sd of log E_k minus the curve, per plane number (noise "plane") or per position
+    relative to the shower's own peak (noise "peak"), and the plane-to-plane correlation of the standardized
+    leftovers."""
     X = d["X"][rows]
     out = {}
     for s in SPECIES_NAMES:
@@ -48,24 +84,33 @@ def plane_residuals(d, rows):
             curve = d[s]["ln_n"][rows][:, None] + longitudinal.shape(X, *[th[:, i, None] for i in range(3)])
             r = longitudinal.log_energy(d[s]["E"][rows]) - curve
         r[~np.isfinite(r)] = np.nan
-        bias, sd = np.nanmean(r, 0), np.nanstd(r, 0)
+        if noise == "peak":
+            t = peak_position(X, th[:, 0], th[:, 1])
+            at, bias_t, sd_t = peak_bins(t, r)
+            p = {"noise": "peak", "at": at, "bias_t": bias_t, "sd_t": sd_t}
+            bias, sd = at_peak(p, np.where(np.isfinite(t), t, 0.0))
+        elif noise == "plane":
+            bias, sd = np.nanmean(r, 0), np.nanstd(r, 0)
+            p = {"bias": np.nan_to_num(bias), "sd": np.nan_to_num(sd)}
+        else:
+            raise ValueError(f"noise {noise!r}: plane or peak")
         u = (r - bias) / sd
         min_pair = min(MIN_PAIR, len(rows) // 10)
         rhos = [np.corrcoef(u[ok, k], u[ok, k + 1])[0, 1] for k in range(r.shape[1] - 1)
                 for ok in [np.isfinite(u[:, k]) & np.isfinite(u[:, k + 1])] if ok.sum() >= min_pair]
-        out[s] = {"bias": np.nan_to_num(bias), "sd": np.nan_to_num(sd), "rho": float(np.mean(rhos))}
+        out[s] = {**p, "rho": float(np.mean(rhos))}
     return out
 
 
-def fit(d, c, top=TOP, keep=None, margin=lambda: cp.Margin("jsu")):
+def fit(d, c, top=TOP, keep=None, margin=lambda: cp.Margin("jsu"), noise="plane"):
     """Fit the sampler for class c on the output of load(), on showers below log10 E = top (and within keep).
-    margin() makes each number's margin: linear laws by default."""
+    margin() makes each number's margin: linear laws by default. noise: the plane residual model (module docstring)."""
     t = class_rows(d, c, top, keep)
     design = cp.Design(t["l"], t["u"])
     D = design(t["l"], t["u"])
     margins = [margin().fit(D, t["X"][:, j]) for j in range(t["X"].shape[1])]
     C = cp.corr(cp.normal_scores(margins, D, t["X"]))
-    return {"design": design, "margins": margins, "C": C, "planes": plane_residuals(d, t["rows"]),
+    return {"design": design, "margins": margins, "C": C, "planes": plane_residuals(d, t["rows"], noise),
             "n_train": len(t["rows"])}
 
 
@@ -126,9 +171,15 @@ def sample(model, l, u, X, rng):
     if bad.any():
         raise ValueError(f"{bad.sum()} draws still end inside the planes after {MAX_REDRAWS} redraws")
     out = {}
-    for s, y in to_profiles(lat, l, X).items():
+    for i, (s, y) in enumerate(to_profiles(lat, l, X).items()):
         p = model["planes"][s]
-        y = y + p["bias"] + p["sd"] * ar1(len(l), y.shape[1], p["rho"], rng)
+        if p.get("noise") == "peak":
+            xmax, L = longitudinal.from_latent(species_block(lat, i)[0], l)[:2]
+            t = peak_position(X, xmax, L)
+            bias, sd = at_peak(p, np.where(np.isfinite(t), t, 0.0))
+        else:
+            bias, sd = p["bias"], p["sd"]
+        y = y + bias + sd * ar1(len(l), y.shape[1], p["rho"], rng)
         out[s] = np.where(np.isfinite(y), np.exp(np.where(np.isfinite(y), y, 0.0)), 0.0)
     return out, lat
 

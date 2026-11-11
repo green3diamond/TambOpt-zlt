@@ -332,6 +332,55 @@ def test_tables_stage_fits_total_energies_and_the_sampler_loads_them():
             raise AssertionError("an existing fits file was overwritten")
 
 
+def test_peak_noise_keeps_early_scatter_away_from_the_peak():
+    rng = np.random.default_rng(21)
+    n = 4000
+    X = np.tile(atm.plane_depths([80.0], 24), (n, 1))
+    xmax, L, R, lnn = rng.uniform(300, 1500, n), np.full(n, 200.0), np.zeros(n), rng.uniform(10, 12, n)
+    curve = lnn[:, None] + longitudinal.shape(X, xmax[:, None], L[:, None], R[:, None])
+    t = (X - xmax[:, None]) / L[:, None]
+    sd_true = np.where(t < -1, 2.0, 0.05)                                        # wild before the peak, tight at it
+    d = {"X": X, **{s: {"E": np.exp(curve + sd_true * rng.normal(size=curve.shape)), "ln_n": lnn,
+                        "theta": np.column_stack([xmax, L, R])} for s in sources.SPECIES_NAMES}}
+    peak = sampler.plane_residuals(d, np.arange(n), "peak")["photon"]
+    plane = sampler.plane_residuals(d, np.arange(n), "plane")["photon"]
+    assert np.all(np.diff(peak["at"]) > 0), peak["at"]
+    near = (peak["at"] > -0.5) & (peak["at"] < 1.0)
+    early = peak["at"] < -1.5
+    assert near.any() and np.all(np.abs(peak["sd_t"][near] - 0.05) < 0.01), peak
+    assert early.any() and np.all(np.abs(peak["sd_t"][early] - 2.0) < 0.2), peak
+    k = int(np.argmin(np.abs(X[0] - 900.0)))                                     # a plane at the peak for some, early for others
+    assert plane["sd"][k] > 0.5 and np.all(np.abs(sampler.at_peak(peak, np.array([0.0, 0.5]))[1] - 0.05) < 0.01)
+    try:
+        sampler.plane_residuals(d, np.arange(n), "other")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown noise model was accepted")
+
+
+def test_peak_and_plane_noise_draw_the_same_curve_without_noise():
+    rng = np.random.default_rng(22)
+    n = 1500
+    X = np.tile(atm.plane_depths([80.0], 24), (n, 1))
+    le = rng.uniform(5.0, 6.0, n)
+    xmax, L, R, lnn = rng.uniform(300, 500, n), rng.uniform(150, 250, n), rng.uniform(0.0, 0.2, n), rng.uniform(10, 12, n)
+    curve = lnn[:, None] + longitudinal.shape(X, xmax[:, None], L[:, None], R[:, None])
+    f = {"ln_n": lnn, "theta": np.column_stack([xmax, L, R])}
+    d = {"X": X, "meta": {"log10_E": le, "cos_zenith": rng.uniform(0.1, 0.5, n), "labels": np.zeros(n, int)},
+         **{s: {"E": np.exp(curve + 0.1 * rng.normal(size=curve.shape)), **f, "Z": longitudinal.to_latent(f, le),
+                "start": rng.uniform(0, 50, n), "clean": np.ones(n, bool)} for s in sources.SPECIES_NAMES}}
+    plane, peak = sampler.fit(d, 0, top=np.inf), sampler.fit(d, 0, top=np.inf, noise="peak")
+    assert all(peak["planes"][s]["noise"] == "peak" and "noise" not in plane["planes"][s] for s in sources.SPECIES_NAMES)
+    for s in sources.SPECIES_NAMES:
+        plane["planes"][s].update(bias=np.zeros(24), sd=np.zeros(24))
+        peak["planes"][s].update(bias_t=np.zeros_like(peak["planes"][s]["at"]), sd_t=np.zeros_like(peak["planes"][s]["at"]))
+    peak.update(design=plane["design"], margins=plane["margins"], C=plane["C"])  # same profile numbers drawn
+    a, _ = sampler.sample(plane, le[:200], np.full(200, 0.3), X[:200], np.random.default_rng(5))
+    b, _ = sampler.sample(peak, le[:200], np.full(200, 0.3), X[:200], np.random.default_rng(5))
+    assert all(np.array_equal(a[s], b[s]) for s in sources.SPECIES_NAMES)
+
+
 def test_sampler_fit_uses_only_showers_below_the_cut():
     rng = np.random.default_rng(13)
     n = 1500
