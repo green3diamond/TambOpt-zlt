@@ -106,6 +106,50 @@ def test_total_energy_inputs_divide_by_the_stored_share():
     assert np.isclose(p[:, 3].sum(), 900.0 / 0.9, rtol=1e-6)                       # stored law reads x_stored
 
 
+def test_total_plane_energies_skip_the_stored_law():
+    law = {**toy_law(), "plane_energy": "total"}
+    X, ks, e_k = np.linspace(300, 900, 3), np.array([4, 8, 12]), np.array([10.0, 100.0, 1000.0])
+    x_s, x = draw.plane_inputs(X, 600.0, 5.8, 0.8, e_k, ks, law, "total")
+    x_ref, _ = draw.plane_inputs(X, 600.0, 5.8, 0.8, e_k, ks, law)
+    assert np.array_equal(x, x_s) and np.array_equal(x, x_ref)                     # inputs from e_k itself
+    p = draw.plane_particles(np.random.default_rng(1), 6, x[0], 900.0, law, "electron", total=True)
+    assert np.isclose(p[:, 3].sum(), 900.0, rtol=1e-9)                            # no division by the stored share
+    try:
+        draw.plane_inputs(X, 600.0, 5.8, 0.8, e_k, ks, {**law, "plane_energy": "stored"}, "total")
+    except ValueError as exc:
+        assert "fitted on total" in str(exc)
+    else:
+        raise AssertionError("total energies accepted laws fitted on stored energy")
+
+
+def test_total_plane_energies_refuse_old_caps_and_store_what_the_render_keeps():
+    from modules.constants import SPECIES_NAMES
+    law = {**toy_law(), "plane_energy": "total", "along": np.r_[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -20.0, 0.0, 0.0]}
+    laws = {(s, cn): law for s in SPECIES_NAMES for cn in ("EM", "hadronic")}
+    E = {s: np.r_[np.zeros(5), np.full(3, 50.0), np.zeros(16)] for s in SPECIES_NAMES}
+    job = (0, 1, 5.5, 0.8, "EM", np.linspace(600, 1600, 24), np.array([0.0, 0.6, 0.8]), E,
+           {s: 900.0 for s in SPECIES_NAMES}, laws)
+    try:
+        draw.shower((*job, "old", "total"))
+    except ValueError as exc:
+        assert "--caps new" in str(exc)
+    else:
+        raise AssertionError("total energies accepted the old caps")
+    _, new, _, _ = draw.shower((*job, "new", "total"))
+    for s in SPECIES_NAMES:
+        e = np.bincount(new[s][:, 2].astype(int), new[s][:, 3], 24)[5:8]
+        assert (e <= 50.0 + 1e-6).all() and (e > 0.8 * 50.0).all()                # at most the total, as CORSIKA
+
+
+def test_energy_kind_defaults_to_stored_for_old_files():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        np.savez(os.path.join(d, "a.npz"), rows=np.arange(2))
+        np.savez(os.path.join(d, "b.npz"), rows=np.arange(2), plane_energy=np.array("total"))
+        assert draw.energy_kind(np.load(os.path.join(d, "a.npz"))) == "stored"
+        assert draw.energy_kind(np.load(os.path.join(d, "b.npz"))) == "total"
+
+
 def test_new_caps_store_what_the_render_keeps_without_rescaling():
     from modules.constants import SPECIES_NAMES
     from symbolic import width_sr

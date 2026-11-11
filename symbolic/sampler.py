@@ -13,11 +13,11 @@ MAX_REDRAWS = 100
 BLOCK = len(longitudinal.NAMES) + 1     # numbers per species: the profile, then the start depth
 
 
-def load(path):
-    """Conditions, plane data and profile numbers of every species from a fits file (fit_profiles.py). Clean =
-    fitted, off the bounds and peaking within the planes."""
+def load(path, e_max=LOG10_E_MAX):
+    """Conditions, plane data and profile numbers of every species from a fits file (fit_profiles.py), showers with
+    log10 E <= e_max. Clean = fitted, off the bounds and peaking within the planes."""
     z = np.load(path)
-    keep = z["meta.log10_E"] <= LOG10_E_MAX
+    keep = z["meta.log10_E"] <= e_max
     d = {"meta": {k: z[f"meta.{k}"][keep] for k in ("log10_E", "cos_zenith", "labels")}, "X": z["X"][keep]}
     rng = np.random.default_rng(0)
     for s in SPECIES_NAMES:

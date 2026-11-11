@@ -17,6 +17,8 @@ energy, inputs annuli.features; then, with the laws of particles.py (fitted on t
                              energy rescaled to E_k. With --caps new: the caps of the v2 and 150k per-simulation
                              preprocessing (sources.CAP_NEW) and no rescale, the render decides what is stored, as
                              for CORSIKA (E_k then only sets the energy before the cut)
+With energies --fits (a sampler fitted on TOTAL plane energy, route B): E_k is the energy before the cut, step 1 is
+skipped, the laws must be fitted on total plane energy and the caps must be new.
 Gate: every drawn shower's stored plane energies equal the sampled E_k (old caps), or stay at or below the drawn
 energy before the cut (new caps).
 Stages: energies (sample once and save), draw (task i of N takes every N-th primary, workers within a task, one seed
@@ -120,10 +122,11 @@ def ring_means(law, x, k):
     return law["mean_energy"] @ x
 
 
-def plane_particles(rng, k, x, e_k, law, s, log_lam=None, x_stored=None):
+def plane_particles(rng, k, x, e_k, law, s, log_lam=None, x_stored=None, total=False):
     """Particles (n, 5) [plane k, across, along, energy, time] of one plane before the preprocessing; log_lam: the
-    plane's log10 width, None for the rings law unstretched; x_stored: the inputs of the stored law if not x."""
-    e_tot = e_k / softmax((x if x_stored is None else x_stored) @ law["stored"])[0]
+    plane's log10 width, None for the rings law unstretched; x_stored: the inputs of the stored law if not x;
+    total: e_k is already the plane's energy before the cut (no stored law)."""
+    e_tot = e_k if total else e_k / softmax((x if x_stored is None else x_stored) @ law["stored"])[0]
     shares = softmax(x @ law["rings"])
     shares = shares if log_lam is None else particles.stretch(shares, log_lam)
     lead_y, delay_y = ring_times(law, x, k)
@@ -151,12 +154,17 @@ def ring_particles(rng, k, e_ring, mean, spread, e_min, lead, tau):
     return np.column_stack([np.full(len(j), k), r * np.cos(phi), r * np.sin(phi), e, t])
 
 
-def plane_inputs(X, xmax, l, u, e_k, ks, law):
+def plane_inputs(X, xmax, l, u, e_k, ks, law, kind="stored"):
     """Inputs of the stored law (from the stored plane energies e_k) and of every other law (from the plane energy
-    the laws were fitted on: stored, or total = stored / stored share)."""
+    the laws were fitted on: stored, or total = stored / stored share). kind "total": e_k are total energies,
+    the inputs of every law, and no stored law is applied."""
     age, r_ref = longitudinal.age(X, xmax), np.array([lateral.r_m_ref(k, u) for k in ks])
     feats = lambda e: annuli.features(age, np.full(len(ks), l), np.full(len(ks), u), np.log(e), r_ref)
     x_s = feats(e_k)
+    if kind == "total":
+        if law["plane_energy"] != "total":
+            raise ValueError("total plane energies need laws fitted on total plane energy")
+        return x_s, x_s
     if law["plane_energy"] == "stored":
         return x_s, x_s
     return x_s, feats(e_k / softmax(x_s @ law["stored"], axis=1)[:, 0])
@@ -166,14 +174,18 @@ def shower(job):
     """Stored cells per species of one primary -> (index, {species: cells}, seconds, particles drawn)."""
     i, seed, l, u, cn, X, d, E, xmax, laws, *rest = job
     caps = rest[0] if rest else "old"
+    kind = rest[1] if len(rest) > 1 else "stored"
+    if kind == "total" and caps != "new":
+        raise ValueError("total plane energies need --caps new (old caps rescale to stored energies)")
     rng = np.random.default_rng([seed, i])
     t0, out, n_part = time.time(), {}, 0
     for s in SPECIES_NAMES:
         ks = np.nonzero(E[s] > 0)[0]
         law, w = laws[(s, cn)], laws[(s, cn)]["along"]
-        x_s, x = plane_inputs(X[ks], xmax[s], l, u, E[s][ks], ks, law)
+        x_s, x = plane_inputs(X[ks], xmax[s], l, u, E[s][ks], ks, law, kind)
         ll = width_sr.law_mean(w, ks, x[:, 3], x[:, 1]) + width_sr.law_sd(w, ks) * sampler.ar1(1, N_PLANES, w[-1], rng)[0][ks]
-        p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a], x_stored=x_s[a]) for a, k in enumerate(ks)]
+        p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a], x_stored=x_s[a], total=kind == "total")
+             for a, k in enumerate(ks)]
         p = np.concatenate(p) if p else np.zeros((0, 5))
         n_part += len(p)
         cells = render.render(p, d, sources.CAPS[caps][s]) if len(p) else np.zeros((0, 5))
@@ -209,27 +221,40 @@ def given_primaries(args):
     return tuple(z[k][idx] for k in ("rows", "l", "u", "labels", "X", "dirs"))
 
 
-def sample_energies(root, l, u, X, lab, rng):
-    """Plane energies {species: (n, planes)} and Xmax {species: (n,)} from the Part-1 sampler, class by class."""
+def sample_energies(root, l, u, X, lab, rng, fits=None):
+    """Plane energies {species: (n, planes)}, Xmax {species: (n,)} and the plane energy kind ("stored" for the
+    default training file; a fits file of fit_profiles.py --stage tables: "total", fitted on its own showers, all
+    of them up to its top) from the Part-1 sampler, class by class."""
     E = {s: np.zeros((len(l), N_PLANES)) for s in SPECIES_NAMES}
     xmax = {s: np.zeros(len(l)) for s in SPECIES_NAMES}
-    tr = sampler.load(os.path.join(root, fit_profiles.TRAIN))
+    if fits is None:
+        kind, tr, top = "stored", sampler.load(os.path.join(root, fit_profiles.TRAIN)), sampler.TOP
+    else:
+        z = np.load(fits)
+        kind, e_max = str(z["plane_energy"]), float(z["top"])
+        tr, top = sampler.load(fits, e_max=e_max), np.inf
     for c in planes.CLASS:
         m = lab == c
-        e, lat = sampler.sample(sampler.fit(tr, c), l[m], u[m], X[m], rng)
+        e, lat = sampler.sample(sampler.fit(tr, c, top=top), l[m], u[m], X[m], rng)
         for j, s in enumerate(SPECIES_NAMES):
             E[s][m] = e[s]
             xmax[s][m] = longitudinal.from_latent(sampler.species_block(lat, j)[0], l[m])[0]
-    return E, xmax
+    return E, xmax, kind
+
+
+def energy_kind(z):
+    """The plane energy an energies.npz holds (files from before the choice: stored)."""
+    return str(z["plane_energy"]) if "plane_energy" in z.files else "stored"
 
 
 def stage_energies(out, args, log):
     rows, l, u, lab, X, dirs = given_primaries(args) if args.primaries else scored_primaries(args)
-    E, xmax = sample_energies(args.out, l, u, X, lab, np.random.default_rng(args.seed))
+    E, xmax, kind = sample_energies(args.out, l, u, X, lab, np.random.default_rng(args.seed), args.fits)
     np.savez(os.path.join(out, "energies.npz"), rows=rows, labels=lab, l=l, u=u, X=X, dirs=dirs,
-             **{f"{s}.E": E[s] for s in SPECIES_NAMES}, **{f"{s}.xmax": xmax[s] for s in SPECIES_NAMES})
-    log.info("sampled plane energies of %d primaries", len(rows))
-    return {"primaries": int(len(rows)), "seed": args.seed}
+             plane_energy=np.array(kind), **{f"{s}.E": E[s] for s in SPECIES_NAMES},
+             **{f"{s}.xmax": xmax[s] for s in SPECIES_NAMES})
+    log.info("sampled %s plane energies of %d primaries", kind, len(rows))
+    return {"primaries": int(len(rows)), "seed": args.seed, "plane_energy": kind, "fits": args.fits}
 
 
 def draw_laws(root, laws_path=LAWS, width_law=None, time_law=None, energy_law=None):
@@ -262,7 +287,7 @@ def stage_draw(out, args, log):
     mine = np.arange(len(z["rows"]))[args.task::args.tasks]
     jobs = [(i, args.seed, float(z["l"][i]), float(z["u"][i]), planes.CLASS[int(z["labels"][i])], z["X"][i],
              z["dirs"][i], {s: z[f"{s}.E"][i] for s in SPECIES_NAMES}, {s: float(z[f"{s}.xmax"][i]) for s in SPECIES_NAMES},
-             laws, args.caps) for i in mine]
+             laws, args.caps, energy_kind(z)) for i in mine]
     cells = {s: {} for s in SPECIES_NAMES}
     secs, n_part = [], []
     with Pool(args.workers) as pool:
@@ -317,6 +342,8 @@ def main():
     ap.add_argument("--smoke", type=int, default=0, help="energies stage: this many primaries, evenly spread")
     ap.add_argument("--primaries", help="energies stage: primaries file of judge.py instead of the scored primaries")
     ap.add_argument("--draws", type=int, default=1, help="energies stage: draws per primary of --primaries")
+    ap.add_argument("--fits", help="energies stage: fits file of fit_profiles.py --stage tables (total plane energy) "
+                    "instead of the default training fits")
     ap.add_argument("--laws", default=LAWS, help="draw stage: particle laws, relative to --out")
     ap.add_argument("--task", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", 0)))
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))

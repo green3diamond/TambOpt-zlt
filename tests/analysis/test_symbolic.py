@@ -287,6 +287,51 @@ def test_sampler_plane_residuals_and_profiles():
     assert sampler.ends_inside(z, np.full(3, 5.5), X[:3]).tolist() == [False, True, False]
 
 
+def test_tables_stage_fits_total_energies_and_the_sampler_loads_them():
+    import argparse
+    import logging
+    rng = np.random.default_rng(5)
+    n = 12
+    with tempfile.TemporaryDirectory() as d:
+        names, truth = [], {}
+        for i in range(n):
+            cls, le = ("EM", "hadronic")[i % 2], 5.2 + 0.15 * i
+            zen = np.radians(rng.uniform(65, 85))
+            direction = np.array([np.sin(zen), 0.0, np.cos(zen)]) * 2.0                 # not unit on purpose
+            X = atm.plane_depths([np.degrees(zen)], 24)[0]
+            E = {s: np.exp(11 + j + longitudinal.shape(X, 450.0 + 20 * j, 200.0, 0.1)) for j, s in enumerate(sources.SPECIES_NAMES)}
+            name = f"{cls}_{i}.npz"
+            np.savez(os.path.join(d, name), direction=direction, log10E=le, **{"class": np.array(cls)},
+                     **{f"{s}.E_total": E[s] for s in sources.SPECIES_NAMES})
+            names.append(name)
+            truth[name] = (le, cls, np.cos(zen), E, X)
+        lst = os.path.join(d, "list.txt")
+        open(lst, "w").write("\n".join(names))
+        args = argparse.Namespace(out=d, tables=d, list=lst, top=6.5, name="t", workers=1)
+        res = fit_profiles.stage_tables(args, logging.getLogger("test_tables"))
+        z = np.load(res["fits"])
+        kept = sorted(nm for nm in names if truth[nm][0] <= 6.5)
+        assert z["meta.names"].tolist() == kept and res["kept"] == len(kept) < n
+        assert str(z["plane_energy"]) == "total" and float(z["top"]) == 6.5
+        for r, nm in enumerate(kept):
+            le, cls, u, E, X = truth[nm]
+            assert z["meta.log10_E"][r] == le and z["meta.labels"][r] == fit_profiles.LABEL[cls]
+            assert np.isclose(z["meta.cos_zenith"][r], u) and np.allclose(z["X"][r], X)
+            for s in sources.SPECIES_NAMES:
+                assert np.array_equal(z[f"{s}.E"][r], E[s])
+        for s in sources.SPECIES_NAMES:
+            ref = longitudinal.fit_block((z["X"], longitudinal.log_energy(z[f"{s}.E"])))
+            assert all(np.array_equal(z[f"{s}.{k}"], v, equal_nan=True) for k, v in ref.items())
+        tr = sampler.load(res["fits"], e_max=6.0)
+        assert len(tr["meta"]["log10_E"]) == (z["meta.log10_E"] <= 6.0).sum()
+        try:
+            fit_profiles.stage_tables(args, logging.getLogger("test_tables"))
+        except ValueError as exc:
+            assert "refusing" in str(exc)
+        else:
+            raise AssertionError("an existing fits file was overwritten")
+
+
 def test_sampler_fit_uses_only_showers_below_the_cut():
     rng = np.random.default_rng(13)
     n = 1500

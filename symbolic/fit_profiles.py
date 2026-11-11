@@ -5,6 +5,8 @@ Stages:
          and the whole test file -> fits_test.npz
   part   one contiguous part of the training file (CPU array task; a part already on disk is skipped)
   merge  all parts -> fits_train.npz (the sampler is fitted on it); must agree with fits_slice.npz on shared rows
+  tables the 150k summary tables named in --list with log10 E <= --top -> fits_<name>.npz in the same format, the
+         energy per plane being the TOTAL energy (E_total), recorded as plane_energy "total" (route B)
 """
 import argparse
 import os
@@ -27,6 +29,7 @@ N_SLICE = 10000
 CHUNK = 64
 FIT_RTOL = 1e-6
 MAX_FIT_MISMATCH = 1e-3        # share of slice rows allowed to land in another local minimum
+LABEL = {cn: c for c, cn in planes.CLASS.items()}
 
 
 def n_rows(split):
@@ -59,6 +62,11 @@ def save(path, arrays, log):
 def fit_rows(split, rows, workers, log):
     """Energy per plane, slant depths and profile fits of the given rows, as a flat dict of arrays."""
     data, meta = planes.from_corsika(split, rows)
+    return fit_arrays(data, meta, workers, log, split)
+
+
+def fit_arrays(data, meta, workers, log, tag):
+    """The flat dict of conditions, slant depths, energies per plane and profile fits of every species."""
     X = atmosphere.plane_depths(meta["zenith"], N_PLANES)
     arrays = {**{f"meta.{k}": v for k, v in meta.items()}, "X": X}
     with Pool(workers) as pool:
@@ -67,8 +75,47 @@ def fit_rows(split, rows, workers, log):
             parts = pool.map(longitudinal.fit_block, [(X[i:i + CHUNK], Y[i:i + CHUNK]) for i in range(0, len(Y), CHUNK)])
             fit = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
             arrays.update({f"{s}.{k}": v for k, v in {**data[s], **fit}.items()})
-            log.info("%s %-8s %d rows, fitted %.4f", split, s, len(rows), np.isfinite(fit["ln_n"]).mean())
+            log.info("%s %-8s %d rows, fitted %.4f", tag, s, len(Y), np.isfinite(fit["ln_n"]).mean())
     return arrays
+
+
+def read_table(path):
+    """One summary table -> (total energy per plane per species, log10 E, unit direction, class label)."""
+    z = np.load(path)
+    d = np.asarray(z["direction"], np.float64)
+    return ({s: np.asarray(z[f"{s}.E_total"], np.float64) for s in SPECIES_NAMES}, float(z["log10E"]),
+            d / np.linalg.norm(d), LABEL[str(z["class"])])
+
+
+def tables_data(paths, workers):
+    """Energies per plane and conditions of the given summary tables, in the format of planes.from_corsika."""
+    with Pool(workers) as pool:
+        rows = pool.map(read_table, paths, chunksize=64)
+    dirs = np.array([r[2] for r in rows])
+    zen, az = planes.angles(dirs)
+    data = {s: {"E": np.array([r[0][s] for r in rows])} for s in SPECIES_NAMES}
+    meta = {"names": np.array([os.path.basename(p) for p in paths]), "log10_E": np.array([r[1] for r in rows]),
+            "directions": dirs, "labels": np.array([r[3] for r in rows], np.int64), "zenith": zen, "azimuth": az,
+            "cos_zenith": dirs[:, 2], "rows": np.arange(len(rows))}
+    return data, meta
+
+
+def stage_tables(args, log):
+    path = os.path.join(args.out, FOLDER, f"fits_{args.name}.npz")
+    if os.path.exists(path):
+        raise ValueError(f"exists, refusing: {path}")
+    names = sorted(set(open(args.list).read().split()))
+    data, meta = tables_data([os.path.join(args.tables, n) for n in names], args.workers)
+    keep = meta["log10_E"] <= args.top
+    data = {s: {"E": d["E"][keep]} for s, d in data.items()}
+    meta = {k: v[keep] for k, v in meta.items()}
+    meta["rows"] = np.arange(keep.sum())
+    log.info("%d listed tables, %d with log10 E <= %g", len(names), keep.sum(), args.top)
+    arrays = fit_arrays(data, meta, args.workers, log, "tables")
+    arrays.update(plane_energy=np.array("total"), top=np.array(args.top))
+    save(path, arrays, log)
+    return {"fits": path, "listed": len(names), "kept": int(keep.sum()),
+            "fitted": {s: float(np.isfinite(arrays[f"{s}.ln_n"]).mean()) for s in SPECIES_NAMES}}
 
 
 def stage_slice(args, log):
@@ -128,19 +175,25 @@ def stage_merge(args, log):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--stage", required=True, choices=["slice", "part", "merge"])
+    ap.add_argument("--stage", required=True, choices=["slice", "part", "merge", "tables"])
+    ap.add_argument("--tables", help="tables stage: summary tables folder")
+    ap.add_argument("--list", help="tables stage: file of table names")
+    ap.add_argument("--top", type=float, help="tables stage: keep log10 E <= top")
+    ap.add_argument("--name", help="tables stage: writes profiles/fits_<name>.npz")
     ap.add_argument("--n-parts", type=int, default=0)
     ap.add_argument("--part", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", -1)))
     ap.add_argument("--limit", type=int, default=0, help="smoke run: LIMIT rows of each file")
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     args = ap.parse_args()
-    if args.stage != "slice" and args.n_parts < 1:
+    if args.stage in ("part", "merge") and args.n_parts < 1:
         raise ValueError("--n-parts is required for part and merge")
+    if args.stage == "tables" and not (args.tables and args.list and args.top is not None and args.name):
+        raise ValueError("the tables stage needs --tables, --list, --top and --name")
     if args.stage == "part" and not 0 <= args.part < args.n_parts:
         raise ValueError(f"--part {args.part} outside 0..{args.n_parts - 1}")
-    name = f"part_{args.part:04d}" if args.stage == "part" else args.stage
+    name = {"part": f"part_{args.part:04d}", "tables": f"tables_{args.name}"}.get(args.stage, args.stage)
     log_dir, log = logs.start(os.path.join(FOLDER, "logs", name), args)
-    stage = {"slice": stage_slice, "part": stage_part, "merge": stage_merge}[args.stage]
+    stage = {"slice": stage_slice, "part": stage_part, "merge": stage_merge, "tables": stage_tables}[args.stage]
     logs.save(log_dir, stage(args, log), args, log)
 
 
