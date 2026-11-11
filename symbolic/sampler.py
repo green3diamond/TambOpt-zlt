@@ -4,7 +4,8 @@ The correction and noise size are set per plane number (noise "plane", the adopt
 to the shower's own peak, t = (X - Xmax) / L (noise "peak"): with "plane", a plane number that is early in some
 showers and at the peak in others carries the early planes' large scatter to the peak. Noise "skew": per bin of t a
 Johnson SU for the leftovers instead of a normal (they are skewed low near the peak, and a symmetric noise on ln E
-inflates the summed energy)."""
+inflates the summed energy). Noise "table": per bin of t the real leftovers' quantiles, read through normal scores,
+never beyond the leftovers seen (the Johnson SU's tails reach past them and blow up the summed energy)."""
 import numpy as np
 from scipy import special
 
@@ -19,6 +20,7 @@ BLOCK = len(longitudinal.NAMES) + 1     # numbers per species: the profile, then
 PEAK_EDGES = np.array([-np.inf, -3, -2, -1, -0.5, 0, 0.5, 1, 2, 3, 4, 6, np.inf])
 MIN_BIN = 50               # leftovers a bin of t needs; emptier bins take the pooled bias and sd
 MAX_SKEW_FIT = 20000       # leftovers per bin the Johnson SU is fitted on (seeded subsample)
+Z_GRID = np.round(np.arange(-4.0, 4.0001, 0.05), 10)     # normal scores of the leftover tables (noise "table")
 
 
 def load(path, e_max=LOG10_E_MAX):
@@ -116,15 +118,47 @@ def skew_scores(p, t, r):
 def skew_noise(p, t, z):
     """Leftovers at positions t from normal numbers z: each bin's Johnson SU quantile, linear in t between the two
     neighbouring bins' median t, flat beyond the outer bins."""
-    at = p["at"]
     u = special.ndtr(z).ravel()
-    Q = np.stack([m.ppf(_ones(len(u)), u) for m in p["margins"]]).reshape(len(at), *z.shape)
+    return blend(p["at"], np.stack([m.ppf(_ones(len(u)), u) for m in p["margins"]]).reshape(len(p["at"]), *z.shape), t)
+
+
+def blend(at, Q, t):
+    """Q[k] = the value of bin k at every point; the value at positions t, linear between the two neighbouring bins'
+    median t (at), flat beyond the outer bins."""
     i1 = np.clip(np.searchsorted(at, t), 1, len(at) - 1)
     i0 = i1 - 1
     w = np.clip((t - at[i0]) / (at[i1] - at[i0]), 0.0, 1.0)
-    q0 = np.take_along_axis(Q, i0[None], 0)[0]
-    q1 = np.take_along_axis(Q, i1[None], 0)[0]
-    return (1 - w) * q0 + w * q1
+    return (1 - w) * np.take_along_axis(Q, i0[None], 0)[0] + w * np.take_along_axis(Q, i1[None], 0)[0]
+
+
+def table_bins(t, r):
+    """Per bin of t: the median t (as peak_bins) and the leftovers' quantiles on the normal-score grid Z_GRID; bins
+    with fewer than MIN_BIN share the quantiles of all leftovers."""
+    at, _, _ = peak_bins(t, r)
+    ok = np.isfinite(t) & np.isfinite(r)
+    b = np.digitize(t, PEAK_EDGES) - 1
+    levels = special.ndtr(Z_GRID)
+    pooled = np.quantile(r[ok], levels)
+    q = [np.quantile(r[ok & (b == k)], levels) if (ok & (b == k)).sum() >= MIN_BIN else pooled
+         for k in range(len(PEAK_EDGES) - 1)]
+    return at, np.array(q)
+
+
+def table_scores(p, t, r):
+    """Normal scores of leftovers r: their position in their own bin's table (NaN where r or t is not finite)."""
+    z = np.full(r.shape, np.nan)
+    ok = np.isfinite(t) & np.isfinite(r)
+    b = np.digitize(t, PEAK_EDGES) - 1
+    for k, q in enumerate(p["q"]):
+        sel = ok & (b == k)
+        z[sel] = np.interp(r[sel], q, Z_GRID)
+    return z
+
+
+def table_noise(p, t, z):
+    """Leftovers at positions t from normal numbers z (clipped to the grid): each bin's table, blended in t."""
+    z = np.clip(z, Z_GRID[0], Z_GRID[-1])
+    return blend(p["at"], np.stack([np.interp(z, Z_GRID, q) for q in p["q"]]), t)
 
 
 def plane_residuals(d, rows, noise="plane"):
@@ -151,11 +185,17 @@ def plane_residuals(d, rows, noise="plane"):
             p = {"noise": "skew", "at": at, "margins": margins}
             bias, sd = 0.0, 1.0
             r = skew_scores(p, t, r)
+        elif noise == "table":
+            t = peak_position(X, th[:, 0], th[:, 1])
+            at, q = table_bins(t, r)
+            p = {"noise": "table", "at": at, "q": q}
+            bias, sd = 0.0, 1.0
+            r = table_scores(p, t, r)
         elif noise == "plane":
             bias, sd = np.nanmean(r, 0), np.nanstd(r, 0)
             p = {"bias": np.nan_to_num(bias), "sd": np.nan_to_num(sd)}
         else:
-            raise ValueError(f"noise {noise!r}: plane, peak or skew")
+            raise ValueError(f"noise {noise!r}: plane, peak, skew or table")
         u = (r - bias) / sd
         min_pair = min(MIN_PAIR, len(rows) // 10)
         rhos = [np.corrcoef(u[ok, k], u[ok, k + 1])[0, 1] for k in range(r.shape[1] - 1)
@@ -235,12 +275,12 @@ def sample(model, l, u, X, rng):
     out = {}
     for i, (s, y) in enumerate(to_profiles(lat, l, X).items()):
         p = model["planes"][s]
-        if p.get("noise") in ("peak", "skew"):
+        if p.get("noise") in ("peak", "skew", "table"):
             xmax, L = longitudinal.from_latent(species_block(lat, i)[0], l)[:2]
             t = peak_position(X, xmax, L)
             t = np.where(np.isfinite(t), t, 0.0)
-        if p.get("noise") == "skew":
-            y = y + skew_noise(p, t, ar1(len(l), y.shape[1], p["rho"], rng))
+        if p.get("noise") in ("skew", "table"):
+            y = y + {"skew": skew_noise, "table": table_noise}[p["noise"]](p, t, ar1(len(l), y.shape[1], p["rho"], rng))
             out[s] = np.where(np.isfinite(y), np.exp(np.where(np.isfinite(y), y, 0.0)), 0.0)
             continue
         if p.get("noise") == "peak":

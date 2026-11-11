@@ -385,6 +385,33 @@ def test_skew_noise_keeps_the_energy_of_low_skewed_leftovers():
     assert abs(skew["rho"]) < 0.05                                                # independent leftovers
 
 
+def test_table_noise_keeps_energy_and_stays_within_the_leftovers_seen():
+    rng = np.random.default_rng(24)
+    n = 4000
+    X = np.tile(atm.plane_depths([80.0], 24), (n, 1))
+    xmax, L, R, lnn = rng.uniform(300, 1500, n), np.full(n, 200.0), np.zeros(n), rng.uniform(10, 12, n)
+    curve = lnn[:, None] + longitudinal.shape(X, xmax[:, None], L[:, None], R[:, None])
+    t = sampler.peak_position(X, xmax, L)
+    r = np.where(t < -1, 3.0 * rng.standard_t(3, curve.shape), 1.0 - rng.exponential(1.0, curve.shape))  # heavy early
+    d = {"X": X, **{s: {"E": np.exp(curve + r), "ln_n": lnn, "theta": np.column_stack([xmax, L, R])}
+                    for s in sources.SPECIES_NAMES}}
+    ok = np.isfinite(curve)
+    p = sampler.plane_residuals(d, np.arange(n), "table")["photon"]
+    assert p["noise"] == "table" and p["q"].shape == (len(sampler.PEAK_EDGES) - 1, len(sampler.Z_GRID))
+    z = rng.normal(size=t.shape) * 1.5                                         # wide on purpose: the clip must hold
+    noise = sampler.table_noise(p, t, z)
+    assert noise[ok].max() <= r[ok].max() + 1e-12 and noise[ok].min() >= r[ok].min() - 1e-12
+    near = ok & (t > -0.5) & (t < 1.0)
+    e_true = np.exp(r[near]).mean()
+    e_table = np.exp(sampler.table_noise(p, t, rng.normal(size=t.shape))[near]).mean()
+    assert abs(e_table / e_true - 1) < 0.05, e_table / e_true
+    at = p["at"][1:-1]
+    tt, rr = np.repeat(at[:, None], 200, 1), np.tile(np.linspace(-2.0, 0.9, 200), (len(at), 1))
+    back = sampler.table_noise(p, tt, sampler.table_scores(p, tt, rr))
+    inside = (rr >= p["q"][1:-1, :1]) & (rr <= p["q"][1:-1, -1:])
+    assert np.allclose(back[inside], rr[inside], atol=1e-9), np.max(np.abs(back[inside] - rr[inside]))
+
+
 def test_peak_and_plane_noise_draw_the_same_curve_without_noise():
     rng = np.random.default_rng(22)
     n = 1500
