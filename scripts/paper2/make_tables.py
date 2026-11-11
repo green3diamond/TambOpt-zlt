@@ -392,28 +392,89 @@ COLHEAD = {"w1": r"$<1^\circ$", "w2.5": r"$<2.5^\circ$", "w5": r"$<5^\circ$", "m
 APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores only in the appendix tables (_all)
 
 
-MAINCELLS = set()          # (site, mode, layout, key) of every value printed in a main-text table: not repeated in the appendix
+MAINCELLS = set()   # (site, mode, layout, key) printed in a main-text table (headline, background comparison)
+PRINTED = set()     # printed in the appendix's full scores table: not repeated in the complete tables
+UCOLS = [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT]
+BG_COLS = {19: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}")),            # 12 km: trigger rate in the appendix
+           20: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}"), ("trig", 100, "{:.1f}"))}
+for _s in (19, 20):         # the background comparison (main text) shows these
+    MAINCELLS.update((_s, p, n, k) for n in NAMES[_s] if n in SEL[_s] for k, _, _ in BG_COLS[_s] for p in ("", "bg1_", "bg10_"))
+
+
+def cells_of(site, p, n, cols, util, hide, mark=None):
+    """value cells of one layout; cells in `hide` left empty, the others added to `mark`"""
+    f_, c_ = W[site][p]
+    uk = optimized_for(n) if (util and n.startswith("opt_")) else None
+    cs = []
+    for k, sc, fmt in cols:
+        if (site, p, n, k) in hide:
+            cs.append(""); continue
+        c = pair(f_, c_, n, k, sc, fmt, colour=k != "ntrig")
+        cs.append(f"\\underline{{{c}}}" if k == uk else c)
+        if mark is not None:
+            mark.add((site, p, n, k))
+    return cs
+
+
+# headline tables (main text): uniform grid, best other fixed layout, best layout optimized for each utility
+HEAD_GROUPS = {19: ("orig", "twotier_l0p3", "twotier_l0", "threetier"),
+               20: ("orig", "trig5_poisson", "trig5_step", "trigger_only")}
+
+
+def headline(site, names):
+    f_, _ = W[site][""]
+    best = lambda cand: max(cand, key=lambda n: f_[n]["w1"]) if cand else None
+    fixed = [n for n in names if not n.startswith("opt_")]
+    rows = ["ugrid", best([n for n in fixed if n != "ugrid"])]
+    for g in HEAD_GROUPS[site]:
+        cand = [n for n in names if n.startswith("opt_") and not n.startswith("opt_regress")
+                and (n.startswith("opt_trg_") if g == "trigger_only" else optimized_for(n) == g)]
+        b = best(cand)
+        if b and b not in rows:
+            rows.append(b)
+    none = [c for c in ANG if c[0] in (("w1", "w5", "med") if site == 19 else ("w1", "w5", "med", "trig"))]
+    w1 = [c for c in ANG if c[0] == "w1"]
+
+    def row(n):
+        cs = (cells_of(site, "", n, none, False, set(), MAINCELLS) + cells_of(site, "bg1_", n, w1, False, set(), MAINCELLS)
+              + cells_of(site, "bg10_", n, w1, False, set(), MAINCELLS))
+        return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
+    head = (r" & \multicolumn{%d}{c}{No background} & \multicolumn{2}{c}{$<1^\circ$, background + kNN} \\" % len(none)
+            + "\n" + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in none) + r" & 1\,$\mu$s & 10\,$\mu$s \\")
+    sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
+    write(f"r{site}_head", "float", len(none) + 2, head, body(rows, row),
+          f"{sname}: the uniform grid, the best other fixed layout and, for each utility, the best layout optimized for "
+          f"it (largest flow-matching share within $1^\\circ$); angular scores ({sh})"
+          f"{'' if site == 19 else ' and trigger rate'} without background, and the share within $1^\\circ$ with a 1 "
+          f"or 10\\,$\\mu$s readout window and the kNN gate. App.~\\ref{{app:scores}} lists every layout.",
+          f"tab:r{site}_head")
+
+
+headline(19, main19)
+headline(20, NAMES[20])
 
 
 def scores_table(site, names, uts, sep, wdesc, landscape=True):
-    """one table per site: every main-text layout (fixed above the line, optimized below), the scores not in APPX
-    and the utilities uts"""
+    """appendix: every main-text layout (fixed above the line, optimized below), the scores not in APPX and the
+    utilities uts; values of the main-text tables left empty"""
     f_, c_ = W[site][""]
     cols = [c for c in ANG if c[0] not in APPX[site]]
-    MAINCELLS.update((site, "", n, k) for n in names for k in [c[0] for c in cols] + list(uts))
+    ucols = [c for c in UCOLS if c[0] in uts]
     head = (r" & \multicolumn{%d}{c}{Scores} & \multicolumn{%d}{c}{Utilities} \\" % (len(cols), len(uts)) + "\n"
             + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in cols) + " & "
             + " & ".join(UT_HEAD[UT.index(k)] for k in uts) + r" \\")
 
     def row(n):
-        u = util_row(n, f_, c_, site, uts)
-        return ang_row(n, f_, c_, site, cols=cols)[:-3] + u[len(label(n, f_[n], site)):]
+        cs = (cells_of(site, "", n, cols, False, MAINCELLS, PRINTED)
+              + cells_of(site, "", n, ucols, True, MAINCELLS, PRINTED))
+        return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
     moved = "share within $2.5^\\circ$ and trigger rate" if "trig" in APPX[site] else "share within $2.5^\\circ$"
     write(f"r{site}_scores", "long", len(cols) + len(uts), head, body(names, row),
           f"{sname}, no background: angular scores ({sh}), energy score{'' if 'trig' in APPX[site] else ', trigger'} and "
           f"utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every "
-          f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:all}}.",
+          f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:all}}. Empty cells: in "
+          f"Tables~\\ref{{tab:r{site}_head}} and~\\ref{{tab:r{site}_bg}}.",
           f"tab:r{site}_scores", sep=sep, desc=r">{\raggedright\arraybackslash}p{%s}" % wdesc, landscape=landscape)
 
 
@@ -422,8 +483,6 @@ scores_table(19, main19, U4, "1pt", "2.9cm", landscape=False)
 fm, c8 = W[20][""]
 scores_table(20, NAMES[20], UT, "1pt", "2.7cm")
 # background comparison: layouts of the figure, no background / 1 us / 10 us side by side
-BG_COLS = {19: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}")),            # 12 km: trigger rate in the appendix
-           20: (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}"), ("trig", 100, "{:.1f}"))}
 
 
 def bg_row(n, site):
@@ -436,7 +495,6 @@ for site, sname, sel_txt in ((19, S19, "share of all showers within $1^\\circ$ a
                              (20, S20, "share of the triggered showers within $1^\\circ$, their median angular error and "
                                        "expected trigger rate")):
     figs = [n for n in NAMES[site] if n in SEL[site]]
-    MAINCELLS.update((site, p, n, k) for n in figs for k, _, _ in BG_COLS[site] for p in ("", "bg1_", "bg10_"))
     nb = len(BG_COLS[site])
     write(f"r{site}_bg", "float", 3 * nb, H_BG if nb == 3 else H_BG.split(r" & \multicolumn{3}{c}{Trigger [\%]}")[0] + r" \\"
           + "\n" + DESC_HEAD + r" & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s \\",
@@ -534,15 +592,9 @@ MODES = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
 
 
 def app_row(site, p, n, cols, util):
-    """appendix row; values printed in the main text left empty; None if nothing is left"""
-    f_, c_ = W[site][p]
-    uk = optimized_for(n) if (util and n.startswith("opt_")) else None
-    cs = []
-    for k, sc, fmt in cols:
-        if (site, p, n, k) in MAINCELLS:
-            cs.append(""); continue
-        c = pair(f_, c_, n, k, sc, fmt, colour=k != "ntrig")
-        cs.append(f"\\underline{{{c}}}" if k == uk else c)
+    """appendix row; values printed in the main text or the full scores table left empty; None if nothing is left"""
+    f_, _ = W[site][p]
+    cs = cells_of(site, p, n, cols, util, MAINCELLS | PRINTED)
     if not any(cs):
         return None
     return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
@@ -558,12 +610,11 @@ def full_body(site, p, cols, util):
     return out
 
 
-UCOLS = [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT]
 for site, sname, sh in ((19, S19, "all showers"), (20, S20, "triggered showers")):
     extra = "; trigger-optimized layouts below the second line" if site == 19 else ""
     win = (r"without background and with a 1 or 10\,$\mu$s readout window and the kNN gate "
            f"(Sec.~\\ref{{sec:r{site}_bg}}); bold and colour per block{extra}. Empty cells: in "
-           f"Tables~\\ref{{tab:r{site}_scores}} and~\\ref{{tab:r{site}_bg}}")
+           f"Tables~\\ref{{tab:r{site}_head}}, \\ref{{tab:r{site}_bg}} and~\\ref{{tab:r{site}_scores}}")
     for kind, cols, util, head, nd, sep in (("ang", ANG, False, H_ANG, 7, "2pt"), ("util", UCOLS, True, H_U7, 7, "1.5pt")):
         blocks = [(t, full_body(site, p, cols, util)) for t, p in MODES]
         what = (f"angular scores ({sh}), energy score and trigger" if kind == "ang" else

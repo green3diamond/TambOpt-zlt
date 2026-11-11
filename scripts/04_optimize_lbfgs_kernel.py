@@ -132,6 +132,70 @@ class MainPool:
         return clouds, bws, prim, frames
 
 
+C8_DIR = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/hhanif/tambo_simulations_for_training/h5_files_v3"
+C8_FILES = {"electron": "combined_electrons.h5", "muon": "combined_muons.h5", "photon": "combined_photons.h5"}
+
+
+class C8Pool:
+    """--pool c8: CORSIKA 8 training showers (combined_<species>.h5; disjoint from the *_test.h5 showers of the paper's
+    CORSIKA scoring), each placed at the decay vertex of the run's tau with the closest direction (within max_deg), own
+    direction and energy (as scripts/paper2/ft_c8.py). Up to n_max showers held in memory in a random order, so a
+    window [a, b) is a random sample and the scoring set at the end is held out. Same interface as MainPool."""
+
+    def __init__(self, mountain, n_max, seed, max_deg=3.0):
+        import h5py
+        import modules.constants as C
+        from modules.surrogates import encode_primary
+        t0 = time.time()
+        with h5py.File(f"{C8_DIR}/{C8_FILES['electron']}", "r") as f:
+            dirs = torch.as_tensor(f["directions"][:], dtype=torch.float32)
+            en = torch.as_tensor(f["energies"][:, 0])
+            pdg = torch.as_tensor(f["pdg"][:].astype(np.int64))
+        dirs = dirs / dirs.norm(dim=1, keepdim=True)
+        with h5py.File(C.TAU_WHOLESKY_PATH, "r") as f:
+            tpos = np.asarray(f["position"][...]).T; tdir = np.asarray(f["direction"][...]).T
+            te = np.asarray(f["energy"][...])
+        k = (te >= 10 ** LOG_E_MIN) & (te <= 10 ** LOG_E_MAX)
+        tpos = torch.as_tensor(tpos[k], dtype=torch.float32)
+        tdir = torch.as_tensor(tdir[k], dtype=torch.float32).to(DEVICE)
+        tdir = tdir / tdir.norm(dim=1, keepdim=True)
+        d = dirs.to(DEVICE)
+        bc = torch.full((len(d),), -2.0, device=DEVICE); bi = torch.zeros(len(d), dtype=torch.long, device=DEVICE)
+        for lo in range(0, tdir.shape[0], 5_000):
+            c, j = (d @ tdir[lo:lo + 5_000].T).max(1)
+            u = c > bc; bc[u] = c[u]; bi[u] = j[u] + lo
+        ang = torch.rad2deg(torch.arccos(bc.clamp(-1, 1))).cpu()
+        keep = torch.nonzero(ang < max_deg).squeeze(1)
+        rng = np.random.default_rng(seed)
+        keep = keep[torch.as_tensor(rng.permutation(len(keep))[:n_max])].sort().values     # sorted: fast h5 reads
+        pos = tpos[bi.cpu()[keep]]
+        centre = torch.as_tensor(mountain.centroids_ENU, dtype=torch.float32).mean(0)
+        prim = encode_primary(dirs[keep], en[keep].float(), pdg[keep], pos, centre)
+        clouds, frames = [], None
+        for si, sp in enumerate(SPECIES_NAMES):
+            with h5py.File(f"{C8_DIR}/{C8_FILES[sp]}", "r") as f:
+                P = int(f["shape"][1]); ds = f["showers"]
+                arr = np.zeros((len(keep), P, 5), np.float32)
+                for r, i in enumerate(keep.tolist()):
+                    a = np.asarray(ds[i], dtype=np.float32).reshape(-1, 5); arr[r, :len(a)] = a
+            c = torch.as_tensor(arr)
+            frames = place_clouds_shower(c, pos, dirs[keep], event_ids=keep, species=si)
+            clouds.append(c)
+            print(f"[c8 pool] {sp}: {tuple(c.shape)}  {time.time() - t0:.0f}s", flush=True)
+        perm = torch.as_tensor(rng.permutation(len(keep)))                   # random order in memory
+        self.clouds = [c[perm] for c in clouds]
+        self.prim, self.frames = prim[perm], frames[perm]
+        self.n = len(keep)
+        print(f"[c8 pool] {self.n} CORSIKA 8 training showers within {max_deg} deg of a tau direction "
+              f"({int((ang < max_deg).sum())} available)", flush=True)
+
+    def load_prim(self, a, b):
+        return [], [], self.prim[a:b], None
+
+    def load(self, a, b):
+        return [c[a:b] for c in self.clouds], [None] * len(self.clouds), self.prim[a:b], self.frames[a:b]
+
+
 class BatchKernel:
     """Kernel forward for one sub-batch of pool events, same call signature as
     KernelDualLabels: (primary_batch, xy_batch) -> (B, n_det, 2) log-encoded."""
@@ -246,7 +310,10 @@ def pool_utility(xy_module, batch, surface, recon, chunk, backward, resp=None, g
                 kern = NoisyGated(kern, resp["window_ns"], resp["gate"], gen, resp["t_fallback_us"],
                                   straight_through=backward)
             x, y = xy_module()
-            U, r, parts = utility_of_xy(x, y, prim[lo:hi].to(DEVICE), kern, recon)
+            p_lo = prim[lo:hi].to(DEVICE)
+            if hasattr(recon, "bind"):                    # --recon-type analytic: counts and truth of this sub-batch
+                recon.bind(kern, p_lo)
+            U, r, parts = utility_of_xy(x, y, p_lo, kern, recon)
             share = (hi - lo) / N
             if backward:
                 (-share * U).backward()
@@ -371,7 +438,7 @@ def add_cable(cable, xy_module, tot, backward):
 
 
 def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
-    pool = MainPool(mountain)
+    pool = C8Pool(mountain, args.c8_showers, args.seed) if args.pool == "c8" else MainPool(mountain)
     load = pool.load_prim if resp is not None and resp["surrogate"] is not None else pool.load
     if args.e_range:                              # --e-range: only showers with log10 E [GeV] in [lo, hi)
         lo, hi = args.e_range
@@ -799,6 +866,13 @@ def main():
     ap.add_argument("--optim", choices=("adam", "sgd"), default="adam",
                     help="sgd: plain gradient ascent, step = lr x gradient / (first step's per-detector RMS gradient), "
                          "i.e. lr metres for a gradient as large as the first one")
+    ap.add_argument("--pool", choices=("main", "c8"), default="main",
+                    help="c8: CORSIKA 8 training showers placed at the run's taus instead of the flow-matching corpus")
+    ap.add_argument("--c8-showers", type=int, default=20000, help="--pool c8: showers held in memory")
+    ap.add_argument("--recon-type", choices=("deepsets", "analytic"), default="deepsets",
+                    help="analytic: differentiable TamboDirReco v1 (modules/optimize/analytic_diff.py) instead of the "
+                         "DeepSets recon (direction only; use the swgo_trigger utility)")
+    ap.add_argument("--ana-kappa", type=float, default=10.0, help="analytic: soft-hit slope, sigmoid(kappa (mu - 1))")
     args = ap.parse_args()
     if args.plateau_every > 0:
         args.score_every = args.plateau_every
@@ -816,7 +890,16 @@ def main():
         precompute_bandwidths(mountain, args.precompute_bw)
         return
 
-    recon = load_recon(args.recon_folder, DEVICE)
+    if args.recon_type == "analytic":
+        from modules.optimize import analytic_reco as AR
+        from modules.optimize.analytic_diff import AnalyticRecon
+        if UTILITY_MODE != "swgo_trigger":
+            raise SystemExit("--recon-type analytic needs TAMBOPT_UTILITY=swgo_trigger (expected counts, angle only)")
+        n_plane = AR.plane_normal(torch.as_tensor(mountain.centroids_ENU, dtype=torch.float32)).to(DEVICE)
+        recon = AnalyticRecon(surface, n_plane, kappa=args.ana_kappa)
+        print(f"[recon] analytic v1 (differentiable), detector-plane normal {n_plane.tolist()}, kappa {args.ana_kappa}")
+    else:
+        recon = load_recon(args.recon_folder, DEVICE)
     resp = None
     if (args.response == "surrogate" or args.bg_window_ns > 0 or args.gate != "none" or args.freeze_unseen
             or args.counting != "none"):
