@@ -355,6 +355,8 @@ def figure(site, res, names):
     nrow = -(-len(panels) // ncol)
     fig, ax = plt.subplots(nrow, ncol, figsize=(10, 10.6) if ncol == 4 else (10, 2.75 * nrow + 0.3),
                            constrained_layout=True)
+    for a in list(ax.flat)[len(panels):]:
+        a.axis("off")
     for a, n in zip(ax.flat, panels):
         if n not in res:
             a.axis("off"); continue
@@ -395,7 +397,7 @@ APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores only in the 
 
 # headline selection (main-text table and, on the 12 km plane, the layout figure)
 HEAD_GROUPS = {19: ("orig", "twotier_l0p3", "twotier_l0", "threetier"),
-               20: ("orig", "trig5_poisson", "trig5_step", "trigger_only")}
+               20: ("orig", "trig5_poisson", "trig5_step")}
 
 
 def start_twin(n):
@@ -507,6 +509,73 @@ scores_table(19, main19, U4, "1pt", "2.9cm", landscape=False)
 # Malata
 fm, c8 = W[20][""]
 scores_table(20, NAMES[20], UT, "1pt", "2.7cm")
+# construction constraints (Malata, no background): cable-length penalty and access / contour-row / pad penalties
+from scipy.sparse.csgraph import minimum_spanning_tree
+
+
+def mesh_up(site, e, n):
+    """Up [m] of the detector-region mesh at (East, North), interpolated in the containing facet (nearest facet centre
+    outside the mesh)"""
+    tri = np.load(f"{SITES}/{'plane' if site == 19 else 'malata'}.npz")["tris"]          # (T, 3, 3) E, N, U
+    a, b, c = tri[:, 0], tri[:, 1], tri[:, 2]
+    v0, v1 = b[:, :2] - a[:, :2], c[:, :2] - a[:, :2]
+    den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+    up = np.empty(len(e))
+    for i, (x, y) in enumerate(zip(e, n)):
+        w = np.array([x, y]) - a[:, :2]
+        l1 = (w[:, 0] * v1[:, 1] - v1[:, 0] * w[:, 1]) / den
+        l2 = (v0[:, 0] * w[:, 1] - w[:, 0] * v0[:, 1]) / den
+        inside = (l1 >= -1e-9) & (l2 >= -1e-9) & (l1 + l2 <= 1 + 1e-9)
+        k = int(np.flatnonzero(inside)[0]) if inside.any() else int(np.argmin(((tri[:, :, :2].mean(1) - [x, y]) ** 2).sum(-1)))
+        if inside.any():
+            up[i] = a[k, 2] + l1[k] * (b[k, 2] - a[k, 2]) + l2[k] * (c[k, 2] - a[k, 2])
+        else:
+            up[i] = tri[k, :, 2].mean()
+    return up
+
+
+def cable_km(site, path):
+    """3-D minimum-spanning-tree length of a layout on the mesh [km]"""
+    L = torch.load(path, map_location="cpu", weights_only=False)
+    e, n = np.asarray(L["x"], dtype=float), np.asarray(L["y"], dtype=float)
+    p = np.stack([e, n, mesh_up(site, e, n)], -1)
+    return float(minimum_spanning_tree(np.sqrt(((p[:, None] - p[None]) ** 2).sum(-1))).sum()) / 1000.0
+
+
+def constraints_table():
+    fm, c8 = W[20][""]
+    run = lambda kind, part: f"opt_{kind}_{part}"
+    sw = "opt_swgotrig_l0p3_k3_a2_lr10_{}_b2048"
+    kinds = ("ker5", "sur5", "sur5_1us", "trg", "pen")
+    blocks = [("no constraint", ["ugrid", sw.format("grid"), sw.format("center")] + [run(k, "eall") for k in kinds[:4]]),
+              ("cable-length penalty", [sw.format("grid") + f"_cab{c}" for c in ("0p05", "0p1", "0p2")]
+               + [sw.format("center") + "_cab0p1"]),
+              ("access", [run(k, "access") for k in kinds]),
+              ("contour rows", [run(k, "contour") for k in kinds]),
+              ("pads", [run(k, "pads") for k in kinds])]
+    blocks = [(t, [n for n in g if n in fm]) for t, g in blocks]
+    cols = [c for c in ANG if c[0] in ("w1", "w5", "med", "trig")]
+    names = [n for _, g in blocks for n in g]
+    cab = {n: cable_km(20, fm[n]["path"]) for n in names}
+    lo, hi = min(cab.values()), max(cab.values())
+
+    def row(n):
+        cs = cells_of(20, "", n, cols, False, set(), MAINCELLS)
+        v = f"{cab[n]:.2f}"
+        cs.append(heat(f"\\textbf{{{v}}}" if cab[n] == lo else v, cab[n], lo, (hi - lo) / lo, False))
+        return label(n, fm[n], 20) + " & " + " & ".join(cs) + r" \\"
+    head = DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in cols) + r" & Cable [km] \\"
+    write("r20_constraints", "float", len(cols) + 1, head, stacked([(t, "\n".join(row(n) for n in g)) for t, g in blocks], len(cols) + 2),
+          f"{S20}, no background: optimization with construction constraints (Sec.~\\ref{{sec:r20_constraints}}): a "
+          f"cable-length penalty (weight 0.05, 0.1, 0.2) and penalties for access, contour rows and pads; the first block "
+          f"lists the unconstrained layouts the constrained runs compare to. Angular scores (triggered showers), trigger "
+          f"rate and the cable length of the layout (minimum spanning tree over the detectors on the mesh).",
+          "tab:r20_constraints")
+    print("constraints table:", ", ".join(f"{n[4:]} {cab[n]:.2f} km" for n in names[:3]), "...")
+
+
+constraints_table()
+
 # analytical reconstruction (Malata, no background): DeepSets vs TamboDirReco port, triggered showers
 def tv(pat):
     return trig_view({n: v for p in sorted(glob.glob(f"{D}/{pat}")) for n, v in json.load(open(p)).items()
