@@ -73,6 +73,33 @@ def test_without_a_chain_the_symbolic_side_is_scored_and_only_reported():
     assert judge.verdict(r, "abs_t1") == "reported"
 
 
+def test_a_comparison_draw_is_judged_like_the_chain_under_its_own_name():
+    rng = np.random.default_rng(1)
+    dirs = toy_dirs(rng, N)
+    rows = np.repeat(np.arange(N), M)
+    target = judge.observables(toy_clouds(rng, dirs), dirs, np.arange(N))
+    good = judge.observables(toy_clouds(rng, dirs[rows]), dirs, rows)
+    bad = judge.observables(toy_clouds(rng, dirs[rows], shift=150.0), dirs, rows)
+    r = judge.score(target["abs_t1"], good["abs_t1"], bad["abs_t1"], np.arange(N), rng, n_boot=50, other="comparison")
+    assert "neural chain" not in r and {"comparison", "floor comparison", "median comparison"} <= set(r), r
+    assert judge.verdict(r, "abs_t1", "comparison") == "PASS clear", r
+    assert judge.verdict(r, "abs_t1") == "reported"                              # no chain in r
+    swapped = judge.score(target["abs_t1"], bad["abs_t1"], good["abs_t1"], np.arange(N), rng, n_boot=50, other="comparison")
+    assert judge.verdict(swapped, "abs_t1", "comparison") == "FAIL clear", swapped
+
+
+def test_compare_needs_its_fit_lists_and_no_chain():
+    import argparse
+    for bad in ({"chain": "given", "compare_fit": ["x"]}, {"chain": "none", "compare_fit": None}):
+        args = argparse.Namespace(out=".", folder=".", truth="h5", compare="d{}", fit=["x"], folds=[0], **bad)
+        try:
+            judge.stage_run(None, args, None)
+        except ValueError as exc:
+            assert "--compare needs" in str(exc), exc
+        else:
+            raise AssertionError(f"accepted {bad}")
+
+
 def toy_h5(folder, name, cells, total, d, cap):
     import h5py
     from symbolic import sources

@@ -16,7 +16,9 @@ Stages:
          own stored cells in its h5 files (the v2 / 150k per-simulation preprocessing, caps sources.CAP_NEW; render
          reproduces them, render closure 10-31), the laws' fit list (--fit) must not contain a judged shower, and the
          symbolic draw uses draw.py --caps new. --chain none scores the symbolic draw alone (no neural chain trained
-         on these caps yet): its W1, floors and medians, verdict "reported".
+         on these caps yet): its W1, floors and medians, verdict "reported". --compare <draw folder> puts a second
+         symbolic draw (other laws, same primaries and draws) where the chain would be: scored and judged the same way,
+         under the name "comparison"; --compare-fit refuses its laws if they saw a judged shower.
 
 Rule (fixed before the run): a row PASSES when the symbolic W1 is at most the chain's (suite.py's rule); it is CLEAR when
 the 95% interval of the difference, resampling primaries (the same resample for both sources), excludes 0. Rows JUDGED
@@ -47,7 +49,6 @@ LAWS = os.path.join(FOLDER, "fold{}", "particle_laws.npz")
 LABEL = {cn: c for c, cn in planes.CLASS.items()}
 JUDGED = ("abs_t1", "cell_energy", "cells", "centre")
 REPORTED = ("lead_time", "mean_time", "plane_energy")
-SOURCES = ("symbolic", "neural chain")
 DRAWS = 8
 BOOT = 200
 E_TOL = 1e-4
@@ -229,9 +230,9 @@ def median(o):
     return float(o[0][i][np.searchsorted(c, 0.5 * c[-1])])
 
 
-def score(target, symbolic, neural, primaries, rng, n_boot=BOOT):
-    """One observable, one group: W1, floors, medians, and the resampled symbolic minus chain difference; neural
-    None: the symbolic side alone."""
+def score(target, symbolic, neural, primaries, rng, n_boot=BOOT, other="neural chain"):
+    """One observable, one group: W1, floors, medians, and the resampled symbolic minus other difference; neural
+    None: the symbolic side alone. other names the second source (the chain, or a comparison draw)."""
     if neural is None:
         return {"symbolic": dist(target, symbolic), "symbolic per plane": per_plane(target, symbolic),
                 "floor symbolic": floor(symbolic), "median target": median(target), "median symbolic": median(symbolic)}
@@ -242,17 +243,17 @@ def score(target, symbolic, neural, primaries, rng, n_boot=BOOT):
         np.add.at(mult, rng.choice(primaries, len(primaries)), 1.0)
         d.append(dist(target, symbolic, mult) - dist(target, neural, mult))
     lo, hi = np.nanpercentile(d, [2.5, 97.5])
-    return {"symbolic": dist(target, symbolic), "neural chain": dist(target, neural), "difference 95%": [float(lo), float(hi)],
-            "symbolic per plane": per_plane(target, symbolic), "neural chain per plane": per_plane(target, neural),
-            "floor symbolic": floor(symbolic), "floor neural chain": floor(neural), "median target": median(target),
-            "median symbolic": median(symbolic), "median neural chain": median(neural)}
+    return {"symbolic": dist(target, symbolic), other: dist(target, neural), "difference 95%": [float(lo), float(hi)],
+            "symbolic per plane": per_plane(target, symbolic), f"{other} per plane": per_plane(target, neural),
+            "floor symbolic": floor(symbolic), f"floor {other}": floor(neural), "median target": median(target),
+            "median symbolic": median(symbolic), f"median {other}": median(neural)}
 
 
-def verdict(r, name):
-    if name not in JUDGED or "neural chain" not in r:
+def verdict(r, name, other="neural chain"):
+    if name not in JUDGED or other not in r:
         return "reported"
     lo, hi = r["difference 95%"]
-    return ("PASS" if r["symbolic"] <= r["neural chain"] else "FAIL") + (" clear" if lo > 0 or hi < 0 else "")
+    return ("PASS" if r["symbolic"] <= r[other] else "FAIL") + (" clear" if lo > 0 or hi < 0 else "")
 
 
 _DATA = {}
@@ -264,27 +265,29 @@ def one_group(key):
     primaries = np.flatnonzero((prim["cls"] == cn) & suite.BANDS[band](prim["u"]) & _DATA["judged"])
     keep = lambda o: take(o, np.isin(o[2], primaries))
     rng = np.random.default_rng(seed)
+    other = _DATA["other"]
     res = {"primaries": len(primaries)}
     for name in (*JUDGED, *REPORTED):
-        o = [keep(_DATA[src][s][name]) if src in _DATA else None for src in ("target", *SOURCES)]
-        res[name] = score(*o, primaries, rng, n_boot)
-        res[name]["verdict"] = verdict(res[name], name)
+        o = [keep(_DATA[src][s][name]) if src in _DATA else None for src in ("target", "symbolic", other)]
+        res[name] = score(*o, primaries, rng, n_boot, other)
+        res[name]["verdict"] = verdict(res[name], name, other)
     return s, cn, band, res
 
 
-def fig_rows(res):
+def fig_rows(res, other="neural chain"):
     """W1 to the target per row and group, each source's floor as a small dash."""
     names = (*JUDGED, *REPORTED[:2])
     keys = [(s, cn, b) for cn in LABEL for s in SPECIES_NAMES for b in suite.BANDS]
     fig, axes = plt.subplots(2, 3, figsize=(7.6, 4.4), sharex=True)
     x = np.arange(len(keys))
     for ax, name in zip(axes.flat, names):
-        for o, src in enumerate(SOURCES):
+        for o, src in enumerate(("symbolic", other)):
             if src not in res[keys[0][0]][keys[0][1]][keys[0][2]][name]:
                 continue
             pos = x + 0.2 * (o - 0.5)
-            ax.scatter(pos, [res[s][cn][b][name][src] for s, cn, b in keys], color=suite.COLORS[src], s=14, label=src)
-            ax.scatter(pos, [res[s][cn][b][name][f"floor {src}"] for s, cn, b in keys], color=suite.COLORS[src], s=20,
+            color = suite.COLORS.get(src, "tab:green")
+            ax.scatter(pos, [res[s][cn][b][name][src] for s, cn, b in keys], color=color, s=14, label=src)
+            ax.scatter(pos, [res[s][cn][b][name][f"floor {src}"] for s, cn, b in keys], color=color, s=20,
                        marker="_")
         ax.set_yscale("log")
         ax.set_title(name, fontsize=9)
@@ -315,20 +318,27 @@ def fit_apart(fit, prim):
 
 
 def stage_run(out, args, log):
+    if args.compare and (args.chain != "none" or args.truth != "h5" or not args.compare_fit):
+        raise ValueError("--compare needs --chain none, --truth h5 and --compare-fit")
     z = np.load(os.path.join(args.out, args.folder, "primaries.npz"))
     prim = {k: z[k] for k in z.files}
     if args.truth == "h5":
         if not args.fit:
             raise ValueError("--truth h5 needs --fit, the results.json of the laws' fit")
-        for f in args.fit:
+        for f in (*args.fit, *(args.compare_fit or ())):
             fit_apart(f, prim)
     else:
         judged_laws_apart(args.out, prim, args.folds)
+    other = "comparison" if args.compare else "neural chain"
     judged = np.flatnonzero(np.isin(prim["fold"], args.folds))
-    log.info("%d judged primaries, folds %s, truth %s, chain %s", len(judged), args.folds, args.truth, args.chain)
+    log.info("%d judged primaries, folds %s, truth %s, chain %s, compare %s", len(judged), args.folds, args.truth,
+             args.chain, args.compare)
     sym_rows, sym = read_symbolic(args.out, args.folds, args.source)
-    neu_rows, neu = read_chain(args.out, judged) if args.chain != "none" else (None, None)
-    for src, r in (("symbolic", sym_rows), ("neural chain", neu_rows)):
+    if args.compare:
+        neu_rows, neu = read_symbolic(args.out, args.folds, args.compare)
+    else:
+        neu_rows, neu = read_chain(args.out, judged) if args.chain != "none" else (None, None)
+    for src, r in (("symbolic", sym_rows), (other, neu_rows)):
         if r is None:
             continue
         if not np.array_equal(np.unique(r, return_counts=True)[0], judged) or (np.bincount(r)[judged] != args.draws).any():
@@ -336,8 +346,8 @@ def stage_run(out, args, log):
     target = read_truth_h5(prim, judged) if args.truth == "h5" else read_truth(args.out, prim, judged, args.folder)
     log.info("sources read, truth checked")
     _DATA.clear()
-    _DATA.update(prim=prim, judged=np.isin(np.arange(len(prim["fold"])), judged))
-    for src, c, r in (("target", target, judged), ("symbolic", sym, sym_rows), ("neural chain", neu, neu_rows)):
+    _DATA.update(prim=prim, judged=np.isin(np.arange(len(prim["fold"])), judged), other=other)
+    for src, c, r in (("target", target, judged), ("symbolic", sym, sym_rows), (other, neu, neu_rows)):
         if c is not None:
             _DATA[src] = {s: observables(c[s], prim["dirs"], r) for s in SPECIES_NAMES}
     del target, sym, neu
@@ -348,11 +358,11 @@ def stage_run(out, args, log):
         for s, cn, band, r in pool.imap_unordered(one_group, keys):
             res[s][cn][band] = r
             log.info("%s %s %s (%d primaries) | %s", s, cn, band, r["primaries"], " | ".join(
-                f"{n} {r[n]['symbolic']:.3g} vs {r[n].get('neural chain', np.nan):.3g} (floor {r[n]['floor symbolic']:.2g}"
-                f" / {r[n].get('floor neural chain', np.nan):.2g}) {r[n]['verdict']}" for n in (*JUDGED, *REPORTED)))
-    logs.save_fig(fig_rows(res), out, "w1_rows", log)
+                f"{n} {r[n]['symbolic']:.3g} vs {r[n].get(other, np.nan):.3g} (floor {r[n]['floor symbolic']:.2g}"
+                f" / {r[n].get(f'floor {other}', np.nan):.2g}) {r[n]['verdict']}" for n in (*JUDGED, *REPORTED)))
+    logs.save_fig(fig_rows(res, other), out, "w1_rows", log)
     return {"rule": __doc__.split("Rule (fixed before the run): ")[1].strip(), "folds": args.folds, "truth": args.truth,
-            "chain": args.chain, "judged": int(len(judged)), "results": res}
+            "chain": args.chain, "comparison": args.compare, "judged": int(len(judged)), "results": res}
 
 
 def stage_clouds(out, args, log):
@@ -394,6 +404,9 @@ def main():
                     help="run stage: target cells re-rendered with the old caps (tables) or the h5 files' own stored cells")
     ap.add_argument("--chain", choices=("given", "none"), default="given", help="run stage: neural chain, or none")
     ap.add_argument("--fit", nargs="+", help="run stage, --truth h5: the results.json of every fit behind the laws")
+    ap.add_argument("--compare", help="run stage, --chain none: a second symbolic draw folder under particles/draw, {} the "
+                    "fold, judged where the chain would be")
+    ap.add_argument("--compare-fit", nargs="+", help="run stage, with --compare: the results.json of every fit behind its laws")
     ap.add_argument("--tables", help="primaries stage: summary tables folder")
     ap.add_argument("--list", help="primaries stage: file of held-out table names")
     ap.add_argument("--top", type=float, default=chain.TOP, help="primaries stage: judged below this log10 E")
