@@ -33,6 +33,8 @@ os.makedirs(TAB, exist_ok=True); os.makedirs(FIG, exist_ok=True)
 SITES = f"{LAB}/sites"                                          # plane.npz / malata.npz: detector-region meshes
 
 UT = ["orig", "twotier_l0p3", "twotier_l0", "threetier", "trig5_poisson", "trig5_step", "trig1_poisson"]
+UT_HEAD = [r"Orig.", r"2-tier $\lambda{=}0.3$", r"2-tier $\lambda{=}0$", r"3-tier", r"Trig.\ $5^\circ$ P",
+           r"Trig.\ $5^\circ$ step", r"Trig.\ $1^\circ$ P"]
 PART = {"access": "access", "contour": "contour rows", "pads": "pads", "slope": "slope", "eall": "all $E$",
         "e500_567": r"$\log E$ 5.00--5.67", "e567_633": r"$\log E$ 5.67--6.33", "e633_700": r"$\log E$ 6.33--7.00"}
 FIXED = {"grid": "Grid", "ugrid": "Uniform grid", "centre": "Centre cluster"}
@@ -233,9 +235,12 @@ def name_label(n, site):
     return f"\\uline{{{fixed_label(n)}}}" if n in SEL[site] else fixed_label(n)
 
 
-def ang_row(n, fm, c8, site, name=False):
+ANG_MAIN = [c for c in ANG if c[0] != "w2.5"]          # main text: the 2.5 deg share is in the appendix (_w25)
+
+
+def ang_row(n, fm, c8, site, name=False, cols=ANG):
     return (name_label(n, site) if name else label(n, fm[n], site)) + " & " + " & ".join(
-        pair(fm, c8, n, k, sc, f, colour=k != "ntrig") for k, sc, f in ANG) + r" \\"
+        pair(fm, c8, n, k, sc, f, colour=k != "ntrig") for k, sc, f in cols) + r" \\"
 
 
 def util_row(n, fm, c8, site, cols, name=False):
@@ -308,6 +313,7 @@ def is_setup19(n):          # 12 km disk / annulus / triplet layouts not in the 
 DESC = r">{\raggedright\arraybackslash}p{4.2cm}"           # layout: optimizer | utility | test case | start
 DESC_HEAD = r"Layout: optimizer $|$ utility $|$ test case $|$ start"
 H_ANG = DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & $|\Delta\log_{10}E|<0.2$ & Trigger & $N_\mathrm{trig}$ \\"
+H_ANG_MAIN = H_ANG.replace(r" & $<2.5^\circ$", "")
 H_U4 = DESC_HEAD + r" & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & 3-tier \\"
 H_U7 = DESC_HEAD + r" & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & 3-tier & Trig.\ $5^\circ$ P & Trig.\ $5^\circ$ step & Trig.\ $1^\circ$ P \\"
 H_TU = DESC_HEAD + r" & Trig.\ $5^\circ$ P & Trig.\ $5^\circ$ step & Trig.\ $1^\circ$ P \\"
@@ -320,7 +326,7 @@ H_ANA = (r" & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \
 WRITTEN = []
 
 
-def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None):
+def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None, landscape=False):
     """complete table -> tables_2/<name>.tex; kind 'long' (longtable over pages) or 'float' (table float)"""
     spec = (desc or DESC) + "r" * ndata
     if kind == "long":
@@ -331,6 +337,8 @@ def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None):
         tex = (f"\\begin{{table}}\n\\centering\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{tabular}}{{{spec}}}\n"
                f"\\hline\n{head}\n\\hline\n{rows}\n\\\\[-1.5ex]\\hline\n\\end{{tabular}}\n"
                f"\\caption{{{cap}}}\n\\label{{{lab}}}\n\\end{{table}}\n")
+    if landscape:       # rotated page(s) (pdflscape): wide tables
+        tex = "\\begin{landscape}\n" + tex + "\\end{landscape}\n"
     open(os.path.join(TAB, name + ".tex"), "w").write(tex)
     WRITTEN.append(name + ".tex")
 
@@ -379,30 +387,33 @@ fm, c8 = W[19][""]
 main19 = [n for n in NAMES[19] if not is_trigopt19(n) and not is_setup19(n)]
 trig19 = [n for n in NAMES[19] if is_trigopt19(n)]
 U4 = UT[:4]
-fix19 = [n for n in main19 if not n.startswith("opt_")]
-opt19 = [n for n in main19 if n.startswith("opt_")]
-nm = lambda h: "Layout" + h[len(DESC_HEAD):]
-write("r19_fixed_ang", "long", 7, nm(H_ANG), body(fix19, lambda n: ang_row(n, fm, c8, 19, True)),
-      f"{S19}, no background: angular scores (all showers), energy score and trigger of the fixed layouts.",
-      "tab:r19_fixed_ang", desc="l")
-write("r19_fixed_util", "long", 4, nm(H_U4), body(fix19, lambda n: util_row(n, fm, c8, 19, U4, True)),
-      f"{S19}, no background: accuracy utilities (Sec.~\\ref{{sec:utilities}}) of the fixed layouts on the showers of "
-      f"Table~\\ref{{tab:r19_fixed_ang}}; all but the original utility are per-shower means in $[0,1]$.",
-      "tab:r19_fixed_util", desc="l")
-write("r19_opt_ang", "long", 7, H_ANG, body(opt19, lambda n: ang_row(n, fm, c8, 19)),
-      f"{S19}, no background: angular scores (all showers), energy score and trigger of the optimized layouts.",
-      "tab:r19_opt_ang")
-write("r19_opt_util", "long", 4, H_U4, body(opt19, lambda n: util_row(n, fm, c8, 19, U4)),
-      f"{S19}, no background: accuracy utilities of the optimized layouts, as in Table~\\ref{{tab:r19_fixed_util}}.",
-      "tab:r19_opt_util")
+def scores_table(site, names, uts, sep, wdesc):
+    """one table per site: every main-text layout (fixed above the line, optimized below), scores without the 2.5 deg
+    share (appendix) and the utilities uts"""
+    f_, c_ = W[site][""]
+    head = (r" & \multicolumn{%d}{c}{Scores} & \multicolumn{%d}{c}{Utilities} \\" % (len(ANG_MAIN), len(uts)) + "\n"
+            + H_ANG_MAIN[:-3] + " & " + " & ".join(UT_HEAD[UT.index(k)] for k in uts) + r" \\")
+
+    def row(n):
+        u = util_row(n, f_, c_, site, uts)
+        return ang_row(n, f_, c_, site, cols=ANG_MAIN)[:-3] + u[len(label(n, f_[n], site)):]
+    sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
+    write(f"r{site}_scores", "long", len(ANG_MAIN) + len(uts), head, body(names, row),
+          f"{sname}, no background: angular scores ({sh}), energy score, trigger and utilities "
+          f"(Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every layout; "
+          f"fixed layouts above the line, optimized below. Share within $2.5^\\circ$: App.~\\ref{{app:w25}}.",
+          f"tab:r{site}_scores", sep=sep, desc=r">{\raggedright\arraybackslash}p{%s}" % wdesc, landscape=True)
+
+
+scores_table(19, main19, U4, "2pt", "4.2cm")
 bg_names19 = [n for n in NAMES[19] if not is_trigopt19(n)]
 write("r19_bg_ang", "long", 7, H_ANG,
       stacked([(t, body(bg_names19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
       f"{S19}, cosmic background + kNN gate: angular scores (all showers), energy score and trigger, as in "
-      f"Tables~\\ref{{tab:r19_fixed_ang}} and~\\ref{{tab:r19_opt_ang}}.", "tab:r19_bg_ang")
+      f"Table~\\ref{{tab:r19_scores}}.", "tab:r19_bg_ang")
 write("r19_bg_util", "long", 4, H_U4,
       stacked([(t, body(bg_names19, lambda n, p=p: util_row(n, *W[19][p], 19, U4))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 5),
-      f"{S19}, cosmic background + kNN gate: accuracy utilities, as in Table~\\ref{{tab:r19_fixed_util}}.", "tab:r19_bg_util")
+      f"{S19}, cosmic background + kNN gate: accuracy utilities, as in Table~\\ref{{tab:r19_scores}}.", "tab:r19_bg_util")
 modes = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
 write("r19_trig_ang", "float", 7, H_ANG,
       stacked([(t, body(trig19, lambda n, p=p: ang_row(n, *W[19][p], 19))) for t, p in modes], 8),
@@ -419,28 +430,14 @@ write("r19_trigut", "long", 3, H_TU,
 
 # Malata
 fm, c8 = W[20][""]
-fix20 = [n for n in NAMES[20] if not n.startswith("opt_")]
-opt20 = [n for n in NAMES[20] if n.startswith("opt_")]
-write("r20_fixed_ang", "long", 7, nm(H_ANG), body(fix20, lambda n: ang_row(n, fm, c8, 20, True)),
-      f"{S20}, no background: angular scores (triggered showers), energy score and trigger of the fixed layouts.",
-      "tab:r20_fixed_ang", desc="l")
-write("r20_fixed_util", "long", 7, nm(H_U7), body(fix20, lambda n: util_row(n, fm, c8, 20, UT, True)),
-      f"{S20}, no background: utilities (Sec.~\\ref{{sec:utilities}}) of the fixed layouts on the showers of "
-      f"Table~\\ref{{tab:r20_fixed_ang}}; all but the original utility are per-shower means in $[0,1]$.",
-      "tab:r20_fixed_util", desc="l")
-write("r20_opt_ang", "long", 7, H_ANG, body(opt20, lambda n: ang_row(n, fm, c8, 20)),
-      f"{S20}, no background: angular scores (triggered showers), energy score and trigger of the optimized layouts.",
-      "tab:r20_opt_ang")
-write("r20_opt_util", "long", 7, H_U7, body(opt20, lambda n: util_row(n, fm, c8, 20, UT)),
-      f"{S20}, no background: utilities of the optimized layouts, as in Table~\\ref{{tab:r20_fixed_util}}.",
-      "tab:r20_opt_util", sep="1.5pt")
+scores_table(20, NAMES[20], UT, "1pt", "2.7cm")
 write("r20_bg_ang", "long", 7, H_ANG,
       stacked([(t, body(NAMES[20], lambda n, p=p: ang_row(n, *W[20][p], 20))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
       f"{S20}, cosmic background + kNN gate: angular scores (triggered showers), energy score and trigger, as in "
-      f"Tables~\\ref{{tab:r20_fixed_ang}} and~\\ref{{tab:r20_opt_ang}}.", "tab:r20_bg_ang")
+      f"Table~\\ref{{tab:r20_scores}}.", "tab:r20_bg_ang")
 write("r20_bg_util", "long", 7, H_U7,
       stacked([(t, body(NAMES[20], lambda n, p=p: util_row(n, *W[20][p], 20, UT))) for t, p in ((B1, "bg1_"), (B10, "bg10_"))], 8),
-      f"{S20}, cosmic background + kNN gate: utilities, as in Table~\\ref{{tab:r20_fixed_util}}.", "tab:r20_bg_util",
+      f"{S20}, cosmic background + kNN gate: utilities, as in Table~\\ref{{tab:r20_scores}}.", "tab:r20_bg_util",
       sep="1.5pt")
 
 
@@ -538,6 +535,15 @@ write("r19_sweeps_util", "long", 4, r"Layout & Orig. & 2-tier $\lambda{=}0.3$ & 
       sweeps(19, [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT[:4]]),
       SW_CAP + "accuracy utilities (Sec.~\\ref{sec:utilities}). Bold and colour over the layouts of this table.",
       "tab:r19_sweeps_util", desc="l")
+
+# appendix: share within 2.5 deg of the main-text layouts (no background)
+H_W25 = DESC_HEAD + r" & $<2.5^\circ$ \\"
+for site, names, sname, sh in ((19, main19, S19, "all showers"), (20, NAMES[20], S20, "triggered showers")):
+    f_, c_ = W[site][""]
+    write(f"r{site}_w25", "long", 1, H_W25, body(names, lambda n: label(n, f_[n], site) + " & "
+                                                   + pair(f_, c_, n, "w2.5", 100, "{:.1f}") + r" \\"),
+          f"{sname}, no background: share of the {sh} within $2.5^\\circ$ [\\%] for the layouts of Sec.~\\ref{{sec:r{site}}}.",
+          f"tab:r{site}_w25")
 
 # figures
 figure(19, W[19][""][0], main19)

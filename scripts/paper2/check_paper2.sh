@@ -11,7 +11,7 @@ cat > "$B/check.tex" <<'TEX'
 \documentclass{article}
 \usepackage[paperwidth=192mm,paperheight=262mm,vmargin={19mm,19mm},hmargin={13.7mm,13.7mm}]{geometry}
 \usepackage[authoryear]{natbib}
-\usepackage{amsmath,amssymb,graphicx,longtable,tikz,float,array}
+\usepackage{amsmath,amssymb,graphicx,longtable,tikz,float,array,pdflscape}
 \usepackage[normalem]{ulem}
 \newcommand{\hm}[2]{{\setlength{\fboxsep}{0.8pt}\colorbox{#1}{#2}}}
 \begin{document}
