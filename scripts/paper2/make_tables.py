@@ -473,7 +473,7 @@ def headline(site, names):
     bgs = "share within $1^\\circ$ and median" + ("" if site == 19 else " and trigger rate")
     write(f"r{site}_head", "float", len(none) + 2 * nb, head, body(rows, row),
           f"{sname}: {sel}. Angular scores ({sh}){'' if site == 19 else ' and trigger rate'} without background; "
-          f"{bgs} with a 1 or 10\\,$\\mu$s readout window and the kNN gate (Sec.~\\ref{{sec:r{site}_bg}}). "
+          f"{bgs} with a 1 or 10\\,$\\mu$s readout window and the kNN gate (Sec.~\\ref{{sec:r{site}_layouts}}). "
           f"App.~\\ref{{app:scores}} lists every layout.", f"tab:r{site}_head",
           sep="1pt" if site == 20 else "2pt",
           desc=r">{\raggedright\arraybackslash}p{%s}" % ("2.9cm" if site == 20 else "4.2cm"))
@@ -703,7 +703,7 @@ def full_body(site, p, cols, util):
 for site, sname, sh in ((19, S19, "all showers"), (20, S20, "triggered showers")):
     extra = "; trigger-optimized layouts below the second line" if site == 19 else ""
     win = (r"without background and with a 1 or 10\,$\mu$s readout window and the kNN gate "
-           f"(Sec.~\\ref{{sec:r{site}_bg}}); bold and colour per block{extra}")
+           f"(Sec.~\\ref{{sec:r{site}_layouts}}); bold and colour per block{extra}")
     for kind, cols, util, head, nd, sep in (("ang", ANG, False, H_ANG, 7, "2pt"), ("util", UCOLS, True, H_U7, 7, "1.5pt")):
         blocks = [(t, full_body(site, p, cols, util)) for t, p in MODES]
         what = (f"angular scores ({sh}), energy score and trigger" if kind == "ang" else
