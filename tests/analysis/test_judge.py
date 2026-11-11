@@ -88,6 +88,30 @@ def test_a_comparison_draw_is_judged_like_the_chain_under_its_own_name():
     assert judge.verdict(swapped, "abs_t1", "comparison") == "FAIL clear", swapped
 
 
+def test_one_piece_scores_one_observable_of_its_group_only():
+    rng = np.random.default_rng(2)
+    dirs = toy_dirs(rng, N)
+    rows = np.repeat(np.arange(N), M)
+    obs = {"target": judge.observables(toy_clouds(rng, dirs), dirs, np.arange(N)),
+           "symbolic": judge.observables(toy_clouds(rng, dirs[rows]), dirs, rows),
+           "comparison": judge.observables(toy_clouds(rng, dirs[rows], shift=150.0), dirs, rows)}
+    cls = np.array(["EM", "hadronic"] * (N // 2))
+    prim = {"cls": cls, "u": dirs[:, 2]}
+    judge._DATA.clear()
+    judge._DATA.update(prim=prim, judged=np.ones(N, bool), other="comparison",
+                       **{src: {"electron": o} for src, o in obs.items()})
+    band = "steep" if judge.suite.BANDS["steep"](dirs[cls == "EM", 2]).sum() >= 2 else "grazing"
+    s, cn, b, name, size, r = judge.one_piece(("electron", "EM", band, "abs_t1", 7, 50))
+    group = np.flatnonzero((cls == "EM") & judge.suite.BANDS[band](dirs[:, 2]))
+    keep = lambda o: judge.take(o, np.isin(o[2], group))
+    direct = judge.score(*(keep(obs[k]["abs_t1"]) for k in ("target", "symbolic", "comparison")), group,
+                         np.random.default_rng(7), 50, "comparison")
+    assert (s, cn, b, name, size) == ("electron", "EM", band, "abs_t1", len(group)) and len(group) > 0
+    assert r.pop("verdict") == judge.verdict(direct, "abs_t1", "comparison")
+    assert r == direct, (r, direct)
+    judge._DATA.clear()
+
+
 def test_compare_needs_its_fit_lists_and_no_chain():
     import argparse
     for bad in ({"chain": "given", "compare_fit": ["x"]}, {"chain": "none", "compare_fit": None}):

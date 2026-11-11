@@ -259,19 +259,17 @@ def verdict(r, name, other="neural chain"):
 _DATA = {}
 
 
-def one_group(key):
-    s, cn, band, seed, n_boot = key
+def one_piece(key):
+    """One observable of one group (species, class, band), with its own resampling seed: the pieces run in parallel."""
+    s, cn, band, name, seed, n_boot = key
     prim = _DATA["prim"]
     primaries = np.flatnonzero((prim["cls"] == cn) & suite.BANDS[band](prim["u"]) & _DATA["judged"])
     keep = lambda o: take(o, np.isin(o[2], primaries))
-    rng = np.random.default_rng(seed)
     other = _DATA["other"]
-    res = {"primaries": len(primaries)}
-    for name in (*JUDGED, *REPORTED):
-        o = [keep(_DATA[src][s][name]) if src in _DATA else None for src in ("target", "symbolic", other)]
-        res[name] = score(*o, primaries, rng, n_boot, other)
-        res[name]["verdict"] = verdict(res[name], name, other)
-    return s, cn, band, res
+    o = [keep(_DATA[src][s][name]) if src in _DATA else None for src in ("target", "symbolic", other)]
+    r = score(*o, primaries, np.random.default_rng(seed), n_boot, other)
+    r["verdict"] = verdict(r, name, other)
+    return s, cn, band, name, len(primaries), r
 
 
 def fig_rows(res, other="neural chain"):
@@ -351,15 +349,15 @@ def stage_run(out, args, log):
         if c is not None:
             _DATA[src] = {s: observables(c[s], prim["dirs"], r) for s in SPECIES_NAMES}
     del target, sym, neu
-    keys = [(s, cn, b, args.seed + j, args.boot) for j, (s, cn, b) in enumerate(
-        (s, cn, b) for s in SPECIES_NAMES for cn in LABEL for b in suite.BANDS)]
-    res = {s: {cn: {} for cn in LABEL} for s in SPECIES_NAMES}
+    keys = [(s, cn, b, n, args.seed + j, args.boot) for j, (s, cn, b, n) in enumerate(
+        (s, cn, b, n) for s in SPECIES_NAMES for cn in LABEL for b in suite.BANDS for n in (*JUDGED, *REPORTED))]
+    res = {s: {cn: {b: {} for b in suite.BANDS} for cn in LABEL} for s in SPECIES_NAMES}
     with Pool(args.workers) as pool:
-        for s, cn, band, r in pool.imap_unordered(one_group, keys):
-            res[s][cn][band] = r
-            log.info("%s %s %s (%d primaries) | %s", s, cn, band, r["primaries"], " | ".join(
-                f"{n} {r[n]['symbolic']:.3g} vs {r[n].get(other, np.nan):.3g} (floor {r[n]['floor symbolic']:.2g}"
-                f" / {r[n].get(f'floor {other}', np.nan):.2g}) {r[n]['verdict']}" for n in (*JUDGED, *REPORTED)))
+        for s, cn, band, n, size, r in pool.imap_unordered(one_piece, keys):
+            res[s][cn][band].update({"primaries": size, n: r})
+            log.info("%s %s %s (%d primaries) | %s %.3g vs %.3g (floor %.2g / %.2g) %s", s, cn, band, size, n,
+                     r["symbolic"], r.get(other, np.nan), r["floor symbolic"], r.get(f"floor {other}", np.nan),
+                     r["verdict"])
     logs.save_fig(fig_rows(res, other), out, "w1_rows", log)
     return {"rule": __doc__.split("Rule (fixed before the run): ")[1].strip(), "folds": args.folds, "truth": args.truth,
             "chain": args.chain, "comparison": args.compare, "judged": int(len(judged)), "results": res}
