@@ -548,9 +548,9 @@ def constraints_table():
     fm, c8 = W[20][""]
     run = lambda kind, part: f"opt_{kind}_{part}"
     sw = "opt_swgotrig_l0p3_k3_a2_lr10_{}_b2048"
-    kinds = ("ker5", "sur5", "sur5_1us", "trg", "pen")
-    blocks = [("no constraint", ["ugrid", sw.format("grid"), sw.format("center")] + [run(k, "eall") for k in kinds[:4]]),
-              ("cable-length penalty", [sw.format("grid") + f"_cab{c}" for c in ("0p05", "0p1", "0p2")]
+    kinds = ("ker5", "sur5", "sur5_1us", "pen")
+    blocks = [("no constraint", ["ugrid", sw.format("grid"), sw.format("center")] + [run(k, "eall") for k in kinds[:3]]),
+              ("cable-length penalty", [sw.format("grid") + f"_cab{c}" for c in ("0p1", "0p2")]
                + [sw.format("center") + "_cab0p1"]),
               ("access", [run(k, "access") for k in kinds]),
               ("contour rows", [run(k, "contour") for k in kinds]),
@@ -569,11 +569,30 @@ def constraints_table():
     head = DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in cols) + r" & Cable [km] \\"
     write("r20_constraints", "float", len(cols) + 1, head, stacked([(t, "\n".join(row(n) for n in g)) for t, g in blocks], len(cols) + 2),
           f"{S20}, no background: optimization with construction constraints (Sec.~\\ref{{sec:r20_constraints}}): a "
-          f"cable-length penalty (weight 0.05, 0.1, 0.2) and penalties for access, contour rows and pads; the first block "
+          f"cable-length penalty (weight 0.1, 0.2) and penalties for access, contour rows and pads; the first block "
           f"lists the unconstrained layouts the constrained runs compare to. Angular scores (triggered showers), trigger "
           f"rate and the cable length of the layout (minimum spanning tree over the detectors on the mesh).",
           "tab:r20_constraints")
-    print("constraints table:", ", ".join(f"{n[4:]} {cab[n]:.2f} km" for n in names[:3]), "...")
+    # figure: one run per constraint (cable penalty 0.2; access, contour rows and pads with the surrogate SGD runs
+    # optimized with 1 us background)
+    picks = [("cable-length penalty", sw.format("grid") + "_cab0p2"), ("access", "opt_sur5_1us_access"),
+             ("contour rows", "opt_sur5_1us_contour"), ("pads", "opt_sur5_1us_pads")]
+    picks = [(t, n) for t, n in picks if n in fm]
+    site_npz = np.load(f"{SITES}/malata.npz")
+    cE, cN = site_npz["tris"][:, :, 0].mean(1), site_npz["tris"][:, :, 1].mean(1)
+    fig, ax = plt.subplots(1, len(picks), figsize=(10, 3.6), constrained_layout=True, squeeze=False)
+    for a, (t, n) in zip(ax[0], picks):
+        L = torch.load(fm[n]["path"], map_location="cpu", weights_only=False)
+        a.scatter(cE, cN, s=4, color="0.85", lw=0, rasterized=True)
+        a.scatter(np.asarray(L["x"]), np.asarray(L["y"]), s=7, color="tab:blue", lw=0)
+        o, u, cs, st = cells(n, fm[n])
+        a.set_title(f"{t}\n{plain(', '.join(x for x in (u, cs) if x))}\n{plain(', '.join(x for x in (o, st) if x))}\n"
+                    f"1°: {100 * fm[n]['w1']:.1f}%  5°: {100 * fm[n]['w5']:.1f}%  cable {cab[n]:.2f} km", fontsize=6.5)
+        a.set_aspect("equal"); a.tick_params(labelsize=6); a.set_xlabel("East [m]", fontsize=7)
+    ax[0, 0].set_ylabel("North [m]", fontsize=7)
+    fig.savefig(f"{FIG}/constraints20.pdf", dpi=300)
+    plt.close(fig)
+    print("constraints figure:", ", ".join(n[4:] for _, n in picks))
 
 
 constraints_table()
