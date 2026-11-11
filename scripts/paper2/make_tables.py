@@ -392,11 +392,15 @@ COLHEAD = {"w1": r"$<1^\circ$", "w2.5": r"$<2.5^\circ$", "w5": r"$<5^\circ$", "m
 APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores only in the appendix tables (_all)
 
 
+MAINCELLS = set()          # (site, mode, layout, key) of every value printed in a main-text table: not repeated in the appendix
+
+
 def scores_table(site, names, uts, sep, wdesc, landscape=True):
     """one table per site: every main-text layout (fixed above the line, optimized below), the scores not in APPX
     and the utilities uts"""
     f_, c_ = W[site][""]
     cols = [c for c in ANG if c[0] not in APPX[site]]
+    MAINCELLS.update((site, "", n, k) for n in names for k in [c[0] for c in cols] + list(uts))
     head = (r" & \multicolumn{%d}{c}{Scores} & \multicolumn{%d}{c}{Utilities} \\" % (len(cols), len(uts)) + "\n"
             + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in cols) + " & "
             + " & ".join(UT_HEAD[UT.index(k)] for k in uts) + r" \\")
@@ -432,6 +436,7 @@ for site, sname, sel_txt in ((19, S19, "share of all showers within $1^\\circ$ a
                              (20, S20, "share of the triggered showers within $1^\\circ$, their median angular error and "
                                        "expected trigger rate")):
     figs = [n for n in NAMES[site] if n in SEL[site]]
+    MAINCELLS.update((site, p, n, k) for n in figs for k, _, _ in BG_COLS[site] for p in ("", "bg1_", "bg10_"))
     nb = len(BG_COLS[site])
     write(f"r{site}_bg", "float", 3 * nb, H_BG if nb == 3 else H_BG.split(r" & \multicolumn{3}{c}{Trigger [\%]}")[0] + r" \\"
           + "\n" + DESC_HEAD + r" & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s \\",
@@ -465,9 +470,15 @@ write("r20_anav", "float", 8, H_ANAV,
       f"{S20}, no background: DeepSets vs the analytical reconstruction (v1, v2, v3) on the triggered showers, layouts "
       f"of Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular error. v2 and v3 were run on "
       f"these layouts only.", "tab:r20_anav")
-write("r20_ana", "long", 8, H_ANA, body(NAMES[20], lambda n: ana_row(n, full("ds") + full("v1"), True)),
-      f"{S20}, no background: DeepSets vs analytical v1 (Sec.~\\ref{{sec:analytic}}) on the triggered showers, every "
-      f"layout.", "tab:r20_ana")
+def ana_v1_row(n):
+    cs = ["" if (n in figs20 and k in ("w1", "med")) else pair(*SRC["v1"], n, k, sc, f) for _, k, sc, f in full("v1")]
+    return label(n, W[20][""][0][n], 20) + " & " + " & ".join(cs) + r" \\"
+
+
+write("r20_ana", "long", 4, DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] \\",
+      body(NAMES[20], ana_v1_row),
+      f"{S20}, no background: analytical v1 (Sec.~\\ref{{sec:analytic}}) on the triggered showers, every layout. DeepSets: "
+      f"Table~\\ref{{tab:r20_scores}}; empty cells: in Table~\\ref{{tab:r20_anav}}.", "tab:r20_ana")
 
 # layout sweeps of the fixed-layout experiments (Sec. 4.1 plots): every layout, one block per sweep
 def sweep_label(n):
@@ -505,41 +516,60 @@ def sweeps(run, cols):
                + sorted([n for n in fm if n.startswith("clu")], key=num))]
     row = lambda n: sweep_label(n) + " & " + " & ".join(pair(fm, c8, n, k, sc, f, colour=k != "ntrig")
                                                         for k, sc, f in cols) + r" \\"
-    ref = r"\multicolumn{%d}{l}{\textit{reference}} \\" % (1 + len(cols)) + "\n" + row("grid") + "\n\\hline\\hline\n"
-    return ref + stacked([(t, "\n".join(row(n) for n in g)) for t, g in groups if g], 1 + len(cols))
+    in_main = lambda n: re.sub(r"^(annulus_rin\d+)_R6000_n100$", r"\1", n) in main19     # same layout files and showers
+    groups = [(t, [n for n in g if not in_main(n)]) for t, g in groups]
+    return stacked([(t, "\n".join(row(n) for n in g)) for t, g in groups if g], 1 + len(cols))
 
 
 write("r19_sweeps", "long", 11, r"Layout & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & "
       r"$|\Delta\log_{10}E|<0.2$ & Trigger & $N_\mathrm{trig}$ & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & "
       r"3-tier \\", sweeps(19, ANG + [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT[:4]]),
       f"{S19}, no background: every layout of the sweeps of Figs.~\\ref{{fig:exp19}} and~\\ref{{fig:exp19_layouts}} "
-      f"(99 or 100 detectors), grid for reference; angular scores (all showers), energy score, trigger and accuracy "
-      f"utilities (Sec.~\\ref{{sec:utilities}}). Bold and colour over the layouts of this table.", "tab:r19_sweeps",
+      f"(99 or 100 detectors) that is not in Table~\\ref{{tab:r19_scores}}; angular scores (all showers), energy score, "
+      f"trigger and accuracy utilities (Sec.~\\ref{{sec:utilities}}). Bold and colour over the sweep layouts.", "tab:r19_sweeps",
       desc="l", landscape=True)
 
 # appendix: complete scores of every layout, one block per background window (bold and colour per block)
 MODES = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
 
 
-def full_body(site, p, row):
+def app_row(site, p, n, cols, util):
+    """appendix row; values printed in the main text left empty; None if nothing is left"""
+    f_, c_ = W[site][p]
+    uk = optimized_for(n) if (util and n.startswith("opt_")) else None
+    cs = []
+    for k, sc, fmt in cols:
+        if (site, p, n, k) in MAINCELLS:
+            cs.append(""); continue
+        c = pair(f_, c_, n, k, sc, fmt, colour=k != "ntrig")
+        cs.append(f"\\underline{{{c}}}" if k == uk else c)
+    if not any(cs):
+        return None
+    return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
+
+
+def full_body(site, p, cols, util):
     names = [n for n in NAMES[site] if not (site == 19 and is_trigopt19(n))]
-    out = body(names, lambda n: row(n, p))
-    if site == 19:          # 12 km trigger-optimized layouts below a second line
-        out += "\n\\hline\n" + body([n for n in NAMES[19] if is_trigopt19(n)], lambda n: row(n, p))
+    rows = {n: app_row(site, p, n, cols, util) for n in NAMES[site]}
+    out = body([n for n in names if rows[n]], lambda n: rows[n])
+    trig = [n for n in NAMES[site] if site == 19 and is_trigopt19(n) and rows[n]]
+    if trig:                # 12 km trigger-optimized layouts below a second line
+        out += ("\n\\hline\n" if out else "") + body(trig, lambda n: rows[n])
     return out
 
 
+UCOLS = [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT]
 for site, sname, sh in ((19, S19, "all showers"), (20, S20, "triggered showers")):
     extra = "; trigger-optimized layouts below the second line" if site == 19 else ""
     win = (r"without background and with a 1 or 10\,$\mu$s readout window and the kNN gate "
-           f"(Sec.~\\ref{{sec:r{site}_bg}}); bold and colour per block{extra}")
-    write(f"r{site}_all_ang", "long", 7, H_ANG,
-          stacked([(t, full_body(site, p, lambda n, p_: ang_row(n, *W[site][p_], site))) for t, p in MODES], 8),
-          f"{sname}: angular scores ({sh}), energy score and trigger of every layout, {win}.", f"tab:r{site}_all_ang")
-    write(f"r{site}_all_util", "long", 7, H_U7,
-          stacked([(t, full_body(site, p, lambda n, p_: util_row(n, *W[site][p_], site, UT))) for t, p in MODES], 8),
-          f"{sname}: utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) "
-          f"of every layout, {win}.", f"tab:r{site}_all_util", sep="1.5pt")
+           f"(Sec.~\\ref{{sec:r{site}_bg}}); bold and colour per block{extra}. Empty cells: in "
+           f"Tables~\\ref{{tab:r{site}_scores}} and~\\ref{{tab:r{site}_bg}}")
+    for kind, cols, util, head, nd, sep in (("ang", ANG, False, H_ANG, 7, "2pt"), ("util", UCOLS, True, H_U7, 7, "1.5pt")):
+        blocks = [(t, full_body(site, p, cols, util)) for t, p in MODES]
+        what = (f"angular scores ({sh}), energy score and trigger" if kind == "ang" else
+                "utilities (Sec.~\\ref{sec:utilities}; per-shower means in $[0,1]$ except the original utility)")
+        write(f"r{site}_all_{kind}", "long", nd, head, stacked([b for b in blocks if b[1]], 1 + nd),
+              f"{sname}: {what} of every layout, {win}.", f"tab:r{site}_all_{kind}", sep=sep)
 
 # figures
 figure(19, W[19][""][0], main19)
