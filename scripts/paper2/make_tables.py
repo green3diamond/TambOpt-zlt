@@ -355,7 +355,7 @@ def figure(site, res, names):
     tris = site_npz["tris"]; sc = 1000.0 if site == 19 else 1.0
     cE, cN = tris[:, :, 0].mean(1) / sc, tris[:, :, 1].mean(1) / sc
     fig, ax = plt.subplots(4, 4, figsize=(10, 10.6), constrained_layout=True)
-    panels = [n for n in names if n in SEL[site]] if site == 19 else SEL[site]
+    panels = SEL[site]
     for a, n in zip(ax.flat, panels):
         if n not in res:
             a.axis("off"); continue
@@ -392,6 +392,40 @@ COLHEAD = {"w1": r"$<1^\circ$", "w2.5": r"$<2.5^\circ$", "w5": r"$<5^\circ$", "m
 APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores only in the appendix tables (_all)
 
 
+# headline selection (main-text table and, on the 12 km plane, the layout figure)
+HEAD_GROUPS = {19: ("orig", "twotier_l0p3", "twotier_l0", "threetier"),
+               20: ("orig", "trig5_poisson", "trig5_step", "trigger_only")}
+
+
+def start_twin(n):
+    """the same run from the other start: grid / uniform grid <-> centre"""
+    if re.search(r"_center(_|$)", n):
+        return re.sub(r"_center(?=_|$)", "_grid", n, count=1)
+    return re.sub(r"_u?grid(?=_|$)", "_center", n, count=1)
+
+
+def head_rows(site, names):
+    """12 km: the fixed layouts of the figure, then for each utility the best optimized layout (largest flow-matching
+    share within 1 deg) and the same run from the centre start. Malata: uniform grid, best other fixed layout, best
+    layout per utility."""
+    f_ = W[site][""][0]
+    best = lambda cand: max(cand, key=lambda n: f_[n]["w1"]) if cand else None
+    fixed = [n for n in names if not n.startswith("opt_")]
+    rows = [n for n in fixed if n in SEL[19]] if site == 19 else ["ugrid", best([n for n in fixed if n != "ugrid"])]
+    for g in HEAD_GROUPS[site]:
+        cand = [n for n in names if n.startswith("opt_") and not n.startswith("opt_regress")
+                and (n.startswith("opt_trg_") if g == "trigger_only" else optimized_for(n) == g)]
+        b = best(cand)
+        for n in ([b, start_twin(b)] if (b and site == 19) else [b]):
+            if n and n in names and n not in rows:
+                rows.append(n)
+    return rows
+
+
+HEAD = {19: head_rows(19, main19), 20: head_rows(20, NAMES[20])}
+SEL[19] = HEAD[19]          # the 12 km layout figure shows exactly the headline layouts, in its order
+print("12 km headline / figure layouts:", " ".join(HEAD[19]))
+
 MAINCELLS = set()   # (site, mode, layout, key) printed in a main-text table (headline, background comparison)
 PRINTED = set()     # printed in the appendix's full scores table: not repeated in the complete tables
 UCOLS = [(k, 1, "{:.2f}" if k == "orig" else "{:.3f}") for k in UT]
@@ -416,22 +450,9 @@ def cells_of(site, p, n, cols, util, hide, mark=None):
     return cs
 
 
-# headline tables (main text): uniform grid, best other fixed layout, best layout optimized for each utility
-HEAD_GROUPS = {19: ("orig", "twotier_l0p3", "twotier_l0", "threetier"),
-               20: ("orig", "trig5_poisson", "trig5_step", "trigger_only")}
-
-
 def headline(site, names):
     f_, _ = W[site][""]
-    best = lambda cand: max(cand, key=lambda n: f_[n]["w1"]) if cand else None
-    fixed = [n for n in names if not n.startswith("opt_")]
-    rows = ["ugrid", best([n for n in fixed if n != "ugrid"])]
-    for g in HEAD_GROUPS[site]:
-        cand = [n for n in names if n.startswith("opt_") and not n.startswith("opt_regress")
-                and (n.startswith("opt_trg_") if g == "trigger_only" else optimized_for(n) == g)]
-        b = best(cand)
-        if b and b not in rows:
-            rows.append(b)
+    rows = HEAD[site]
     none = [c for c in ANG if c[0] in (("w1", "w5", "med") if site == 19 else ("w1", "w5", "med", "trig"))]
     w1 = [c for c in ANG if c[0] == "w1"]
 
@@ -442,9 +463,13 @@ def headline(site, names):
     head = (r" & \multicolumn{%d}{c}{No background} & \multicolumn{2}{c}{$<1^\circ$, background + kNN} \\" % len(none)
             + "\n" + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in none) + r" & 1\,$\mu$s & 10\,$\mu$s \\")
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
+    sel = (f"the layouts of Fig.~\\ref{{fig:r19_layouts}}: the fixed layouts and, for each utility, the best layout "
+           f"optimized for it (largest flow-matching share within $1^\\circ$) with the same run from the centre start"
+           if site == 19 else
+           f"the uniform grid, the best other fixed layout and, for each utility, the best layout optimized for it "
+           f"(largest flow-matching share within $1^\\circ$)")
     write(f"r{site}_head", "float", len(none) + 2, head, body(rows, row),
-          f"{sname}: the uniform grid, the best other fixed layout and, for each utility, the best layout optimized for "
-          f"it (largest flow-matching share within $1^\\circ$); angular scores ({sh})"
+          f"{sname}: {sel}; angular scores ({sh})"
           f"{'' if site == 19 else ' and trigger rate'} without background, and the share within $1^\\circ$ with a 1 "
           f"or 10\\,$\\mu$s readout window and the kNN gate. App.~\\ref{{app:scores}} lists every layout.",
           f"tab:r{site}_head")
