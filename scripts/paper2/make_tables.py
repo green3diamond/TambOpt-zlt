@@ -396,7 +396,7 @@ APPX = {19: ["w2.5", "trig"], 20: ["w2.5"]}      # main-text scores only in the 
 
 
 # headline selection (main-text table and, on the 12 km plane, the layout figure)
-HEAD_GROUPS = {19: ("orig", "twotier_l0p3", "twotier_l0", "threetier"),
+HEAD_GROUPS = {19: ("orig", "twotier_l0p3", "trig5_poisson", "threetier"),
                20: ("orig", "trig5_poisson", "trig5_step")}
 
 
@@ -426,7 +426,7 @@ def head_rows(site, names):
     return rows
 
 
-HEAD = {19: head_rows(19, main19), 20: head_rows(20, NAMES[20])}
+HEAD = {19: head_rows(19, [n for n in NAMES[19] if not is_setup19(n)]), 20: head_rows(20, NAMES[20])}
 SEL[19], SEL[20] = HEAD[19], HEAD[20]     # the layout figures show exactly the headline layouts, in its order
 print("12 km headline / figure layouts:", " ".join(HEAD[19]))
 
