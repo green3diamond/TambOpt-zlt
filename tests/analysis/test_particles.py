@@ -271,6 +271,30 @@ def test_cached_rows_refuse_other_showers_or_energy():
             raise AssertionError(f"accepted {args}")
 
 
+def test_half_radius_and_plane_offset_move_whole_planes_only():
+    from scipy.special import softmax
+    from symbolic import draw
+    one = np.zeros(particles.N_RING)
+    one[3] = 1.0                                                   # all in ring [5, 10) m
+    assert abs(draw.half_radius(one) - 7.5) < 1e-12
+    two = np.zeros(particles.N_RING)
+    two[[0, 2]] = 0.5
+    assert abs(draw.half_radius(two) - 1.0) < 1e-12
+    rng = np.random.default_rng(5)
+    f = 3
+    law = {"rings": rng.normal(size=(f, particles.N_RING)), "lead": rng.normal(0, 0.1, (particles.N_RING, f)),
+           "delay": rng.normal(0.5, 0.1, (particles.N_RING, f)), "mean_energy": np.full((particles.N_RING, f), -1.0),
+           "spread": np.tile([2.0, 3.0], (particles.N_RING, 1))}
+    x = np.array([1.0, 0.2, -0.3])
+    run = lambda shift: draw.plane_particles(np.random.default_rng(9), 4, x, 50.0, law, "electron", total=True,
+                                             shift=shift)
+    base, zero, moved = run(None), run(np.zeros(2)), run(np.array([0.3, -1.2]))
+    assert len(base) > 100 and np.array_equal(base, zero)
+    step = np.array([0.3, -1.2]) * draw.half_radius(softmax(x @ law["rings"]))
+    assert np.allclose(moved[:, 1:3] - base[:, 1:3], step, rtol=0, atol=1e-9)
+    assert np.array_equal(moved[:, [0, 3, 4]], base[:, [0, 3, 4]])
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

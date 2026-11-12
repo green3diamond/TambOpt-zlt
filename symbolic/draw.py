@@ -13,6 +13,9 @@ energy, inputs annuli.features; then, with the laws of particles.py (fitted on t
   5. positions               uniform in area within the ring (the open last ring up to particles.R_OPEN x its inner
                              edge), uniform azimuth
   6. times                   axis light time + lead + Exp(mean delay - lead) (lead and delay laws)
+  6b. offset (--offset)     every particle of plane k shifted in the plane by kappa x r_half,k x u_k: r_half,k the
+                             radius holding half the plane's ring shares, u an AR(1) in plane index (unit variance per
+                             axis, rho), from its own generator so the particles are those drawn without it
   7. render                  the preprocessing with the OLD caps (render.render, sources.CAP); each plane's stored
                              energy rescaled to E_k. With --caps new: the caps of the v2 and 150k per-simulation
                              preprocessing (sources.CAP_NEW) and no rescale, the render decides what is stored, as
@@ -26,6 +29,7 @@ per primary so the split does not matter), merge (padded clouds.npz with the sui
 """
 import argparse
 import glob
+import json
 import os
 import sys
 import time
@@ -122,18 +126,32 @@ def ring_means(law, x, k):
     return law["mean_energy"] @ x
 
 
-def plane_particles(rng, k, x, e_k, law, s, log_lam=None, x_stored=None, total=False):
+def half_radius(shares):
+    """Radius [m] where the cumulative ring shares cross 1/2, linear in r within the ring (open ring to R_OPEN x edge)."""
+    cum = np.cumsum(shares)
+    j = min(int(np.argmax(cum >= 0.5)), particles.N_RING - 1)
+    lo, hi = particles.EDGES[j], particles.EDGES[j + 1]
+    hi = hi if np.isfinite(hi) else particles.R_OPEN * lo
+    before = cum[j - 1] if j else 0.0
+    return float(lo + (hi - lo) * np.clip((0.5 - before) / max(shares[j], 1e-300), 0.0, 1.0))
+
+
+def plane_particles(rng, k, x, e_k, law, s, log_lam=None, x_stored=None, total=False, shift=None):
     """Particles (n, 5) [plane k, across, along, energy, time] of one plane before the preprocessing; log_lam: the
     plane's log10 width, None for the rings law unstretched; x_stored: the inputs of the stored law if not x;
-    total: e_k is already the plane's energy before the cut (no stored law)."""
+    total: e_k is already the plane's energy before the cut (no stored law); shift: (across, along) offset of every
+    particle in units of the plane's half radius, None for none."""
     e_tot = e_k if total else e_k / softmax((x if x_stored is None else x_stored) @ law["stored"])[0]
     shares = softmax(x @ law["rings"])
     shares = shares if log_lam is None else particles.stretch(shares, log_lam)
     lead_y, delay_y = ring_times(law, x, k)
     lead = np.maximum(10.0 ** lead_y - 1, 0.0)
     tau = np.maximum(10.0 ** delay_y - 1 - lead, 0.0)
-    return ring_particles(rng, k, e_tot * shares, np.exp(ring_means(law, x, k)), law["spread"],
-                          particles.E_MIN[s], lead, tau)
+    p = ring_particles(rng, k, e_tot * shares, np.exp(ring_means(law, x, k)), law["spread"],
+                       particles.E_MIN[s], lead, tau)
+    if shift is not None and len(p):
+        p[:, 1:3] += np.asarray(shift, np.float64) * half_radius(shares)
+    return p
 
 
 def ring_particles(rng, k, e_ring, mean, spread, e_min, lead, tau):
@@ -175,17 +193,20 @@ def shower(job):
     i, seed, l, u, cn, X, d, E, xmax, laws, *rest = job
     caps = rest[0] if rest else "old"
     kind = rest[1] if len(rest) > 1 else "stored"
+    offset = rest[2] if len(rest) > 2 else None
     if kind == "total" and caps != "new":
         raise ValueError("total plane energies need --caps new (old caps rescale to stored energies)")
     rng = np.random.default_rng([seed, i])
     t0, out, n_part = time.time(), {}, 0
-    for s in SPECIES_NAMES:
+    for si, s in enumerate(SPECIES_NAMES):
         ks = np.nonzero(E[s] > 0)[0]
+        kappa, rho = (offset or {}).get(f"{s} {cn}", (0.0, 0.0))
+        off = kappa * sampler.ar1(2, N_PLANES, rho, np.random.default_rng([seed, i, 1, si])) if kappa > 0 else None
         law, w = laws[(s, cn)], laws[(s, cn)]["along"]
         x_s, x = plane_inputs(X[ks], xmax[s], l, u, E[s][ks], ks, law, kind)
         ll = width_sr.law_mean(w, ks, x[:, 3], x[:, 1]) + width_sr.law_sd(w, ks) * sampler.ar1(1, N_PLANES, w[-1], rng)[0][ks]
-        p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a], x_stored=x_s[a], total=kind == "total")
-             for a, k in enumerate(ks)]
+        p = [plane_particles(rng, k, x[a], E[s][k], law, s, log_lam=ll[a], x_stored=x_s[a], total=kind == "total",
+                             shift=None if off is None else off[:, k]) for a, k in enumerate(ks)]
         p = np.concatenate(p) if p else np.zeros((0, 5))
         n_part += len(p)
         cells = render.render(p, d, sources.CAPS[caps][s]) if len(p) else np.zeros((0, 5))
@@ -285,9 +306,16 @@ def stage_draw(out, args, log):
     z = np.load(os.path.join(out, "energies.npz"))
     laws = draw_laws(args.out, args.laws, args.width_law, args.time_law, args.energy_law)
     mine = np.arange(len(z["rows"]))[args.task::args.tasks]
+    if args.only:
+        mine = mine[np.isin(mine, np.load(args.only))]
+    offset = None
+    if args.offset:
+        with open(args.offset) as f:
+            offset = {k: (float(v[0]), float(v[1])) for k, v in json.load(f).items()}
+        log.info("offset (kappa, rho): %s", offset)
     jobs = [(i, args.seed, float(z["l"][i]), float(z["u"][i]), planes.CLASS[int(z["labels"][i])], z["X"][i],
              z["dirs"][i], {s: z[f"{s}.E"][i] for s in SPECIES_NAMES}, {s: float(z[f"{s}.xmax"][i]) for s in SPECIES_NAMES},
-             laws, args.caps, energy_kind(z)) for i in mine]
+             laws, args.caps, energy_kind(z), offset) for i in mine]
     cells = {s: {} for s in SPECIES_NAMES}
     secs, n_part = [], []
     with Pool(args.workers) as pool:
@@ -313,6 +341,7 @@ def stage_draw(out, args, log):
 def stage_merge(out, args, log):
     z = np.load(os.path.join(out, "energies.npz"))
     n = len(z["rows"])
+    sel = np.sort(np.load(args.only)) if args.only else np.arange(n)
     per = {s: [None] * n for s in SPECIES_NAMES}
     for f in sorted(glob.glob(os.path.join(out, "part_*.npz"))):
         p = np.load(f)
@@ -320,17 +349,18 @@ def stage_merge(out, args, log):
             o, cells = p[f"{s}.offsets"], p[f"{s}.cells"]                 # read each array once
             for a, i in enumerate(p["index"]):
                 per[s][i] = cells[o[a]:o[a + 1]]
-    missing = [i for i in range(n) if per[SPECIES_NAMES[0]][i] is None]
+    missing = [i for i in sel if per[SPECIES_NAMES[0]][i] is None]
     if missing:
         raise ValueError(f"{len(missing)} primaries have no drawn cells (first {missing[:5]})")
     clouds = {}
     for s in SPECIES_NAMES:
-        cap = max(len(c) for c in per[s])
-        clouds[f"{s}.points"] = np.stack([np.pad(c, ((0, cap - len(c)), (0, 0))) for c in per[s]]).astype(np.float32)
-        clouds[f"{s}.E"] = z[f"{s}.E"]
-        log.info("%s: cells per shower median %d, max %d", s, int(np.median([len(c) for c in per[s]])), cap)
-    np.savez(os.path.join(out, args.clouds), rows=z["rows"], labels=z["labels"], **clouds)
-    return {"primaries": n, "clouds": args.clouds}
+        mine = [per[s][i] for i in sel]
+        cap = max(len(c) for c in mine)
+        clouds[f"{s}.points"] = np.stack([np.pad(c, ((0, cap - len(c)), (0, 0))) for c in mine]).astype(np.float32)
+        clouds[f"{s}.E"] = z[f"{s}.E"][sel]
+        log.info("%s: cells per shower median %d, max %d", s, int(np.median([len(c) for c in mine])), cap)
+    np.savez(os.path.join(out, args.clouds), rows=z["rows"][sel], labels=z["labels"][sel], **clouds)
+    return {"primaries": int(len(sel)), "clouds": args.clouds}
 
 
 def main():
@@ -351,6 +381,10 @@ def main():
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--clouds", default="clouds.npz", help="merge stage: output file name")
+    ap.add_argument("--only", help="draw and merge stages: .npy of entry indices of energies.npz to draw / merge "
+                    "(indices and seeds unchanged)")
+    ap.add_argument("--offset", help="draw stage: JSON {\"species class\": [kappa, rho]} of the plane offset "
+                    "(module docstring, step 6b); none if not given")
     ap.add_argument("--caps", choices=("old", "new"), default="old",
                     help="draw stage: render caps, old (h5_files_v3, rescaled to E_k) or new (v2 / 150k, no rescale)")
     ap.add_argument("--width-law", help="draw stage: width_sr.py law, relative to --out; required with a non-default --laws")
