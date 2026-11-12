@@ -467,9 +467,9 @@ def headline(site, names):
             r"\multicolumn{%d}{c}{10\,$\mu$s background + kNN} \\" % (len(none), nb, nb) + "\n"
             + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in none + bgc + bgc) + r" \\")
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
-    sel = (f"the layouts of Fig.~\\ref{{fig:r{site}_layouts}}: the fixed layouts and, for each utility, the best layout "
-           f"optimized for it among the runs also started from the centre (largest flow-matching share within "
-           f"$1^\\circ$), followed by its centre-start run")
+    sel = (f"the layouts of Fig.~\\ref{{fig:r{site}_layouts}}: the fixed layouts and, for each utility, a pair of "
+           f"optimized runs that differ only in the start layout: the best run (largest flow-matching share within "
+           f"$1^\\circ$), then its centre-start repeat")
     bgs = "share within $1^\\circ$ and median" + ("" if site == 19 else " and trigger rate")
     write(f"r{site}_head", "float", len(none) + 2 * nb, head, body(rows, row),
           f"{sname}: {sel}. Angular scores ({sh}){'' if site == 19 else ' and trigger rate'} without background; "
