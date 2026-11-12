@@ -412,6 +412,30 @@ def test_table_noise_keeps_energy_and_stays_within_the_leftovers_seen():
     assert np.allclose(back[inside], rr[inside], atol=1e-9), np.max(np.abs(back[inside] - rr[inside]))
 
 
+def test_bright_noise_recovers_the_brightness_slope_and_keeps_energy_per_bin():
+    rng = np.random.default_rng(31)
+    n = 6000
+    X = np.tile(atm.plane_depths([80.0], 24), (n, 1))
+    xmax, L, R = rng.uniform(300, 1500, n), np.full(n, 200.0), np.zeros(n)
+    l10 = rng.uniform(5.0, 6.0, n)
+    lnn = np.log(10.0) * l10 + rng.normal(0, 0.5, n)                           # curves bright or dim for their energy
+    curve = lnn[:, None] + longitudinal.shape(X, xmax[:, None], L[:, None], R[:, None])
+    v = curve - np.log(10.0) * l10[:, None]
+    r = -0.6 * (v - np.nanmean(v)) + 0.2 * rng.normal(size=curve.shape)       # planes pull back toward the mean
+    d = {"X": X, "meta": {"log10_E": l10},
+         **{s: {"E": np.exp(curve + r), "ln_n": lnn, "theta": np.column_stack([xmax, L, R])} for s in sources.SPECIES_NAMES}}
+    t = sampler.peak_position(X, xmax, L)
+    p = sampler.plane_residuals(d, np.arange(n), "bright")["photon"]
+    near = np.isfinite(curve) & (t > -1.0) & (t < 2.0)
+    assert np.all(np.abs(p["ab"][3:9, 1] + 0.6) < 0.05), p["ab"][:, 1]
+    tf = np.where(np.isfinite(t), t, 0.0)
+    drawn = curve + sampler.bright_mean(p, tf, np.where(np.isfinite(v), v, 0.0)) + sampler.table_noise(p, tf, rng.normal(size=t.shape))
+    ratio = np.exp(drawn[near]).sum() / np.exp(curve[near] + r[near]).sum()
+    tab = sampler.plane_residuals(d, np.arange(n), "table")["photon"]
+    plain = np.exp(curve[near] + sampler.table_noise(tab, tf, rng.normal(size=t.shape))[near]).sum() / np.exp(curve[near] + r[near]).sum()
+    assert abs(ratio - 1) < 0.05 and plain > ratio + 0.05, (ratio, plain)
+
+
 def test_peak_and_plane_noise_draw_the_same_curve_without_noise():
     rng = np.random.default_rng(22)
     n = 1500

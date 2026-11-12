@@ -5,7 +5,9 @@ to the shower's own peak, t = (X - Xmax) / L (noise "peak"): with "plane", a pla
 showers and at the peak in others carries the early planes' large scatter to the peak. Noise "skew": per bin of t a
 Johnson SU for the leftovers instead of a normal (they are skewed low near the peak, and a symmetric noise on ln E
 inflates the summed energy). Noise "table": per bin of t the real leftovers' quantiles, read through normal scores,
-never beyond the leftovers seen (the Johnson SU's tails reach past them and blow up the summed energy)."""
+never beyond the leftovers seen (the Johnson SU's tails reach past them and blow up the summed energy). Noise "bright":
+per bin of t a linear term in the curve's brightness v = ln curve - ln E (a curve bright for its energy has real planes
+below it), then the "table" form on what that leaves."""
 import numpy as np
 from scipy import special
 
@@ -161,6 +163,21 @@ def table_noise(p, t, z):
     return blend(p["at"], np.stack([np.interp(z, Z_GRID, q) for q in p["q"]]), t)
 
 
+def bright_bins(t, v, r):
+    """Per bin of t: least squares r = a + b v (bins with fewer than MIN_BIN leftovers take the fit on all) -> (a, b)."""
+    ok = np.isfinite(t) & np.isfinite(v) & np.isfinite(r)
+    bins = np.digitize(t, PEAK_EDGES) - 1
+    line = lambda m: np.polyfit(v[m], r[m], 1)[::-1]
+    pooled = line(ok)
+    ab = [line(ok & (bins == k)) if (ok & (bins == k)).sum() >= MIN_BIN else pooled for k in range(len(PEAK_EDGES) - 1)]
+    return np.array(ab)
+
+
+def bright_mean(p, t, v):
+    """The brightness term a + b v at positions t, blended in t as the tables."""
+    return blend(p["at"], p["ab"][:, 0, None, None] + p["ab"][:, 1, None, None] * v[None], t)
+
+
 def plane_residuals(d, rows, noise="plane"):
     """Per species: mean and sd of log E_k minus the curve, per plane number (noise "plane") or per position
     relative to the shower's own peak (noise "peak"), and the plane-to-plane correlation of the standardized
@@ -191,11 +208,21 @@ def plane_residuals(d, rows, noise="plane"):
             p = {"noise": "table", "at": at, "q": q}
             bias, sd = 0.0, 1.0
             r = table_scores(p, t, r)
+        elif noise == "bright":
+            t = peak_position(X, th[:, 0], th[:, 1])
+            v = curve - np.log(10.0) * d["meta"]["log10_E"][rows][:, None]
+            ab = bright_bins(t, v, r)
+            bins = np.clip(np.digitize(t, PEAK_EDGES) - 1, 0, len(ab) - 1)
+            e = r - (ab[bins, 0] + ab[bins, 1] * v)
+            at, q = table_bins(t, e)
+            p = {"noise": "bright", "at": at, "q": q, "ab": ab}
+            bias, sd = 0.0, 1.0
+            r = table_scores(p, t, e)
         elif noise == "plane":
             bias, sd = np.nanmean(r, 0), np.nanstd(r, 0)
             p = {"bias": np.nan_to_num(bias), "sd": np.nan_to_num(sd)}
         else:
-            raise ValueError(f"noise {noise!r}: plane, peak, skew or table")
+            raise ValueError(f"noise {noise!r}: plane, peak, skew, table or bright")
         u = (r - bias) / sd
         min_pair = min(MIN_PAIR, len(rows) // 10)
         rhos = [np.corrcoef(u[ok, k], u[ok, k + 1])[0, 1] for k in range(r.shape[1] - 1)
@@ -275,10 +302,15 @@ def sample(model, l, u, X, rng):
     out = {}
     for i, (s, y) in enumerate(to_profiles(lat, l, X).items()):
         p = model["planes"][s]
-        if p.get("noise") in ("peak", "skew", "table"):
+        if p.get("noise") in ("peak", "skew", "table", "bright"):
             xmax, L = longitudinal.from_latent(species_block(lat, i)[0], l)[:2]
             t = peak_position(X, xmax, L)
             t = np.where(np.isfinite(t), t, 0.0)
+        if p.get("noise") == "bright":
+            v = np.where(np.isfinite(y), y - np.log(10.0) * l[:, None], 0.0)
+            y = y + bright_mean(p, t, v) + table_noise(p, t, ar1(len(l), y.shape[1], p["rho"], rng))
+            out[s] = np.where(np.isfinite(y), np.exp(np.where(np.isfinite(y), y, 0.0)), 0.0)
+            continue
         if p.get("noise") in ("skew", "table"):
             y = y + {"skew": skew_noise, "table": table_noise}[p["noise"]](p, t, ar1(len(l), y.shape[1], p["rho"], rng))
             out[s] = np.where(np.isfinite(y), np.exp(np.where(np.isfinite(y), y, 0.0)), 0.0)
