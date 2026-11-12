@@ -166,7 +166,7 @@ def test_histogram_resampling_matches_the_exact_one():
     target = judge.observables(toy_clouds(rng, dirs), dirs, np.arange(N))
     good = judge.observables(toy_clouds(rng, dirs[rows]), dirs, rows)
     near = judge.observables(toy_clouds(rng, dirs[rows], shift=20.0), dirs, rows)
-    for name in ("abs_t1", "cell_energy", "centre"):
+    for name in ("abs_t1", "cell_energy", "centre", "lead_time", "cells"):
         exact = judge.score(target[name], good[name], near[name], np.arange(N), np.random.default_rng(3), n_boot=60)
         fast = judge.score(target[name], good[name], near[name], np.arange(N), np.random.default_rng(3), n_boot=60,
                            boot_bins=2 ** 16)

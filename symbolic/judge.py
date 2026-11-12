@@ -230,44 +230,53 @@ def median(o):
     return float(o[0][i][np.searchsorted(c, 0.5 * c[-1])])
 
 
-def primary_hists(o, primaries, lo, dx, nb):
-    """Weighted histogram (nb bins of width dx from lo) of one observable per primary, rows in the order of primaries."""
+def primary_hists(o, primaries, edges):
+    """Weighted histogram (bins between edges) of one observable per primary, rows in the order of primaries."""
+    nb = len(edges) - 1
     i = np.clip(np.searchsorted(primaries, o[2]), 0, len(primaries) - 1)
     ok = (primaries[i] == o[2]) & np.isfinite(o[0])
-    b = np.clip(((o[0][ok] - lo) / dx).astype(np.int64), 0, nb - 1)
+    b = np.clip(np.searchsorted(edges, o[0][ok], side="right") - 1, 0, nb - 1)
     return np.bincount(i[ok] * nb + b, o[1][ok], len(primaries) * nb).reshape(len(primaries), nb)
 
 
-def hist_w1(ha, hb, dx):
-    """W1 between two histograms on the same bins (mass at the bin centres); NaN if either is empty."""
+def bin_edges(vals, n):
+    """The distinct values if there are at most 4 n of them (exact), else the union of n quantile and n uniform edges."""
+    u = np.unique(vals)
+    if len(u) > 4 * n:
+        u = np.unique(np.r_[np.quantile(vals, np.linspace(0.0, 1.0, n + 1)), np.linspace(u[0], u[-1], n + 1)])
+    return np.r_[u, u[-1] + 1.0]
+
+
+def hist_w1(ha, hb, step):
+    """W1 between two histograms on the same bins (mass at each bin's left edge, step = the edges' spacing); NaN if
+    either is empty."""
     sa, sb = ha.sum(), hb.sum()
     if sa <= 0 or sb <= 0:
         return np.nan
-    return float(np.abs(np.cumsum(ha)[:-1] / sa - np.cumsum(hb)[:-1] / sb).sum() * dx)
+    return float((np.abs(np.cumsum(ha)[:-1] / sa - np.cumsum(hb)[:-1] / sb) * step).sum())
 
 
 def score(target, symbolic, neural, primaries, rng, n_boot=BOOT, other="neural chain", boot_bins=0):
     """One observable, one group: W1, floors, medians, and the resampled symbolic minus other difference; neural
     None: the symbolic side alone. other names the second source (the chain, or a comparison draw). boot_bins > 0:
-    the resampled differences from per-primary histograms of that many bins (the same resamples; every other number
-    exact), instead of re-sorting every cell at every resample."""
+    the resampled differences from per-primary histograms (bin_edges), the same resamples, every other number exact,
+    instead of re-sorting every cell at every resample."""
     if neural is None:
         return {"symbolic": dist(target, symbolic), "symbolic per plane": per_plane(target, symbolic),
                 "floor symbolic": floor(symbolic), "median target": median(target), "median symbolic": median(symbolic)}
     size = int(primaries.max()) + 1
     if boot_bins:
         ps = np.sort(primaries)
-        vals = np.concatenate([o[0][np.isfinite(o[0])] for o in (target, symbolic, neural)])
-        lo, hi = float(vals.min()), float(vals.max())
-        dx = max(hi - lo, 1e-12) / boot_bins
-        H = [primary_hists(o, ps, lo, dx, boot_bins) for o in (target, symbolic, neural)]
+        edges = bin_edges(np.concatenate([o[0][np.isfinite(o[0])] for o in (target, symbolic, neural)]), boot_bins)
+        step = np.diff(edges[:-1])
+        H = [primary_hists(o, ps, edges) for o in (target, symbolic, neural)]
     d = []
     for _ in range(n_boot):
         mult = np.zeros(size)
         np.add.at(mult, rng.choice(primaries, len(primaries)), 1.0)
         if boot_bins:
             ht, hs, hn = (mult[ps] @ h for h in H)
-            d.append(hist_w1(ht, hs, dx) - hist_w1(ht, hn, dx))
+            d.append(hist_w1(ht, hs, step) - hist_w1(ht, hn, step))
             continue
         d.append(dist(target, symbolic, mult) - dist(target, neural, mult))
     lo, hi = np.nanpercentile(d, [2.5, 97.5])
