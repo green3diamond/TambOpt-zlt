@@ -202,6 +202,7 @@ for name, path in pairs:
     cm = torch.cat(cnt_all).numpy().astype(bool)            # count-detected: >= 3 detectors with mu >= 1
     ac = a[cm]
     r.update(n_cnt=int(cm.sum()), med_cnt=float(np.median(ac)) if len(ac) else float("nan"),
+             e02_cnt=float(np.mean(e[cm] < 0.2)) if len(ac) else float("nan"),
              **{f"w{t:g}_cnt": float(np.mean(ac < t)) if len(ac) else float("nan") for t in (1, 2.5, 5)})
     dm = torch.cat(det_all).numpy().astype(bool)            # detected: >= 3 detectors with E > 1
     ad = a[dm]
