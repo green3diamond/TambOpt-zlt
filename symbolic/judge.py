@@ -230,17 +230,45 @@ def median(o):
     return float(o[0][i][np.searchsorted(c, 0.5 * c[-1])])
 
 
-def score(target, symbolic, neural, primaries, rng, n_boot=BOOT, other="neural chain"):
+def primary_hists(o, primaries, lo, dx, nb):
+    """Weighted histogram (nb bins of width dx from lo) of one observable per primary, rows in the order of primaries."""
+    i = np.clip(np.searchsorted(primaries, o[2]), 0, len(primaries) - 1)
+    ok = (primaries[i] == o[2]) & np.isfinite(o[0])
+    b = np.clip(((o[0][ok] - lo) / dx).astype(np.int64), 0, nb - 1)
+    return np.bincount(i[ok] * nb + b, o[1][ok], len(primaries) * nb).reshape(len(primaries), nb)
+
+
+def hist_w1(ha, hb, dx):
+    """W1 between two histograms on the same bins (mass at the bin centres); NaN if either is empty."""
+    sa, sb = ha.sum(), hb.sum()
+    if sa <= 0 or sb <= 0:
+        return np.nan
+    return float(np.abs(np.cumsum(ha)[:-1] / sa - np.cumsum(hb)[:-1] / sb).sum() * dx)
+
+
+def score(target, symbolic, neural, primaries, rng, n_boot=BOOT, other="neural chain", boot_bins=0):
     """One observable, one group: W1, floors, medians, and the resampled symbolic minus other difference; neural
-    None: the symbolic side alone. other names the second source (the chain, or a comparison draw)."""
+    None: the symbolic side alone. other names the second source (the chain, or a comparison draw). boot_bins > 0:
+    the resampled differences from per-primary histograms of that many bins (the same resamples; every other number
+    exact), instead of re-sorting every cell at every resample."""
     if neural is None:
         return {"symbolic": dist(target, symbolic), "symbolic per plane": per_plane(target, symbolic),
                 "floor symbolic": floor(symbolic), "median target": median(target), "median symbolic": median(symbolic)}
     size = int(primaries.max()) + 1
+    if boot_bins:
+        ps = np.sort(primaries)
+        vals = np.concatenate([o[0][np.isfinite(o[0])] for o in (target, symbolic, neural)])
+        lo, hi = float(vals.min()), float(vals.max())
+        dx = max(hi - lo, 1e-12) / boot_bins
+        H = [primary_hists(o, ps, lo, dx, boot_bins) for o in (target, symbolic, neural)]
     d = []
     for _ in range(n_boot):
         mult = np.zeros(size)
         np.add.at(mult, rng.choice(primaries, len(primaries)), 1.0)
+        if boot_bins:
+            ht, hs, hn = (mult[ps] @ h for h in H)
+            d.append(hist_w1(ht, hs, dx) - hist_w1(ht, hn, dx))
+            continue
         d.append(dist(target, symbolic, mult) - dist(target, neural, mult))
     lo, hi = np.nanpercentile(d, [2.5, 97.5])
     return {"symbolic": dist(target, symbolic), other: dist(target, neural), "difference 95%": [float(lo), float(hi)],
@@ -261,13 +289,14 @@ _DATA = {}
 
 def one_piece(key):
     """One observable of one group (species, class, band), with its own resampling seed: the pieces run in parallel."""
-    s, cn, band, name, seed, n_boot = key
+    s, cn, band, name, seed, n_boot, *rest = key
+    boot_bins = rest[0] if rest else 0
     prim = _DATA["prim"]
     primaries = np.flatnonzero((prim["cls"] == cn) & suite.BANDS[band](prim["u"]) & _DATA["judged"])
     keep = lambda o: take(o, np.isin(o[2], primaries))
     other = _DATA["other"]
     o = [keep(_DATA[src][s][name]) if src in _DATA else None for src in ("target", "symbolic", other)]
-    r = score(*o, primaries, np.random.default_rng(seed), n_boot, other)
+    r = score(*o, primaries, np.random.default_rng(seed), n_boot, other, boot_bins)
     r["verdict"] = verdict(r, name, other)
     return s, cn, band, name, len(primaries), r
 
@@ -349,7 +378,7 @@ def stage_run(out, args, log):
         if c is not None:
             _DATA[src] = {s: observables(c[s], prim["dirs"], r) for s in SPECIES_NAMES}
     del target, sym, neu
-    keys = [(s, cn, b, n, args.seed + j, args.boot) for j, (s, cn, b, n) in enumerate(
+    keys = [(s, cn, b, n, args.seed + j, args.boot, args.boot_bins) for j, (s, cn, b, n) in enumerate(
         (s, cn, b, n) for s in SPECIES_NAMES for cn in LABEL for b in suite.BANDS for n in (*JUDGED, *REPORTED))]
     res = {s: {cn: {b: {} for b in suite.BANDS} for cn in LABEL} for s in SPECIES_NAMES}
     with Pool(args.workers) as pool:
@@ -395,6 +424,8 @@ def main():
     ap.add_argument("--folds", type=int, nargs="+", default=[0, 1], help="run stage: the folds judged")
     ap.add_argument("--draws", type=int, default=DRAWS)
     ap.add_argument("--boot", type=int, default=BOOT)
+    ap.add_argument("--boot-bins", type=int, default=0, help="run stage: resampled differences from per-primary "
+                    "histograms of this many bins (0: exact, every cell re-sorted at every resample)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--folder", default=FOLDER, help="judge folder under --out (primaries, results)")

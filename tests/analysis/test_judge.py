@@ -159,6 +159,26 @@ def test_h5_truth_reads_stored_cells_and_refuses_inconsistent_files():
             raise AssertionError(f"accepted an inconsistent file: {list(bad)}")
 
 
+def test_histogram_resampling_matches_the_exact_one():
+    rng = np.random.default_rng(7)
+    dirs = toy_dirs(rng, N)
+    rows = np.repeat(np.arange(N), M)
+    target = judge.observables(toy_clouds(rng, dirs), dirs, np.arange(N))
+    good = judge.observables(toy_clouds(rng, dirs[rows]), dirs, rows)
+    near = judge.observables(toy_clouds(rng, dirs[rows], shift=20.0), dirs, rows)
+    for name in ("abs_t1", "cell_energy", "centre"):
+        exact = judge.score(target[name], good[name], near[name], np.arange(N), np.random.default_rng(3), n_boot=60)
+        fast = judge.score(target[name], good[name], near[name], np.arange(N), np.random.default_rng(3), n_boot=60,
+                           boot_bins=2 ** 16)
+        for k, v in exact.items():
+            if k != "difference 95%":
+                assert v == fast[k], (name, k)                                  # every other number exact
+        width = exact["difference 95%"][1] - exact["difference 95%"][0]
+        gap = np.abs(np.subtract(exact["difference 95%"], fast["difference 95%"])).max()
+        assert gap <= 0.02 * width + 1e-9, (name, exact["difference 95%"], fast["difference 95%"])
+        assert judge.verdict(exact, name) == judge.verdict(fast, name), name
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
