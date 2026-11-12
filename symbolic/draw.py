@@ -263,6 +263,24 @@ def sample_energies(root, l, u, X, lab, rng, fits=None, noise="plane"):
     return E, xmax, kind
 
 
+def true_energies(path, names):
+    """Each primary's own total plane energies and fitted Xmax from a fits file of fit_profiles.py --stage tables,
+    matched by table name (the oracle part 1)."""
+    z = np.load(path)
+    if str(z["plane_energy"]) != "total":
+        raise ValueError(f"{path}: not total plane energies")
+    row = {str(n): i for i, n in enumerate(z["meta.names"])}
+    missing = [n for n in names if str(n) not in row]
+    if missing:
+        raise ValueError(f"{len(missing)} primaries not in {path} (first {missing[:3]})")
+    i = np.array([row[str(n)] for n in names])
+    E, xmax = {s: z[f"{s}.E"][i] for s in SPECIES_NAMES}, {s: z[f"{s}.xmax"][i] for s in SPECIES_NAMES}
+    bad = {s: int((~np.isfinite(xmax[s]) & (E[s].sum(1) > 0)).sum()) for s in SPECIES_NAMES}
+    if any(bad.values()):
+        raise ValueError(f"unfitted Xmax for primaries with energy: {bad}")
+    return E, xmax, "total"
+
+
 def energy_kind(z):
     """The plane energy an energies.npz holds (files from before the choice: stored)."""
     return str(z["plane_energy"]) if "plane_energy" in z.files else "stored"
@@ -270,12 +288,16 @@ def energy_kind(z):
 
 def stage_energies(out, args, log):
     rows, l, u, lab, X, dirs = given_primaries(args) if args.primaries else scored_primaries(args)
-    E, xmax, kind = sample_energies(args.out, l, u, X, lab, np.random.default_rng(args.seed), args.fits, args.noise)
+    if args.true_fits:
+        E, xmax, kind = true_energies(args.true_fits, np.load(args.primaries)["names"][rows])
+    else:
+        E, xmax, kind = sample_energies(args.out, l, u, X, lab, np.random.default_rng(args.seed), args.fits, args.noise)
     np.savez(os.path.join(out, "energies.npz"), rows=rows, labels=lab, l=l, u=u, X=X, dirs=dirs,
              plane_energy=np.array(kind), noise=np.array(args.noise), **{f"{s}.E": E[s] for s in SPECIES_NAMES},
              **{f"{s}.xmax": xmax[s] for s in SPECIES_NAMES})
-    log.info("sampled %s plane energies of %d primaries, %s noise", kind, len(rows), args.noise)
-    return {"primaries": int(len(rows)), "seed": args.seed, "plane_energy": kind, "fits": args.fits, "noise": args.noise}
+    log.info("%s %s plane energies of %d primaries", "true" if args.true_fits else "sampled", kind, len(rows))
+    return {"primaries": int(len(rows)), "seed": args.seed, "plane_energy": kind, "fits": args.fits, "noise": args.noise,
+            "true_fits": args.true_fits}
 
 
 def draw_laws(root, laws_path=LAWS, width_law=None, time_law=None, energy_law=None):
@@ -381,6 +403,8 @@ def main():
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
     ap.add_argument("--clouds", default="clouds.npz", help="merge stage: output file name")
+    ap.add_argument("--true-fits", help="energies stage, with --primaries: each primary's own total plane energies "
+                    "and Xmax from this fits file (fit_profiles.py --stage tables), no sampling")
     ap.add_argument("--only", help="draw and merge stages: .npy of entry indices of energies.npz to draw / merge "
                     "(indices and seeds unchanged)")
     ap.add_argument("--offset", help="draw stage: JSON {\"species class\": [kappa, rho]} of the plane offset "

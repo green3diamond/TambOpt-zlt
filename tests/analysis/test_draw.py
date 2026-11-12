@@ -168,6 +168,34 @@ def test_new_caps_store_what_the_render_keeps_without_rescaling():
         assert (e_new < 50.0 / 0.9 + 1e-6).all() and (e_new > 0.8 * 50.0 / 0.9).all()   # new: what the render keeps
 
 
+def test_true_energies_follow_the_names_and_refuse_gaps():
+    import tempfile
+    from modules.constants import SPECIES_NAMES
+    names = np.array(["b.npz", "a.npz", "c.npz"])
+    arrays = {"plane_energy": np.array("total"), "meta.names": names}
+    for s in SPECIES_NAMES:
+        arrays[f"{s}.E"] = np.arange(3.0)[:, None] + np.zeros((3, 24)) + 1.0
+        arrays[f"{s}.xmax"] = np.array([10.0, 20.0, 30.0])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "fits.npz")
+        np.savez(path, **arrays)
+        E, xmax, kind = draw.true_energies(path, np.array(["a.npz", "c.npz", "a.npz"]))
+        assert kind == "total" and xmax["photon"].tolist() == [20.0, 30.0, 20.0] and E["muon"][:, 0].tolist() == [2.0, 3.0, 2.0]
+        for bad in (np.array(["z.npz"]),):
+            try:
+                draw.true_energies(path, bad)
+            except ValueError:
+                continue
+            raise AssertionError("accepted a missing primary")
+        arrays["electron.xmax"] = np.array([10.0, np.nan, 30.0])
+        np.savez(path, **arrays)
+        try:
+            draw.true_energies(path, np.array(["a.npz"]))
+        except ValueError:
+            return
+        raise AssertionError("accepted an unfitted Xmax")
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
