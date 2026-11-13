@@ -602,6 +602,22 @@ def constraints_table():
     fig.savefig(f"{FIG}/constraints20.pdf", dpi=300)
     plt.close(fig)
     print("constraints figure:", ", ".join(n[4:] for _, n in picks))
+    # figure: kernel vs surrogate response, original utility, Adam + L-BFGS, separate runs from the same start
+    pairs = [("centre start, kernel", "opt_current_lr10_center_p1"), ("centre start, surrogate", "opt_current_lr10_center_p1_sur"),
+             ("uniform-grid start, kernel", "opt_current_lr10_ugrid_p1"),
+             ("uniform-grid start, surrogate", "opt_current_lr10_ugrid_p1_sur")]
+    pairs = [(t, n) for t, n in pairs if n in fm]
+    fig, ax = plt.subplots(1, len(pairs), figsize=(10, 3.3), constrained_layout=True, squeeze=False)
+    for a, (t, n) in zip(ax[0], pairs):
+        L = torch.load(fm[n]["path"], map_location="cpu", weights_only=False)
+        a.scatter(cE, cN, s=4, color="0.85", lw=0, rasterized=True)
+        a.scatter(np.asarray(L["x"]), np.asarray(L["y"]), s=7, color="tab:blue", lw=0)
+        a.set_title(f"{t}\n1°: {100 * fm[n]['w1']:.1f}%  5°: {100 * fm[n]['w5']:.1f}%", fontsize=7)
+        a.set_aspect("equal"); a.tick_params(labelsize=6); a.set_xlabel("East [m]", fontsize=7)
+    ax[0, 0].set_ylabel("North [m]", fontsize=7)
+    fig.savefig(f"{FIG}/surr_vs_kernel20.pdf", dpi=300)
+    plt.close(fig)
+    print("surrogate vs kernel figure:", ", ".join(n[4:] for _, n in pairs))
 
 
 constraints_table()
