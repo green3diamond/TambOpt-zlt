@@ -118,7 +118,7 @@ if d19["fm"] or d19["c8"]:
     col = lambda j: (ax[0, j], None, ax[1, j])
     disk = [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]) / 1000)]
     draw(col(0), d19, disk, "disk radius [km]", True, legend=False)
-    series_legend(ax[1, 0], disk, 1, extra=src_handles())     # line-style key grouped with column (a)
+    series_legend(ax[1, 0], [], 1, extra=src_handles())       # single series: only the line-style key
     ax[0, 0].set_title("(a) disk size")
     hole = []
     for R, c in ((6000, "tab:red"), (2000, "tab:orange"), (1500, "tab:olive")):
