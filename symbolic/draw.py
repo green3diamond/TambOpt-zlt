@@ -242,7 +242,7 @@ def given_primaries(args):
     return tuple(z[k][idx] for k in ("rows", "l", "u", "labels", "X", "dirs"))
 
 
-def sample_energies(root, l, u, X, lab, rng, fits=None, noise="plane"):
+def sample_energies(root, l, u, X, lab, rng, fits=None, noise="plane", rows="clean"):
     """Plane energies {species: (n, planes)}, Xmax {species: (n,)} and the plane energy kind ("stored" for the
     default training file; a fits file of fit_profiles.py --stage tables: "total", fitted on its own showers, all
     of them up to its top) from the Part-1 sampler, class by class."""
@@ -256,7 +256,10 @@ def sample_energies(root, l, u, X, lab, rng, fits=None, noise="plane"):
         tr, top = sampler.load(fits, e_max=e_max), np.inf
     for c in planes.CLASS:
         m = lab == c
-        e, lat = sampler.sample(sampler.fit(tr, c, top=top, noise=noise), l[m], u[m], X[m], rng)
+        model = sampler.fit(tr, c, top=top, noise=noise, rows=rows)
+        e, lat = sampler.sample(model, l[m], u[m], X[m], rng)
+        print(f"sampler {planes.CLASS[c]}: rows {rows}, trained on {model['n_train']}, redrawn "
+              f"{model['n_redrawn']} of {model['n_drawn']}", flush=True)
         for j, s in enumerate(SPECIES_NAMES):
             E[s][m] = e[s]
             xmax[s][m] = longitudinal.from_latent(sampler.species_block(lat, j)[0], l[m])[0]
@@ -291,13 +294,15 @@ def stage_energies(out, args, log):
     if args.true_fits:
         E, xmax, kind = true_energies(args.true_fits, np.load(args.primaries)["names"][rows])
     else:
-        E, xmax, kind = sample_energies(args.out, l, u, X, lab, np.random.default_rng(args.seed), args.fits, args.noise)
+        E, xmax, kind = sample_energies(args.out, l, u, X, lab, np.random.default_rng(args.seed), args.fits, args.noise,
+                                        args.sampler_rows)
     np.savez(os.path.join(out, "energies.npz"), rows=rows, labels=lab, l=l, u=u, X=X, dirs=dirs,
-             plane_energy=np.array(kind), noise=np.array(args.noise), **{f"{s}.E": E[s] for s in SPECIES_NAMES},
+             plane_energy=np.array(kind), noise=np.array(args.noise), sampler_rows=np.array(args.sampler_rows),
+             **{f"{s}.E": E[s] for s in SPECIES_NAMES},
              **{f"{s}.xmax": xmax[s] for s in SPECIES_NAMES})
     log.info("%s %s plane energies of %d primaries", "true" if args.true_fits else "sampled", kind, len(rows))
     return {"primaries": int(len(rows)), "seed": args.seed, "plane_energy": kind, "fits": args.fits, "noise": args.noise,
-            "true_fits": args.true_fits}
+            "sampler_rows": args.sampler_rows, "true_fits": args.true_fits}
 
 
 def draw_laws(root, laws_path=LAWS, width_law=None, time_law=None, energy_law=None):
@@ -396,6 +401,8 @@ def main():
     ap.add_argument("--draws", type=int, default=1, help="energies stage: draws per primary of --primaries")
     ap.add_argument("--fits", help="energies stage: fits file of fit_profiles.py --stage tables (total plane energy) "
                     "instead of the default training fits")
+    ap.add_argument("--sampler-rows", choices=("clean", "fitted"), default="clean",
+                    help="energies stage: showers the sampler learns from: clean fits only, or every fitted shower")
     ap.add_argument("--noise", choices=("plane", "peak", "skew", "table", "bright"), default="plane",
                     help="energies stage: plane noise per plane number (adopted), or per position relative to the peak: normal (peak), Johnson SU (skew) or the real leftovers as a table (table), after a linear term in the curve's brightness (bright)")
     ap.add_argument("--laws", default=LAWS, help="draw stage: particle laws, relative to --out")

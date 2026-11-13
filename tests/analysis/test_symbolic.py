@@ -475,6 +475,33 @@ def test_sampler_fit_uses_only_showers_below_the_cut():
     assert sampler.fit(d, 0)["n_train"] == (le < sampler.TOP).sum()
 
 
+def test_sampler_learns_from_every_fitted_shower_when_asked():
+    rng = np.random.default_rng(31)
+    n = 1500
+    X = np.tile(atm.plane_depths([80.0], 24), (n, 1))
+    le = rng.uniform(5.0, 6.0, n)
+    xmax, L, R, lnn = rng.uniform(300, 500, n), rng.uniform(150, 250, n), rng.uniform(0.0, 0.2, n), rng.uniform(10, 12, n)
+    lnn[:50] = np.nan                                   # unfitted: never used
+    clean = rng.uniform(size=n) > 0.3                   # the rest: fitted but not clean
+    clean[:50] = False
+    curve = lnn[:, None] + longitudinal.shape(X, xmax[:, None], L[:, None], R[:, None])
+    f = {"ln_n": lnn, "theta": np.column_stack([xmax, L, R])}
+    d = {"X": X, "meta": {"log10_E": le, "cos_zenith": rng.uniform(0.1, 0.5, n), "labels": np.zeros(n, int)},
+         **{s: {"E": np.exp(np.nan_to_num(curve) + 0.1 * rng.normal(size=curve.shape)), **f,
+                "Z": longitudinal.to_latent(f, le), "start": rng.uniform(0, 50, n), "clean": clean}
+            for s in sources.SPECIES_NAMES}}
+    assert sampler.fit(d, 0, top=np.inf)["n_train"] == clean.sum()
+    m = sampler.fit(d, 0, top=np.inf, noise="table", rows="fitted")
+    assert m["n_train"] == n - 50 and m["rows"] == "fitted"
+    e, _ = sampler.sample(m, le[:200], np.full(200, 0.3), X[:200], np.random.default_rng(5))
+    assert all(np.all(np.isfinite(e[s])) and (e[s].sum(1) > 0).all() for s in sources.SPECIES_NAMES)
+    try:
+        sampler.class_rows(d, 0, rows="all")
+        raise AssertionError("an unknown rows choice was accepted")
+    except ValueError:
+        pass
+
+
 def test_start_depth_lies_between_the_last_leading_empty_plane_and_the_first_lit_one():
     X = np.tile(np.arange(1, 7) * 50.0, (4, 1))
     E = np.array([[5.0, 9, 9, 9, 9, 9], [0.0, 0.5, 9, 9, 9, 9], [0.0, 0, 0, 0, 0, 2], [0.0, 0, 0, 0, 0, 0]])

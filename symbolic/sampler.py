@@ -41,10 +41,16 @@ def load(path, e_max=LOG10_E_MAX):
     return d
 
 
-def class_rows(d, c, top=TOP, keep=None):
-    """Showers of class c with a clean fit in every species (within keep, if given): joint numbers and conditions."""
-    m = ((d["meta"]["labels"] == c) & (d["meta"]["log10_E"] < top) & (True if keep is None else keep)
-         & np.all([d[s]["clean"] & np.isfinite(d[s]["start"]) for s in SPECIES_NAMES], 0))
+def class_rows(d, c, top=TOP, keep=None, rows="clean"):
+    """Showers of class c (within keep, if given): joint numbers and conditions. rows "clean": a clean fit in every
+    species; "fitted": every shower fitted in every species (also peaks outside the planes and numbers on a bound)."""
+    if rows == "clean":
+        ok = [d[s]["clean"] & np.isfinite(d[s]["start"]) for s in SPECIES_NAMES]
+    elif rows == "fitted":
+        ok = [np.all(np.isfinite(d[s]["Z"]), 1) & np.isfinite(d[s]["start"]) for s in SPECIES_NAMES]
+    else:
+        raise ValueError(f"rows {rows!r}: clean or fitted")
+    m = ((d["meta"]["labels"] == c) & (d["meta"]["log10_E"] < top) & (True if keep is None else keep) & np.all(ok, 0))
     return {"rows": np.nonzero(m)[0],
             "X": np.hstack([np.column_stack([d[s]["Z"][m], d[s]["start"][m]]) for s in SPECIES_NAMES]),
             "l": d["meta"]["log10_E"][m], "u": d["meta"]["cos_zenith"][m]}
@@ -231,16 +237,17 @@ def plane_residuals(d, rows, noise="plane"):
     return out
 
 
-def fit(d, c, top=TOP, keep=None, margin=lambda: cp.Margin("jsu"), noise="plane"):
+def fit(d, c, top=TOP, keep=None, margin=lambda: cp.Margin("jsu"), noise="plane", rows="clean"):
     """Fit the sampler for class c on the output of load(), on showers below log10 E = top (and within keep).
-    margin() makes each number's margin: linear laws by default. noise: the plane residual model (module docstring)."""
-    t = class_rows(d, c, top, keep)
+    margin() makes each number's margin: linear laws by default. noise: the plane residual model (module docstring).
+    rows: which showers it learns from (class_rows)."""
+    t = class_rows(d, c, top, keep, rows)
     design = cp.Design(t["l"], t["u"])
     D = design(t["l"], t["u"])
     margins = [margin().fit(D, t["X"][:, j]) for j in range(t["X"].shape[1])]
     C = cp.corr(cp.normal_scores(margins, D, t["X"]))
     return {"design": design, "margins": margins, "C": C, "planes": plane_residuals(d, t["rows"], noise),
-            "n_train": len(t["rows"])}
+            "n_train": len(t["rows"]), "rows": rows}
 
 
 def species_block(Zlat, i):
