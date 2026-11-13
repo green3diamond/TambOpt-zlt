@@ -51,7 +51,8 @@ def series(d, pat, key_fn):
 
 
 def draw(axrow, data, fams, xlabel, logx, grid=True, legend=True):
-    """fams: list of (label, colour, pattern, x-function)."""
+    """fams: list of (label, colour, pattern, x-function). axrow: (accuracy, median, trigger) axes; None skips a panel."""
+    acc, med, trg = axrow
     for src, (_, ls, sname) in SRC.items():
         d = data[src]
         for lab, c, pat, fx in fams:
@@ -61,25 +62,28 @@ def draw(axrow, data, fams, xlabel, logx, grid=True, legend=True):
             x = np.array([p[0] for p in pts])
             g = lambda k: np.array([p[1][k] for p in pts])
             mk = "o" if len(pts) > 1 else "s"
-            axrow[0].plot(x, 100 * g("w1"), ls=ls, marker=mk, ms=2.5, color=c,
-                          label=f"{lab}" if src == "fm" else None)
-            axrow[0].plot(x, 100 * g("w5"), ls=ls, marker=mk, ms=2.5, color=c, alpha=0.45)
-            axrow[1].plot(x, g("med"), ls=ls, marker=mk, ms=2.5, color=c)
-            axrow[2].plot(x, 100 * g("trig"), ls=ls, marker=mk, ms=2.5, color=c)
+            acc.plot(x, 100 * g("w1"), ls=ls, marker=mk, ms=2.5, color=c, label=f"{lab}" if src == "fm" else None)
+            acc.plot(x, 100 * g("w5"), ls=ls, marker=mk, ms=2.5, color=c, alpha=0.45)
+            if med is not None:
+                med.plot(x, g("med"), ls=ls, marker=mk, ms=2.5, color=c)
+            trg.plot(x, 100 * g("trig"), ls=ls, marker=mk, ms=2.5, color=c)
         if grid and "ugrid" in d:
             r = d["ugrid"]
-            for a, vals in ((axrow[0], (100 * r["w1"],)), (axrow[1], (r["med"],)), (axrow[2], (100 * r["trig"],))):
-                for v in vals:
+            for a, v in ((acc, 100 * r["w1"]), (med, r["med"]), (trg, 100 * r["trig"])):
+                if a is not None:
                     a.axhline(v, color="0.5", ls=ls, lw=0.8)
-    for a in axrow:
+    for a in (acc, med, trg):
+        if a is None:
+            continue
         a.set_xlabel(xlabel)
         if logx:
             a.set_xscale("log")
-    axrow[0].set_ylabel(r"within $1^\circ$ (dark), $5^\circ$ (light) [%]")
-    axrow[1].set_ylabel(r"median error [$^\circ$]"); axrow[1].set_yscale("log")
-    axrow[2].set_ylabel("trigger [%]")
+    acc.set_ylabel(r"within $1^\circ$ (dark), $5^\circ$ (light) [%]")
+    if med is not None:
+        med.set_ylabel(r"median error [$^\circ$]"); med.set_yscale("log")
+    trg.set_ylabel("trigger [%]")
     if legend:
-        axrow[0].legend(loc="best")
+        acc.legend(loc="best")
 
 
 def src_legend(fig):
@@ -92,23 +96,24 @@ def src_legend(fig):
 # ── run 19 ──────────────────────────────────────────────────────────────────
 d19 = load(19)
 if d19["fm"] or d19["c8"]:
-    fig, ax = plt.subplots(3, 3, figsize=(10, 9.4), layout="constrained")
-    draw(ax[0], d19, [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]) / 1000)],
+    fig, ax = plt.subplots(2, 3, figsize=(10, 6.4), layout="constrained")   # columns: experiments; rows: accuracy, trigger
+    col = lambda j: (ax[0, j], None, ax[1, j])
+    draw(col(0), d19, [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]) / 1000)],
          "disk radius [km]", True)
-    ax[0, 1].set_title("(a) disk size")
+    ax[0, 0].set_title("(a) disk size")
     hole = []
     for R, c in ((6000, "tab:red"), (2000, "tab:orange"), (1500, "tab:olive")):
         hole.append((f"annulus, outer {R / 1000:g} km", c, rf"annulus_rin(\d+)_R{R}_n\d+", lambda m: int(m[1]) / 1000))
-    draw(ax[1], d19, hole, "inner (hole) radius [km]", False)
-    ax[1, 1].set_title("(b) disk with a hole")
+    draw(col(1), d19, hole, "inner (hole) radius [km]", False)
+    ax[0, 1].set_title("(b) disk with a hole")
     clus = [("33 triplets, uniform", "tab:green", r"tri33_r(\d+)", lambda m: int(m[1])),
             ("33 triplets in 0.5 km disk", "tab:cyan", r"tri33disk_R500_r(\d+)", lambda m: int(m[1])),
             ("33 triplets in 0.75 km disk", "tab:blue", r"tri33disk_R750_r(\d+)", lambda m: int(m[1])),
             ("33 triplets in 1 km disk", "tab:purple", r"tri33disk_R1000_r(\d+)", lambda m: int(m[1])),
             ("20 clusters of 5", "tab:brown", r"clu20x5_r(\d+)", lambda m: int(m[1])),
             ("25 clusters of 4", "tab:pink", r"clu25x4_r(\d+)", lambda m: int(m[1]))]
-    draw(ax[2], d19, clus, "cluster size [m]", True)
-    ax[2, 1].set_title("(c) clustering")
+    draw(col(2), d19, clus, "cluster size [m]", True)
+    ax[0, 2].set_title("(c) clustering")
     src_legend(fig)
     fig.savefig(f"{FIG}/exp19.pdf")
 
