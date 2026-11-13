@@ -330,8 +330,8 @@ H_BG = (r" & \multicolumn{3}{c}{$<1^\circ$ [\%]} & \multicolumn{3}{c}{Median [$^
         + DESC_HEAD + r" & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s \\")
 H_ANAV = (r" & \multicolumn{2}{c}{DeepSets} & \multicolumn{2}{c}{Analytical v1} & \multicolumn{2}{c}{Analytical v2} & \multicolumn{2}{c}{Analytical v3} \\" + "\n"
           + DESC_HEAD + r" & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] \\")
-H_ANAV1 = (r" & \multicolumn{2}{c}{DeepSets} & \multicolumn{2}{c}{Analytical v1} \\" + "\n"
-           + DESC_HEAD + r" & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] \\")
+H_ANAV1 = (r" & & \multicolumn{2}{c}{DeepSets} & \multicolumn{2}{c}{Analytical v1} \\" + "\n"
+           + DESC_HEAD + r" & Trigger & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] \\")
 H_ANA = (r" & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \\" + "\n"
          + DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] \\")
 WRITTEN = []
@@ -671,10 +671,11 @@ def ana_row(n, cols, ul=False):
 short = lambda m: [(m, "w1", 100, "{:.1f}"), (m, "med", 1, "{:.2f}")]
 full = lambda m: [(m, "w1", 100, "{:.1f}"), (m, "w2.5", 100, "{:.1f}"), (m, "w5", 100, "{:.1f}"), (m, "med", 1, "{:.2f}")]
 figs20 = [n for n in NAMES[20] if n in SEL[20]]
-write("r20_anav", "float", 4, H_ANAV1,
-      body(figs20, lambda n: ana_row(n, short("ds") + short("v1"), False)),
+write("r20_anav", "float", 5, H_ANAV1,
+      body(figs20, lambda n: ana_row(n, [("ds", "trig", 100, "{:.1f}")] + short("ds") + short("v1"), False)),
       f"{S20}, no background: DeepSets vs the analytical reconstruction (v1) on the triggered showers, layouts of "
-      f"Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular error.", "tab:r20_anav")
+      f"Fig.~\\ref{{fig:r20_layouts}}; trigger rate [\\%] (the same for both reconstructions), share within "
+      f"$1^\\circ$ [\\%] and median angular error.", "tab:r20_anav")
 write("r20_anav_all", "float", 8, H_ANAV,                      # appendix: all three versions
       body(figs20, lambda n: ana_row(n, short("ds") + short("v1") + short("v2") + short("v3"), False)),
       f"{S20}, no background: DeepSets vs the analytical reconstruction v1, v2 and v3 (App.~\\ref{{app:ana}}) on the "
