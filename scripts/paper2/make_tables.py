@@ -213,14 +213,14 @@ def pair(fm, c8, n, k, sc, fmt, colour=True):
     return s + (" [" + hcell(c8, n, k, sc, fmt, colour) + "]" if n in c8 else "")
 
 
-def label(n, rec, site, opt=True):
-    """one cell: optimizer | utility | test case | start, '--' where a field does not apply; opt=False leaves out the
-    optimizer (narrow tables)"""
+def label(n, rec, site, compact=False):
+    """one cell: optimizer | utility | test case | start, '--' where a field does not apply; compact: empty fields left
+    out (narrow tables)"""
     o, u, c, st = cells(n, rec)
     if not n.startswith("opt_"):
         o = ""
-    if not opt:             # compact: no optimizer, empty fields left out
-        return " $|$ ".join(x for x in (u, c, st) if x)
+    if compact:
+        return " $|$ ".join(x for x in (o, u, c, st) if x)
     lab = " $|$ ".join(x if x else "--" for x in (o, u, c, st))
     return lab
 
@@ -486,7 +486,7 @@ def headline(site, names):
     rows = HEAD[site]
     none = [c for c in ANG if c[0] in (("w1", "w5", "med") if site == 19 else ("w1", "w5", "med", "trig"))]
     bgc = [c for c in ANG if c[0] in (("w1", "med") if site == 19 else ("w1", "med", "trig"))]
-    opt = site == 19                                         # Malata: no optimizer in the label (table width)
+    compact = site == 20                                     # Malata: empty label fields left out (table width)
 
     def row(n):
         cs = cells_of(site, "", n, none, False, set(), MAINCELLS)
@@ -494,7 +494,7 @@ def headline(site, names):
             cs += cells_of(site, p, n, bgc, False, set(), MAINCELLS)
         for p in ng:
             cs += cells_of(site, p, n, ngc, False, set(), MAINCELLS)
-        return label(n, f_[n], site, opt) + " & " + " & ".join(cs) + r" \\"
+        return label(n, f_[n], site, compact) + " & " + " & ".join(cs) + r" \\"
     nb = len(bgc)
     ng = NG[site]                                           # background without the gate: median only
     ngc = [c for c in ANG if c[0] == "med"]
@@ -502,14 +502,14 @@ def headline(site, names):
     ngsub = [r"1\,$\mu$s" if p == "bg1ng_" else r"10\,$\mu$s" for p in ng]
     head = (r" & \multicolumn{%d}{c}{No background} & \multicolumn{%d}{c}{1\,$\mu$s background + kNN} & "
             r"\multicolumn{%d}{c}{10\,$\mu$s background + kNN}" % (len(none), nb, nb) + nghead + r" \\" + "\n"
-            + (DESC_HEAD if opt else "Layout") + " & "
+            + DESC_HEAD + " & "
             + " & ".join([COLHEAD[k] for k, _, _ in none + bgc + bgc] + ngsub) + r" \\")
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
     sel = (f"the layouts of Fig.~\\ref{{fig:r{site}_layouts}}: the fixed layouts and, for each utility, a pair of "
            f"optimized runs that differ only in the start layout: the best run (largest flow-matching share within "
            f"$1^\\circ$), then its centre-start repeat")
-    if not opt:
-        sel += (f" (layout: utility, test case and start; optimizers in Table~\\ref{{tab:r{site}_scores}})")
+    if compact:
+        sel += " (fields that do not apply left out of the layout label)"
     bgs = "share within $1^\\circ$ and median" + ("" if site == 19 else " and trigger rate")
     ngs = (" Median with a 1 or 10\\,$\\mu$s readout window and no kNN gate (every detector read out)." if ng else "")
     write(f"r{site}_head", "float", len(none) + 2 * nb + len(ng), head, body(rows, row),

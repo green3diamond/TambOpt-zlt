@@ -138,6 +138,13 @@ if RECO:
 # BG_GATE=none: background without the kNN gate (every detector read out); default knn23
 BG_GATE = os.environ.get("BG_GATE", "knn23")
 print(f"background {BG_NS:g} ns" + (f", gate {BG_GATE}" if BG_NS > 0 else ""), flush=True)
+# REF_LAYOUT=<layout .pt>: same-shower check; the triggered selection (*_cnt metrics) keeps only showers triggered by
+# both the scored layout and this reference layout (no background)
+REF = os.environ.get("REF_LAYOUT", "")
+if REF:
+    _R = torch.load(REF, map_location="cpu", weights_only=False)
+    xr = torch.as_tensor(_R["x"]).float().to(dev); yr = torch.as_tensor(_R["y"]).float().to(dev)
+    print(f"triggered selection AND reference layout {REF}", flush=True)
 for name, path in pairs:
     if name in res:
         continue
@@ -153,12 +160,17 @@ for name, path in pairs:
                                   differentiable=False, frames=frames[lo:hi].to(dev))
             p = prim[lo:hi].to(dev)
             xy = torch.stack([x, y], -1)[None].expand(hi - lo, -1, -1)
+            ref_ok = None
+            if REF:
+                o_r = kern(p, torch.stack([xr, yr], -1)[None].expand(hi - lo, -1, -1))
+                ref_ok = ((kern.mu >= 1) & (o_r[..., 1] > 0)).sum(1).ge(3)
             if BG_NS > 0:
                 kern = S4.NoisyGated(kern, BG_NS, BG_GATE, gen, 27.7, straight_through=False)
             out = kern(p, xy); cache = Cached(out, kern.mu, getattr(kern, "gate_mask", None))
             _gm = getattr(kern, "gate_mask", None)
             _mu = kern.mu * _gm if _gm is not None else kern.mu
-            cnt_all.append(((_mu >= 1) & (out[..., 1] > 0)).sum(1).ge(3).cpu())   # >= 3 detectors with >= 1 particle
+            _c = ((_mu >= 1) & (out[..., 1] > 0)).sum(1).ge(3)                     # >= 3 detectors with >= 1 particle
+            cnt_all.append((_c & ref_ok if ref_ok is not None else _c).cpu())
             if RECO:
                 mu = kern.mu; t_us = torch.expm1(out[..., 1].clamp(min=0)); Edet = torch.expm1(out[..., 0].clamp(min=0))
                 if ANA_HIT == "mu":                       # realistic: >= 1 expected particle (2 m^2), count = mu
