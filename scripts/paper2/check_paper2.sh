@@ -8,12 +8,13 @@ SRC=$(cd "${1:?usage: check_paper2.sh <overleaf clone> [build dir]}" && pwd)
 B=${2:-$HOME/.cache/paper2_check}
 mkdir -p "$B"; rsync -a --delete --exclude .git "$SRC/" "$B/"
 cat > "$B/check.tex" <<'TEX'
+\RequirePackage{fix-cm}
 \documentclass{article}
 \usepackage[paperwidth=192mm,paperheight=262mm,vmargin={19mm,19mm},hmargin={13.7mm,13.7mm}]{geometry}
 \usepackage[authoryear]{natbib}
 \usepackage{amsmath,amssymb,graphicx,longtable,tikz,float,array,pdflscape,tabularx}
 
-\newcommand{\hm}[2]{{\setlength{\fboxsep}{0.8pt}\colorbox{#1}{#2}}}
+\newcommand{\hm}[2]{{\setlength{\fboxsep}{0.3pt}\colorbox{#1}{#2}}}
 \begin{document}
 \input{chapters_2/01_introduction}
 \input{chapters_2/02_methodology}

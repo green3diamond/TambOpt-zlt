@@ -112,7 +112,7 @@ def cells(n, rec):
     c, nlb = run_cfg(rec["path"])
     s = n[4:]
     opt = {"sgd": "SGD", "adam": "Adam"}.get(c.get("optim", "adam"), str(c.get("optim")))
-    opt += " + L-BFGS" if nlb else ""       # spaces: the description column may wrap
+    opt += "+L-BFGS" if nlb else ""         # labels are one line: no spaces
     init = str(c.get("init", ""))
     start = {"grid": "grid", "center": "centre"}.get(init, "unif.\\ grid" if init.endswith("ugrid.pt") else init)
     if s.startswith("current"):
@@ -210,7 +210,7 @@ def hcell(d, n, k, sc, fmt, colour=True):
 def pair(fm, c8, n, k, sc, fmt, colour=True):
     """flow matching [CORSIKA 8]"""
     s = hcell(fm, n, k, sc, fmt, colour)
-    return s + (" [" + hcell(c8, n, k, sc, fmt, colour) + "]" if n in c8 else "")
+    return s + (r"\,[" + hcell(c8, n, k, sc, fmt, colour) + "]" if n in c8 else "")
 
 
 def label(n, rec, site, compact=False):
@@ -219,9 +219,7 @@ def label(n, rec, site, compact=False):
     o, u, c, st = cells(n, rec)
     if not n.startswith("opt_"):
         o = ""
-    if compact:
-        return " $|$ ".join(x for x in (o, u, c, st) if x)
-    lab = " $|$ ".join(x if x else "--" for x in (o, u, c, st))
+    return r"\,$|$\,".join(x for x in (o, u, c, st) if x)     # one line: fields that do not apply left out
     return lab
 
 
@@ -320,7 +318,7 @@ def is_setup19(n):          # 12 km disk / annulus / triplet layouts not in the 
 
 # ── LaTeX ────────────────────────────────────────────────────────────────────────────────────────────────────────
 DESC = r">{\raggedright\arraybackslash}p{4.2cm}"           # layout: optimizer | utility | test case | start
-DESC_HEAD = r"Layout: optimizer $|$ utility $|$ test case $|$ start"
+DESC_HEAD = r"\begin{tabular}[b]{@{}l@{}}Layout: optimizer $|$\\ utility $|$ test case $|$\\ start\end{tabular}"
 H_ANG = DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & $|\Delta\log_{10}E|<0.2$ & Trigger & $N_\mathrm{trig}$ \\"
 H_ANG_MAIN = H_ANG.replace(r" & $<2.5^\circ$", "")
 H_U4 = DESC_HEAD + r" & Orig. & 2-tier $\lambda{=}0.3$ & 2-tier $\lambda{=}0$ & 3-tier \\"
@@ -338,23 +336,22 @@ H_ANA = (r" & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \
 WRITTEN = []
 
 
-def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None, landscape=False, full=False):
-    """complete table -> tables_2/<name>.tex; kind 'long' (longtable over pages) or 'float' (table float); full: float
-    exactly \\linewidth wide (tabularx), the layout column taking whatever the value columns leave"""
-    spec = (desc or DESC) + "r" * ndata
-    if full and kind != "long":
-        spec = r">{\raggedright\arraybackslash}X" + "r" * ndata
-    lt = ""
-    if full and kind == "long":     # longtable over the full text width: no side margins, extra space between columns
+def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None, landscape=False, full=False, font=r"\tiny"):
+    """complete table -> tables_2/<name>.tex; kind 'long' (longtable over pages) or 'float' (table float). Layout labels
+    on one line (no wrapped rows) and narrow column spacing; full: exactly \\linewidth wide, the leftover space spread
+    between the columns. `desc` is ignored (labels are never wrapped)."""
+    sep = "0.6pt"
+    spec = "l" + "r" * ndata
+    if full:
         spec = r"@{\extracolsep{\fill}}" + spec
-        lt = r"\setlength{\LTleft}{0pt}\setlength{\LTright}{0pt}\setlength{\LTcapwidth}{\linewidth}"
     if kind == "long":
-        tex = (f"\\begingroup\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}{lt}\n\\begin{{longtable}}{{{spec}}}\n"
+        lt = (r"\setlength{\LTleft}{0pt}\setlength{\LTright}{0pt}" if full else "") + r"\setlength{\LTcapwidth}{\linewidth}"
+        tex = (f"\\begingroup{font}\\setlength{{\\tabcolsep}}{{{sep}}}{lt}\n\\begin{{longtable}}{{{spec}}}\n"
                f"\\caption{{{cap}}}\n\\label{{{lab}}}\\\\\n\\hline\n{head}\n\\hline\n\\endfirsthead\n"
                f"\\hline\n{head}\n\\hline\n\\endhead\n\\hline\n\\endfoot\n{rows}\n\\end{{longtable}}\n\\endgroup\n")
     else:
-        env, wd = ("tabularx", "{\\linewidth}") if full else ("tabular", "")
-        tex = (f"\\begin{{table}}[H]\n\\centering\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{{env}}}{wd}{{{spec}}}\n"
+        env, wd = ("tabular*", "{\\linewidth}") if full else ("tabular", "")
+        tex = (f"\\begin{{table}}[H]\n\\centering{font}\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{{env}}}{wd}{{{spec}}}\n"
                f"\\hline\n{head}\n\\hline\n{rows}\n\\\\[-1.5ex]\\hline\n\\end{{{env}}}\n"
                f"\\caption{{{cap}}}\n\\label{{{lab}}}\n\\end{{table}}\n")
     if landscape:       # rotated page(s) (pdflscape): wide tables
@@ -522,6 +519,7 @@ def headline(site, names):
           f"{bgs} with a 1 or 10\\,$\\mu$s readout window and the kNN gate (Sec.~\\ref{{sec:r{site}_layouts}})."
           f"{ngs} App.~\\ref{{app:scores}} lists every layout.", f"tab:r{site}_head",
           sep="0.5pt" if site == 20 else "2pt", full=True,
+          font=r"\fontsize{4.6pt}{5.6pt}\selectfont" if site == 20 else r"\tiny",
           desc=r">{\raggedright\arraybackslash}p{%s}" % ("1.15cm" if site == 20 else "3.4cm"))
 
 
@@ -529,7 +527,7 @@ headline(19, main19)
 headline(20, NAMES[20])
 
 
-def scores_table(site, names, uts, sep, wdesc, landscape=False, split=False):
+def scores_table(site, names, uts, sep, wdesc, landscape=False, split=False, font=r"\tiny"):
     """appendix: every main-text layout (fixed above the line, optimized below), the scores not in APPX and the
     utilities uts; split: scores and utilities as two portrait tables (r{site}_scores, r{site}_scores_u)"""
     f_, c_ = W[site][""]
@@ -562,10 +560,10 @@ def scores_table(site, names, uts, sep, wdesc, landscape=False, split=False):
           f"{sname}, no background: angular scores ({sh}), energy score{'' if 'trig' in APPX[site] else ', trigger'} and "
           f"utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every "
           f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:all}}.",
-          f"tab:r{site}_scores", sep=sep, desc=desc, landscape=landscape, full=not landscape)
+          f"tab:r{site}_scores", sep=sep, desc=desc, landscape=landscape, full=not landscape, font=font)
 
 
-scores_table(19, main19, U4, "1pt", "2.9cm", landscape=False)
+scores_table(19, main19, U4, "1pt", "2.9cm", font=r"\fontsize{4.6pt}{5.6pt}\selectfont")
 # Malata
 fm, c8 = W[20][""]
 scores_table(20, NAMES[20], UT, "1pt", "3.2cm", split=True)
@@ -757,7 +755,7 @@ write("r19_sweeps", "long", 11, r"Layout & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ
       f"{S19}, no background: every layout of the sweeps of Figs.~\\ref{{fig:exp19}} and~\\ref{{fig:exp19_layouts}} "
       f"(99 or 100 detectors), grid for reference; angular scores (all showers), energy score, trigger and accuracy "
       f"utilities (Sec.~\\ref{{sec:utilities}}). Bold and colour over the sweep layouts.", "tab:r19_sweeps",
-      desc=r">{\raggedright\arraybackslash}p{1.2cm}", sep="0.5pt", full=True)
+      full=True, font=r"\fontsize{4.5pt}{5.5pt}\selectfont")
 
 # appendix: complete scores of every layout, one block per background window (bold and colour per block)
 MODES = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
