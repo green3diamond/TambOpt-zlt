@@ -420,14 +420,16 @@ def start_twin(n):
 
 def head_rows(site, names):
     """the fixed layouts of the layout figure, then for each utility the best optimized layout (largest flow-matching
-    share within 1 deg) among the runs that were also started from the centre, and that centre run; construction-
-    constrained runs (cable) are left to the constraint table"""
+    share within 1 deg) among the runs that were also started from the centre, and that centre run; kernel-response
+    runs only (surrogate runs are in the appendix); construction-constrained runs (cable) are left to the constraint
+    table"""
     f_ = W[site][""][0]
     best = lambda cand: max(cand, key=lambda n: f_[n]["w1"]) if cand else None
     fixed = [n for n in names if not n.startswith("opt_")]
     rows = [n for n in fixed if n in SEL[site]]
     for g in HEAD_GROUPS[site]:
         cand = [n for n in names if n.startswith("opt_") and not n.startswith("opt_regress") and "_cab" not in n
+                and "surr." not in cells(n, f_[n])[2]                    # kernel-response runs only
                 and (n.startswith("opt_trg_") if g == "trigger_only" else optimized_for(n) == g)
                 and start_twin(n) != n and start_twin(n) in names]
         b = best(cand)
