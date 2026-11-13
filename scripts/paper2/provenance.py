@@ -59,7 +59,8 @@ ELEMENTS = [
      "run recon, all showers); scoresc8ft{,bg1,bg10}_19_all.json (CORSIKA 8, fine-tuned recon); N_trig of flow "
      "matching from scoresft_19_all.json (same showers and layouts)"),
     ("Table 2 (Malata main) and Fig. 6", "scoresd{,bg1,bg10}_20_all.json (flow matching, triggered metrics); "
-     "scoresc8ft{,bg1,bg10}_20_all.json (CORSIKA 8, fine-tuned recon)"),
+     "scoresc8ft{,bg1,bg10}_20_all.json (CORSIKA 8, fine-tuned recon); energy score over the triggered showers "
+     "(e02_cnt, only that key) from scoresd{,bg1,bg10}_20_e02.json and scoresc8ft{,bg1,bg10}_20_e02.json"),
     ("Constraint table and figure (Malata)", "scoresd_20_all.json, scoresc8ft_20_all.json; cable length computed "
      "in make_tables.py from the layout file and the detector-region mesh (tmp_rings/sites/malata.npz)"),
     ("Analytical table v1/v2/v3 (Malata)", "DeepSets: scoresd_20_all.json, scoresc8ft_20_all.json; v1: "
@@ -104,7 +105,8 @@ def score_files():
             "scoresdbg10_20_all.json", "extd_20_all.json", "scoresc8ft_20_all.json", "scoresc8ftbg1_20_all.json",
             "scoresc8ftbg10_20_all.json", "extc8ft_20_all.json", "scoresana_20_all.json", "scoresana_20_zfix*.json",
             "scoresc8ana_20_all.json", "scoresc8ana_20_zfix.json", "scoresanav2_20_sel.json", "scoresanav3_20_sel.json",
-            "scoresc8anav2_20_sel.json", "scoresc8anav3_20_sel.json"]
+            "scoresc8anav2_20_sel.json", "scoresc8anav3_20_sel.json",
+            "scoresd*_20_e02.json", "scoresc8ft*_20_e02.json"]
     rows = []
     for pat in pats:
         for p in sorted(glob.glob(f"{D}/{pat}")):
