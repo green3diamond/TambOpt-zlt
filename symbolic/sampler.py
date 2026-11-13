@@ -43,13 +43,16 @@ def load(path, e_max=LOG10_E_MAX):
 
 def class_rows(d, c, top=TOP, keep=None, rows="clean"):
     """Showers of class c (within keep, if given): joint numbers and conditions. rows "clean": a clean fit in every
-    species; "fitted": every shower fitted in every species (also peaks outside the planes and numbers on a bound)."""
+    species; "fitted": every shower fitted in every species (also peaks outside the planes and numbers on a bound);
+    "nonclean": the fitted ones that are not clean."""
     if rows == "clean":
         ok = [d[s]["clean"] & np.isfinite(d[s]["start"]) for s in SPECIES_NAMES]
-    elif rows == "fitted":
+    elif rows in ("fitted", "nonclean"):
         ok = [np.all(np.isfinite(d[s]["Z"]), 1) & np.isfinite(d[s]["start"]) for s in SPECIES_NAMES]
+        if rows == "nonclean":
+            ok.append(~np.all([d[s]["clean"] for s in SPECIES_NAMES], 0))
     else:
-        raise ValueError(f"rows {rows!r}: clean or fitted")
+        raise ValueError(f"rows {rows!r}: clean, fitted or nonclean")
     m = ((d["meta"]["labels"] == c) & (d["meta"]["log10_E"] < top) & (True if keep is None else keep) & np.all(ok, 0))
     return {"rows": np.nonzero(m)[0],
             "X": np.hstack([np.column_stack([d[s]["Z"][m], d[s]["start"][m]]) for s in SPECIES_NAMES]),
@@ -248,6 +251,53 @@ def fit(d, c, top=TOP, keep=None, margin=lambda: cp.Margin("jsu"), noise="plane"
     C = cp.corr(cp.normal_scores(margins, D, t["X"]))
     return {"design": design, "margins": margins, "C": C, "planes": plane_residuals(d, t["rows"], noise),
             "n_train": len(t["rows"]), "rows": rows}
+
+
+def share_terms(l, u):
+    """Terms of the non-clean share law: 1, log10 E - 6, |cos z|, their product."""
+    a, b = np.asarray(l) - 6.0, np.abs(np.asarray(u))
+    return np.column_stack([np.ones_like(a), a, b, a * b])
+
+
+def fit_share(l, u, y, iters=50):
+    """Logistic law P(non-clean | log10 E, cos z) by Newton steps (a tiny ridge keeps it finite)."""
+    T = share_terms(l, u)
+    w = np.zeros(T.shape[1])
+    for _ in range(iters):
+        p = special.expit(T @ w)
+        H = T.T @ (T * (p * (1 - p))[:, None]) + 1e-6 * np.eye(len(w))
+        step = np.linalg.solve(H, T.T @ (y - p) - 1e-6 * w)
+        w += step
+        if np.abs(step).max() < 1e-10:
+            break
+    return w
+
+
+def fit_mixture(d, c, top=TOP, keep=None, noise="plane"):
+    """Two samplers for class c, one on clean and one on non-clean fitted showers, and the non-clean share law."""
+    f = class_rows(d, c, top, keep, "fitted")
+    y = ~np.all([d[s]["clean"] for s in SPECIES_NAMES], 0)[f["rows"]]
+    return {"mixture": True, "share": fit_share(f["l"], f["u"], y.astype(float)), "n_nonclean": int(y.sum()),
+            "clean": fit(d, c, top, keep, noise=noise, rows="clean"),
+            "nonclean": fit(d, c, top, keep, noise=noise, rows="nonclean")}
+
+
+def sample_mixture(model, l, u, X, rng):
+    """One draw per primary: non-clean with the share law's probability, then that population's sampler."""
+    pick = rng.uniform(size=len(l)) < special.expit(share_terms(l, u) @ model["share"])
+    out, lat = None, None
+    for key, m in (("clean", ~pick), ("nonclean", pick)):
+        if not m.any():
+            continue
+        e, z = sample(model[key], l[m], u[m], X[m], rng)
+        if out is None:
+            out = {s: np.zeros((len(l), v.shape[1])) for s, v in e.items()}
+            lat = np.zeros((len(l), z.shape[1]))
+        for s in e:
+            out[s][m] = e[s]
+        lat[m] = z
+    model["n_pick_nonclean"] = model.get("n_pick_nonclean", 0) + int(pick.sum())
+    return out, lat
 
 
 def species_block(Zlat, i):

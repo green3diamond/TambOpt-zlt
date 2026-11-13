@@ -500,6 +500,13 @@ def test_sampler_learns_from_every_fitted_shower_when_asked():
         raise AssertionError("an unknown rows choice was accepted")
     except ValueError:
         pass
+    mix = sampler.fit_mixture(d, 0, top=np.inf, noise="table")
+    assert mix["clean"]["n_train"] == clean.sum() and mix["nonclean"]["n_train"] == n - 50 - clean.sum()
+    share = special.expit(sampler.share_terms(le, np.full(n, 0.3)) @ mix["share"])
+    assert abs(share.mean() - (n - 50 - clean.sum()) / (n - 50)) < 0.03          # no dependence on E in the toy
+    e, _ = sampler.sample_mixture(mix, le[:400], np.full(400, 0.3), X[:400], np.random.default_rng(6))
+    assert all(np.all(np.isfinite(e[s])) and (e[s].sum(1) > 0).all() for s in sources.SPECIES_NAMES)
+    assert 0.2 < mix["n_pick_nonclean"] / 400 < 0.4
 
 
 def test_start_depth_lies_between_the_last_leading_empty_plane_and_the_first_lit_one():

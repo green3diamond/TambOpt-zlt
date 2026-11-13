@@ -256,10 +256,17 @@ def sample_energies(root, l, u, X, lab, rng, fits=None, noise="plane", rows="cle
         tr, top = sampler.load(fits, e_max=e_max), np.inf
     for c in planes.CLASS:
         m = lab == c
-        model = sampler.fit(tr, c, top=top, noise=noise, rows=rows)
-        e, lat = sampler.sample(model, l[m], u[m], X[m], rng)
-        print(f"sampler {planes.CLASS[c]}: rows {rows}, trained on {model['n_train']}, redrawn "
-              f"{model['n_redrawn']} of {model['n_drawn']}", flush=True)
+        if rows == "mixture":
+            model = sampler.fit_mixture(tr, c, top=top, noise=noise)
+            e, lat = sampler.sample_mixture(model, l[m], u[m], X[m], rng)
+            print(f"sampler {planes.CLASS[c]}: mixture, trained on {model['clean']['n_train']} clean + "
+                  f"{model['nonclean']['n_train']} non-clean, drew {model['n_pick_nonclean']} of {m.sum()} non-clean, "
+                  f"redrawn {model['clean'].get('n_redrawn', 0)} / {model['nonclean'].get('n_redrawn', 0)}", flush=True)
+        else:
+            model = sampler.fit(tr, c, top=top, noise=noise, rows=rows)
+            e, lat = sampler.sample(model, l[m], u[m], X[m], rng)
+            print(f"sampler {planes.CLASS[c]}: rows {rows}, trained on {model['n_train']}, redrawn "
+                  f"{model['n_redrawn']} of {model['n_drawn']}", flush=True)
         for j, s in enumerate(SPECIES_NAMES):
             E[s][m] = e[s]
             xmax[s][m] = longitudinal.from_latent(sampler.species_block(lat, j)[0], l[m])[0]
@@ -401,8 +408,9 @@ def main():
     ap.add_argument("--draws", type=int, default=1, help="energies stage: draws per primary of --primaries")
     ap.add_argument("--fits", help="energies stage: fits file of fit_profiles.py --stage tables (total plane energy) "
                     "instead of the default training fits")
-    ap.add_argument("--sampler-rows", choices=("clean", "fitted"), default="clean",
-                    help="energies stage: showers the sampler learns from: clean fits only, or every fitted shower")
+    ap.add_argument("--sampler-rows", choices=("clean", "fitted", "mixture"), default="clean",
+                    help="energies stage: showers the sampler learns from: clean fits only, every fitted shower, or a "
+                         "mixture of a clean and a non-clean sampler with a non-clean share law")
     ap.add_argument("--noise", choices=("plane", "peak", "skew", "table", "bright"), default="plane",
                     help="energies stage: plane noise per plane number (adopted), or per position relative to the peak: normal (peak), Johnson SU (skew) or the real leftovers as a table (table), after a linear term in the curve's brightness (bright)")
     ap.add_argument("--laws", default=LAWS, help="draw stage: particle laws, relative to --out")
