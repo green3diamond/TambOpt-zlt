@@ -96,7 +96,7 @@ def src_legend(fig):
 # ── run 19 ──────────────────────────────────────────────────────────────────
 d19 = load(19)
 if d19["fm"] or d19["c8"]:
-    fig, ax = plt.subplots(2, 3, figsize=(10, 6.4), layout="constrained")   # columns: experiments; rows: accuracy, trigger
+    fig, ax = plt.subplots(2, 3, figsize=(10, 4.8), layout="constrained")   # columns: experiments; rows: accuracy, trigger
     col = lambda j: (ax[0, j], None, ax[1, j])
     draw(col(0), d19, [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]) / 1000)],
          "disk radius [km]", True)
@@ -159,7 +159,10 @@ def layout_rows(run, rows, fname):
     sc = 1000.0 if run == 19 else 1.0
     cE, cN = tris[:, :, 0].mean(1) / sc, tris[:, :, 1].mean(1) / sc
     ncol = max(len(r[1]) for r in rows)
-    fig, ax = plt.subplots(len(rows), ncol, figsize=(1.75 * ncol, 2.05 * len(rows)), layout="constrained", squeeze=False)
+    rh = 1.8 if run == 19 else 2.05                                  # row height [in]; run 19: tight rows
+    fig, ax = plt.subplots(len(rows), ncol, figsize=(1.75 * ncol, rh * len(rows)), layout="constrained", squeeze=False)
+    if run == 19:
+        fig.get_layout_engine().set(h_pad=0.01, hspace=0.0)
     for i, (title, names) in enumerate(rows):
         for j in range(ncol):
             a = ax[i, j]
