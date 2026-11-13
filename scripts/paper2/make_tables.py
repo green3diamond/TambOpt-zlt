@@ -269,13 +269,23 @@ def stacked(blocks, ncol):
 
 
 # ── scores ───────────────────────────────────────────────────────────────────────────────────────────────────────
+def add_e02(res, path):
+    """energy score over the triggered showers (e02_cnt) from a rescoring (*_e02.json, score_all.py after 2026-11-12);
+    only that key is taken, so every other score keeps the value of the original scoring"""
+    if os.path.exists(path):
+        for n, r in json.load(open(path)).items():
+            if n in res and "e02_cnt" in r:
+                res[n]["e02_cnt"] = r["e02_cnt"]
+
+
 def load(site, pre):
     """(flow matching, CORSIKA 8) records of one run and background mode ("", "bg1_", "bg10_")"""
     tag = pre.rstrip("_")
     res = {}
-    new = sorted(glob.glob(f"{D}/scoresd{tag}_{site}_*.json"))
+    new = sorted(q for q in glob.glob(f"{D}/scoresd{tag}_{site}_*.json") if not q.endswith("_e02.json"))
     for p in new or [q for q in sorted(glob.glob(f"{D}/scores{pre}{site}_*.json")) if "c8test" not in q]:
         res.update(json.load(open(p)))
+    add_e02(res, f"{D}/scoresd{tag}_{site}_e02.json")
     res = {n: v for n, v in trig_view(res, acc=site != 19).items() if "smoke" not in n}
     if site == 19 and not pre and os.path.exists(f"{D}/scoresft_19_all.json"):
         # N_trig of the 12 km flow-matching showers from the fine-tuned-recon scoring of the same showers and layouts
@@ -285,8 +295,9 @@ def load(site, pre):
             if n in ft and r["ntrig"] != r["ntrig"] and abs(ft[n]["trig"] - r["trig"]) < 1e-6:
                 r["ntrig"] = float(ft[n]["n_cnt"])
     c8 = {}
-    for p in sorted(glob.glob(f"{D}/scoresc8ft{tag}_{site}_*.json")):
+    for p in sorted(q for q in glob.glob(f"{D}/scoresc8ft{tag}_{site}_*.json") if not q.endswith("_e02.json")):
         c8.update(json.load(open(p)))
+    add_e02(c8, f"{D}/scoresc8ft{tag}_{site}_e02.json")
     c8 = {n: v for n, v in trig_view(c8, acc=site != 19).items() if "smoke" not in n}
     return res, c8
 
