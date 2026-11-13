@@ -50,18 +50,30 @@ def series(d, pat, key_fn):
     return sorted(pts, key=lambda t: t[0])
 
 
+MARKERS = ("o", "s", "^", "D", "v", "P")
+
+
+def series_legend(a, fams, ncol):
+    """legend of the series of one column, below its bottom panel"""
+    from matplotlib.lines import Line2D
+    h = [Line2D([], [], color=c, marker=MARKERS[i % len(MARKERS)], ms=3.5, lw=1, label=lab)
+         for i, (lab, c, _, _) in enumerate(fams)]
+    a.legend(handles=h, loc="upper center", bbox_to_anchor=(0.5, -0.3), ncol=ncol, fontsize=6.5, frameon=False,
+             handlelength=1.8, columnspacing=1.0, handletextpad=0.4, borderaxespad=0.0)
+
+
 def draw(axrow, data, fams, xlabel, logx, grid=True, legend=True):
     """fams: list of (label, colour, pattern, x-function). axrow: (accuracy, median, trigger) axes; None skips a panel."""
     acc, med, trg = axrow
     for src, (_, ls, sname) in SRC.items():
         d = data[src]
-        for lab, c, pat, fx in fams:
+        for i, (lab, c, pat, fx) in enumerate(fams):
             pts = series(d, pat, fx)
             if not pts:
                 continue
             x = np.array([p[0] for p in pts])
             g = lambda k: np.array([p[1][k] for p in pts])
-            mk = "o" if len(pts) > 1 else "s"
+            mk = MARKERS[i % len(MARKERS)]                               # one marker per series
             acc.plot(x, 100 * g("w1"), ls=ls, marker=mk, ms=2.5, color=c, label=f"{lab}" if src == "fm" else None)
             acc.plot(x, 100 * g("w5"), ls=ls, marker=mk, ms=2.5, color=c, alpha=0.45)
             if med is not None:
@@ -98,13 +110,15 @@ d19 = load(19)
 if d19["fm"] or d19["c8"]:
     fig, ax = plt.subplots(2, 3, figsize=(10, 4.8), layout="constrained")   # columns: experiments; rows: accuracy, trigger
     col = lambda j: (ax[0, j], None, ax[1, j])
-    draw(col(0), d19, [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]) / 1000)],
-         "disk radius [km]", True)
+    disk = [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]) / 1000)]
+    draw(col(0), d19, disk, "disk radius [km]", True, legend=False)
+    series_legend(ax[1, 0], disk, 1)
     ax[0, 0].set_title("(a) disk size")
     hole = []
     for R, c in ((6000, "tab:red"), (2000, "tab:orange"), (1500, "tab:olive")):
         hole.append((f"annulus, outer {R / 1000:g} km", c, rf"annulus_rin(\d+)_R{R}_n\d+", lambda m: int(m[1]) / 1000))
-    draw(col(1), d19, hole, "inner (hole) radius [km]", False)
+    draw(col(1), d19, hole, "inner (hole) radius [km]", False, legend=False)
+    series_legend(ax[1, 1], hole, 1)
     ax[0, 1].set_title("(b) disk with a hole")
     clus = [("33 triplets, uniform", "tab:green", r"tri33_r(\d+)", lambda m: int(m[1])),
             ("33 triplets in 0.5 km disk", "tab:cyan", r"tri33disk_R500_r(\d+)", lambda m: int(m[1])),
@@ -112,7 +126,8 @@ if d19["fm"] or d19["c8"]:
             ("33 triplets in 1 km disk", "tab:purple", r"tri33disk_R1000_r(\d+)", lambda m: int(m[1])),
             ("20 clusters of 5", "tab:brown", r"clu20x5_r(\d+)", lambda m: int(m[1])),
             ("25 clusters of 4", "tab:pink", r"clu25x4_r(\d+)", lambda m: int(m[1]))]
-    draw(col(2), d19, clus, "cluster size [m]", True)
+    draw(col(2), d19, clus, "cluster size [m]", True, legend=False)
+    series_legend(ax[1, 2], clus, 2)
     ax[0, 2].set_title("(c) clustering")
     src_legend(fig)
     fig.savefig(f"{FIG}/exp19.pdf")
