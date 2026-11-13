@@ -394,6 +394,10 @@ def figure(site, res, names):
 S19, S20 = r"12\,km plane (run 19)", "Malata (run 20)"
 B1, B10, NONE = r"1\,$\mu$s background + kNN gate", r"10\,$\mu$s background + kNN gate", "no background"
 W = {s: {p: load(s, p) for p in ("", "bg1_", "bg10_")} for s in (19, 20)}
+# 12 km: background without the kNN gate, headline layouts only (score_all.py BG_GATE=none), when scored
+NG = [p for p in ("bg1ng_", "bg10ng_") if glob.glob(f"{D}/scores{p}19_*.json")]
+for p in NG:
+    W[19][p] = load(19, p)
 NAMES = {s: order(W[s][""][0]) for s in (19, 20)}
 
 # 12 km plane
@@ -474,22 +478,28 @@ def headline(site, names):
         cs = cells_of(site, "", n, none, False, set(), MAINCELLS)
         for p in ("bg1_", "bg10_"):
             cs += cells_of(site, p, n, bgc, False, set(), MAINCELLS)
+        for p in ng:
+            cs += cells_of(site, p, n, ngc, False, set(), MAINCELLS)
         return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
     nb = len(bgc)
+    ng = NG if site == 19 else []                           # background without the gate: median only
+    ngc = [c for c in ANG if c[0] == "med"]
+    nghead = "".join(r" & \multicolumn{1}{c}{%s\,$\mu$s, no kNN}" % ("1" if p == "bg1ng_" else "10") for p in ng)
     head = (r" & \multicolumn{%d}{c}{No background} & \multicolumn{%d}{c}{1\,$\mu$s background + kNN} & "
-            r"\multicolumn{%d}{c}{10\,$\mu$s background + kNN} \\" % (len(none), nb, nb) + "\n"
-            + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in none + bgc + bgc) + r" \\")
+            r"\multicolumn{%d}{c}{10\,$\mu$s background + kNN}" % (len(none), nb, nb) + nghead + r" \\" + "\n"
+            + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in none + bgc + bgc + ngc * len(ng)) + r" \\")
     sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
     sel = (f"the layouts of Fig.~\\ref{{fig:r{site}_layouts}}: the fixed layouts and, for each utility, a pair of "
            f"optimized runs that differ only in the start layout: the best run (largest flow-matching share within "
            f"$1^\\circ$), then its centre-start repeat")
     bgs = "share within $1^\\circ$ and median" + ("" if site == 19 else " and trigger rate")
-    write(f"r{site}_head", "float", len(none) + 2 * nb, head, body(rows, row),
+    ngs = (" Median with a 1 or 10\\,$\\mu$s readout window and no kNN gate (every detector read out)." if ng else "")
+    write(f"r{site}_head", "float", len(none) + 2 * nb + len(ng), head, body(rows, row),
           f"{sname}: {sel}. Angular scores ({sh}){'' if site == 19 else ' and trigger rate'} without background; "
-          f"{bgs} with a 1 or 10\\,$\\mu$s readout window and the kNN gate (Sec.~\\ref{{sec:r{site}_layouts}}). "
-          f"App.~\\ref{{app:scores}} lists every layout.", f"tab:r{site}_head",
-          sep="1pt" if site == 20 else "2pt",
-          desc=r">{\raggedright\arraybackslash}p{%s}" % ("2.9cm" if site == 20 else "4.2cm"))
+          f"{bgs} with a 1 or 10\\,$\\mu$s readout window and the kNN gate (Sec.~\\ref{{sec:r{site}_layouts}})."
+          f"{ngs} App.~\\ref{{app:scores}} lists every layout.", f"tab:r{site}_head",
+          sep="1pt" if site == 20 else "1.5pt",
+          desc=r">{\raggedright\arraybackslash}p{%s}" % ("2.9cm" if site == 20 else "3.4cm"))
 
 
 headline(19, main19)
