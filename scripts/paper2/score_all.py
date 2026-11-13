@@ -135,7 +135,9 @@ if RECO:
     N_PLANE = AR.plane_normal(_tri).to(dev)
     print(f"analytical recon {RECO}; detector-plane normal {N_PLANE.tolist()}", flush=True)
     assert BG_NS == 0, "analytical recon: background not supported"
-print(f"background {BG_NS:g} ns" + (", kNN gate" if BG_NS > 0 else ""), flush=True)
+# BG_GATE=none: background without the kNN gate (every detector read out); default knn23
+BG_GATE = os.environ.get("BG_GATE", "knn23")
+print(f"background {BG_NS:g} ns" + (f", gate {BG_GATE}" if BG_NS > 0 else ""), flush=True)
 for name, path in pairs:
     if name in res:
         continue
@@ -152,7 +154,7 @@ for name, path in pairs:
             p = prim[lo:hi].to(dev)
             xy = torch.stack([x, y], -1)[None].expand(hi - lo, -1, -1)
             if BG_NS > 0:
-                kern = S4.NoisyGated(kern, BG_NS, "knn23", gen, 27.7, straight_through=False)
+                kern = S4.NoisyGated(kern, BG_NS, BG_GATE, gen, 27.7, straight_through=False)
             out = kern(p, xy); cache = Cached(out, kern.mu, getattr(kern, "gate_mask", None))
             _gm = getattr(kern, "gate_mask", None)
             _mu = kern.mu * _gm if _gm is not None else kern.mu
@@ -190,7 +192,7 @@ for name, path in pairs:
             for k, cfg in MODES.items():
                 for kk, vv in cfg.items():
                     setattr(O, kk, vv)
-                O.TRIG_GATED = BG_NS > 0
+                O.TRIG_GATED = BG_NS > 0 and BG_GATE == "knn23"
                 U, _, _ = O.utility_of_xy(x, y, p, cache, recon)
                 scale = 1.0 if k == "orig" else O.TWO_TIER_SCALE
                 acc[k] += float(U) / scale * (hi - lo) / N
