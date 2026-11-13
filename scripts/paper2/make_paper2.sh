@@ -14,3 +14,4 @@ RES=()
 [ $# -ge 2 ] && RES=(--res "$2")
 python "$HERE/make_tables.py" --out "$OUT" "${RES[@]}"
 python "$HERE/plot_exp.py" --out "$OUT" "${RES[@]}"
+python "$HERE/plot_c8ana.py" --out "$OUT"
