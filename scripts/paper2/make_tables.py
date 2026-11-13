@@ -337,16 +337,20 @@ H_ANA = (r" & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \
 WRITTEN = []
 
 
-def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None, landscape=False):
-    """complete table -> tables_2/<name>.tex; kind 'long' (longtable over pages) or 'float' (table float)"""
+def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None, landscape=False, full=False):
+    """complete table -> tables_2/<name>.tex; kind 'long' (longtable over pages) or 'float' (table float); full: float
+    exactly \\linewidth wide (tabularx), the layout column taking whatever the value columns leave"""
     spec = (desc or DESC) + "r" * ndata
+    if full:
+        spec = r">{\raggedright\arraybackslash}X" + "r" * ndata
     if kind == "long":
         tex = (f"\\begingroup\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{longtable}}{{{spec}}}\n"
                f"\\caption{{{cap}}}\n\\label{{{lab}}}\\\\\n\\hline\n{head}\n\\hline\n\\endfirsthead\n"
                f"\\hline\n{head}\n\\hline\n\\endhead\n\\hline\n\\endfoot\n{rows}\n\\end{{longtable}}\n\\endgroup\n")
     else:
-        tex = (f"\\begin{{table}}[H]\n\\centering\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{tabular}}{{{spec}}}\n"
-               f"\\hline\n{head}\n\\hline\n{rows}\n\\\\[-1.5ex]\\hline\n\\end{{tabular}}\n"
+        env, wd = ("tabularx", "{\\linewidth}") if full else ("tabular", "")
+        tex = (f"\\begin{{table}}[H]\n\\centering\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{{env}}}{wd}{{{spec}}}\n"
+               f"\\hline\n{head}\n\\hline\n{rows}\n\\\\[-1.5ex]\\hline\n\\end{{{env}}}\n"
                f"\\caption{{{cap}}}\n\\label{{{lab}}}\n\\end{{table}}\n")
     if landscape:       # rotated page(s) (pdflscape): wide tables
         tex = "\\begin{landscape}\n" + tex + "\\end{landscape}\n"
@@ -512,7 +516,7 @@ def headline(site, names):
           f"{sname}: {sel}. Angular scores ({sh}){'' if site == 19 else ' and trigger rate'} without background; "
           f"{bgs} with a 1 or 10\\,$\\mu$s readout window and the kNN gate (Sec.~\\ref{{sec:r{site}_layouts}})."
           f"{ngs} App.~\\ref{{app:scores}} lists every layout.", f"tab:r{site}_head",
-          sep="0.5pt" if site == 20 else "1.5pt",
+          sep="0.5pt" if site == 20 else "2pt", full=True,
           desc=r">{\raggedright\arraybackslash}p{%s}" % ("1.15cm" if site == 20 else "3.4cm"))
 
 
