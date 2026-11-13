@@ -53,11 +53,17 @@ def series(d, pat, key_fn):
 MARKERS = ("o", "s", "^", "D", "v", "P")
 
 
-def series_legend(a, fams, ncol):
-    """legend of the series of one column, below its bottom panel"""
+def src_handles():
+    from matplotlib.lines import Line2D
+    h = [Line2D([], [], color="k", ls=ls, label=nm) for _, ls, nm in SRC.values()]
+    return h + [Line2D([], [], color="0.5", lw=0.8, label="uniform grid")]
+
+
+def series_legend(a, fams, ncol, extra=()):
+    """legend of the series of one column, below its bottom panel; `extra`: more handles (the line-style key)"""
     from matplotlib.lines import Line2D
     h = [Line2D([], [], color=c, marker=MARKERS[i % len(MARKERS)], ms=3.5, lw=1, label=lab)
-         for i, (lab, c, _, _) in enumerate(fams)]
+         for i, (lab, c, _, _) in enumerate(fams)] + list(extra)
     a.legend(handles=h, loc="upper center", bbox_to_anchor=(0.5, -0.3), ncol=ncol, fontsize=6.5, frameon=False,
              handlelength=1.8, columnspacing=1.0, handletextpad=0.4, borderaxespad=0.0)
 
@@ -112,7 +118,7 @@ if d19["fm"] or d19["c8"]:
     col = lambda j: (ax[0, j], None, ax[1, j])
     disk = [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]) / 1000)]
     draw(col(0), d19, disk, "disk radius [km]", True, legend=False)
-    series_legend(ax[1, 0], disk, 1)
+    series_legend(ax[1, 0], disk, 1, extra=src_handles())     # line-style key grouped with column (a)
     ax[0, 0].set_title("(a) disk size")
     hole = []
     for R, c in ((6000, "tab:red"), (2000, "tab:orange"), (1500, "tab:olive")):
@@ -129,7 +135,6 @@ if d19["fm"] or d19["c8"]:
     draw(col(2), d19, clus, "cluster size [m]", True, legend=False)
     series_legend(ax[1, 2], clus, 2)
     ax[0, 2].set_title("(c) clustering")
-    src_legend(fig)
     fig.savefig(f"{FIG}/exp19.pdf")
 
 # ── run 20 ──────────────────────────────────────────────────────────────────
