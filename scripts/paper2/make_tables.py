@@ -364,8 +364,10 @@ def figure(site, res, names):
     nf = sum(1 for n in panels if not n.startswith("opt_"))
     ncol = 4 if len(panels) == 16 else max(nf, len(panels) - nf)      # 12 km 4 x 4; Malata fixed row / optimized row
     nrow = -(-len(panels) // ncol)
-    fig, ax = plt.subplots(nrow, ncol, figsize=(10, 10.6) if ncol == 4 else (10, 2.75 * nrow + 0.3),
+    fig, ax = plt.subplots(nrow, ncol, figsize=(10, 10.6) if ncol == 4 else (10, 2.15 * nrow + 0.3),
                            constrained_layout=True)
+    if ncol != 4:
+        fig.get_layout_engine().set(h_pad=0.01, hspace=0.0)          # Malata: rows close together
     for a in list(ax.flat)[len(panels):]:
         a.axis("off")
     for a, n in zip(ax.flat, panels):
@@ -394,10 +396,12 @@ def figure(site, res, names):
 S19, S20 = r"12\,km plane (run 19)", "Malata (run 20)"
 B1, B10, NONE = r"1\,$\mu$s background + kNN gate", r"10\,$\mu$s background + kNN gate", "no background"
 W = {s: {p: load(s, p) for p in ("", "bg1_", "bg10_")} for s in (19, 20)}
-# 12 km: background without the kNN gate, headline layouts only (score_all.py BG_GATE=none), when scored
-NG = [p for p in ("bg1ng_", "bg10ng_") if glob.glob(f"{D}/scores{p}19_*.json")]
-for p in NG:
-    W[19][p] = load(19, p)
+# background without the kNN gate, headline layouts only (score_all.py BG_GATE=none), when scored
+NG = {s: [p for p in ("bg1ng_", "bg10ng_") if glob.glob(f"{D}/scores{p}{s}_*.json")
+          or glob.glob(f"{D}/scoresd{p.rstrip('_')}_{s}_*.json")] for s in (19, 20)}
+for s_ in NG:
+    for p in NG[s_]:
+        W[s_][p] = load(s_, p)
 NAMES = {s: order(W[s][""][0]) for s in (19, 20)}
 
 # 12 km plane
@@ -482,7 +486,7 @@ def headline(site, names):
             cs += cells_of(site, p, n, ngc, False, set(), MAINCELLS)
         return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
     nb = len(bgc)
-    ng = NG if site == 19 else []                           # background without the gate: median only
+    ng = NG[site]                                           # background without the gate: median only
     ngc = [c for c in ANG if c[0] == "med"]
     nghead = "".join(r" & \multicolumn{1}{c}{%s\,$\mu$s, no kNN}" % ("1" if p == "bg1ng_" else "10") for p in ng)
     head = (r" & \multicolumn{%d}{c}{No background} & \multicolumn{%d}{c}{1\,$\mu$s background + kNN} & "
