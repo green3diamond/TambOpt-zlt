@@ -140,11 +140,17 @@ if d19["fm"] or d19["c8"]:
 # ── run 20 ──────────────────────────────────────────────────────────────────
 d20 = load(20)
 if d20["fm"] or d20["c8"]:
-    fig, ax = plt.subplots(1, 3, figsize=(10, 3.6), layout="constrained")
-    draw(ax, d20, [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]))],
-         "disk radius [m]", False, legend=False)
-    ax[1].set_title("disk size")
-    src_legend(fig)
+    fig, ax = plt.subplots(2, 2, figsize=(10 * 2 / 3, 4.8), layout="constrained")   # as exp19: accuracy / trigger
+    col = lambda j: (ax[0, j], None, ax[1, j])
+    disk = [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]))]
+    draw(col(0), d20, disk, "disk radius [m]", False, legend=False)
+    series_legend(ax[1, 0], [], 1, extra=src_handles())       # single series: only the line-style key
+    ax[0, 0].set_title("(a) disk size")
+    clus = [("33 triplets, uniform", "tab:green", r"tri33_r(\d+)", lambda m: int(m[1])),
+            ("33 triplets in 150 m disk", "tab:cyan", r"tri33disk_R150_r(\d+)", lambda m: int(m[1]))]
+    draw(col(1), d20, clus, "cluster size [m]", False, legend=False)
+    series_legend(ax[1, 1], clus, 1)
+    ax[0, 1].set_title("(b) clustering")
     fig.savefig(f"{FIG}/exp20.pdf")
 # ── the layouts themselves: one row per experiment, real layout files on the detector region ─────────────────────
 import torch
