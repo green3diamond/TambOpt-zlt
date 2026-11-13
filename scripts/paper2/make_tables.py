@@ -327,6 +327,8 @@ H_BG = (r" & \multicolumn{3}{c}{$<1^\circ$ [\%]} & \multicolumn{3}{c}{Median [$^
         + DESC_HEAD + r" & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s \\")
 H_ANAV = (r" & \multicolumn{2}{c}{DeepSets} & \multicolumn{2}{c}{Analytical v1} & \multicolumn{2}{c}{Analytical v2} & \multicolumn{2}{c}{Analytical v3} \\" + "\n"
           + DESC_HEAD + r" & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] \\")
+H_ANAV1 = (r" & \multicolumn{2}{c}{DeepSets} & \multicolumn{2}{c}{Analytical v1} \\" + "\n"
+           + DESC_HEAD + r" & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] \\")
 H_ANA = (r" & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \\" + "\n"
          + DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] \\")
 WRITTEN = []
@@ -503,7 +505,8 @@ def headline(site, names):
           f"{bgs} with a 1 or 10\\,$\\mu$s readout window and the kNN gate (Sec.~\\ref{{sec:r{site}_layouts}})."
           f"{ngs} App.~\\ref{{app:scores}} lists every layout.", f"tab:r{site}_head",
           sep="1pt" if site == 20 else "1.5pt",
-          desc=r">{\raggedright\arraybackslash}p{%s}" % ("2.9cm" if site == 20 else "3.4cm"))
+          desc=r">{\raggedright\arraybackslash}p{%s}" % ("2.9cm" if site == 20 else "3.4cm"),
+          landscape=site == 20 and bool(ng))                      # Malata with the no-kNN columns: too wide
 
 
 headline(19, main19)
@@ -657,11 +660,15 @@ def ana_row(n, cols, ul=False):
 short = lambda m: [(m, "w1", 100, "{:.1f}"), (m, "med", 1, "{:.2f}")]
 full = lambda m: [(m, "w1", 100, "{:.1f}"), (m, "w2.5", 100, "{:.1f}"), (m, "w5", 100, "{:.1f}"), (m, "med", 1, "{:.2f}")]
 figs20 = [n for n in NAMES[20] if n in SEL[20]]
-write("r20_anav", "float", 8, H_ANAV,
+write("r20_anav", "float", 4, H_ANAV1,
+      body(figs20, lambda n: ana_row(n, short("ds") + short("v1"), False)),
+      f"{S20}, no background: DeepSets vs the analytical reconstruction (v1) on the triggered showers, layouts of "
+      f"Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular error.", "tab:r20_anav")
+write("r20_anav_all", "float", 8, H_ANAV,                      # appendix: all three versions
       body(figs20, lambda n: ana_row(n, short("ds") + short("v1") + short("v2") + short("v3"), False)),
-      f"{S20}, no background: DeepSets vs the analytical reconstruction (v1, v2, v3) on the triggered showers, layouts "
-      f"of Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular error. v2 and v3 were run on "
-      f"these layouts only.", "tab:r20_anav")
+      f"{S20}, no background: DeepSets vs the analytical reconstruction v1, v2 and v3 (App.~\\ref{{app:ana}}) on the "
+      f"triggered showers, layouts of Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular "
+      f"error. v2 and v3 were run on these layouts only.", "tab:r20_anav_all")
 def ana_v1_row(n):
     cs = [pair(*SRC["v1"], n, k, sc, f) for _, k, sc, f in full("v1")]
     return label(n, W[20][""][0][n], 20) + " & " + " & ".join(cs) + r" \\"
