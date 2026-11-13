@@ -342,10 +342,14 @@ def write(name, kind, ndata, head, rows, cap, lab, sep="2pt", desc=None, landsca
     """complete table -> tables_2/<name>.tex; kind 'long' (longtable over pages) or 'float' (table float); full: float
     exactly \\linewidth wide (tabularx), the layout column taking whatever the value columns leave"""
     spec = (desc or DESC) + "r" * ndata
-    if full:
+    if full and kind != "long":
         spec = r">{\raggedright\arraybackslash}X" + "r" * ndata
+    lt = ""
+    if full and kind == "long":     # longtable over the full text width: no side margins, extra space between columns
+        spec = r"@{\extracolsep{\fill}}" + spec
+        lt = r"\setlength{\LTleft}{0pt}\setlength{\LTright}{0pt}\setlength{\LTcapwidth}{\linewidth}"
     if kind == "long":
-        tex = (f"\\begingroup\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}\n\\begin{{longtable}}{{{spec}}}\n"
+        tex = (f"\\begingroup\\tiny\\setlength{{\\tabcolsep}}{{{sep}}}{lt}\n\\begin{{longtable}}{{{spec}}}\n"
                f"\\caption{{{cap}}}\n\\label{{{lab}}}\\\\\n\\hline\n{head}\n\\hline\n\\endfirsthead\n"
                f"\\hline\n{head}\n\\hline\n\\endhead\n\\hline\n\\endfoot\n{rows}\n\\end{{longtable}}\n\\endgroup\n")
     else:
@@ -525,32 +529,46 @@ headline(19, main19)
 headline(20, NAMES[20])
 
 
-def scores_table(site, names, uts, sep, wdesc, landscape=True):
+def scores_table(site, names, uts, sep, wdesc, landscape=False, split=False):
     """appendix: every main-text layout (fixed above the line, optimized below), the scores not in APPX and the
-    utilities uts; values of the main-text tables left empty"""
+    utilities uts; split: scores and utilities as two portrait tables (r{site}_scores, r{site}_scores_u)"""
     f_, c_ = W[site][""]
     cols = [c for c in ANG if c[0] not in APPX[site]]
     ucols = [c for c in UCOLS if c[0] in uts]
+    sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
+    moved = "share within $2.5^\\circ$ and trigger rate" if "trig" in APPX[site] else "share within $2.5^\\circ$"
+    desc = r">{\raggedright\arraybackslash}p{%s}" % wdesc
+    rowof = lambda cs_fn: (lambda n: label(n, f_[n], site) + " & " + " & ".join(cs_fn(n)) + r" \\")
+    if split:
+        write(f"r{site}_scores", "long", len(cols),
+              DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in cols) + r" \\",
+              body(names, rowof(lambda n: cells_of(site, "", n, cols, False, set()))),
+              f"{sname}, no background: angular scores ({sh}), energy score{'' if 'trig' in APPX[site] else ', trigger'} "
+              f"of every layout; fixed layouts above the line, optimized below. Utilities: "
+              f"Table~\\ref{{tab:r{site}_scores_u}}; the {moved}: App.~\\ref{{app:all}}.",
+              f"tab:r{site}_scores", sep=sep, desc=desc, full=True)
+        write(f"r{site}_scores_u", "long", len(uts),
+              DESC_HEAD + " & " + " & ".join(UT_HEAD[UT.index(k)] for k in uts) + r" \\",
+              body(names, rowof(lambda n: cells_of(site, "", n, ucols, True, set()))),
+              f"{sname}, no background: utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the "
+              f"original utility) of every layout of Table~\\ref{{tab:r{site}_scores}}.",
+              f"tab:r{site}_scores_u", sep=sep, desc=desc, full=True)
+        return
     head = (r" & \multicolumn{%d}{c}{Scores} & \multicolumn{%d}{c}{Utilities} \\" % (len(cols), len(uts)) + "\n"
             + DESC_HEAD + " & " + " & ".join(COLHEAD[k] for k, _, _ in cols) + " & "
             + " & ".join(UT_HEAD[UT.index(k)] for k in uts) + r" \\")
-
-    def row(n):
-        cs = cells_of(site, "", n, cols, False, set()) + cells_of(site, "", n, ucols, True, set())
-        return label(n, f_[n], site) + " & " + " & ".join(cs) + r" \\"
-    sname, sh = (S19, "all showers") if site == 19 else (S20, "triggered showers")
-    moved = "share within $2.5^\\circ$ and trigger rate" if "trig" in APPX[site] else "share within $2.5^\\circ$"
-    write(f"r{site}_scores", "long", len(cols) + len(uts), head, body(names, row),
+    write(f"r{site}_scores", "long", len(cols) + len(uts), head,
+          body(names, rowof(lambda n: cells_of(site, "", n, cols, False, set()) + cells_of(site, "", n, ucols, True, set()))),
           f"{sname}, no background: angular scores ({sh}), energy score{'' if 'trig' in APPX[site] else ', trigger'} and "
           f"utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every "
           f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:all}}.",
-          f"tab:r{site}_scores", sep=sep, desc=r">{\raggedright\arraybackslash}p{%s}" % wdesc, landscape=landscape)
+          f"tab:r{site}_scores", sep=sep, desc=desc, landscape=landscape, full=not landscape)
 
 
 scores_table(19, main19, U4, "1pt", "2.9cm", landscape=False)
 # Malata
 fm, c8 = W[20][""]
-scores_table(20, NAMES[20], UT, "1pt", "2.7cm")
+scores_table(20, NAMES[20], UT, "1pt", "3.2cm", split=True)
 # construction constraints (Malata, no background): cable-length penalty and access / contour-row / pad penalties
 from scipy.sparse.csgraph import minimum_spanning_tree
 
@@ -739,7 +757,7 @@ write("r19_sweeps", "long", 11, r"Layout & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ
       f"{S19}, no background: every layout of the sweeps of Figs.~\\ref{{fig:exp19}} and~\\ref{{fig:exp19_layouts}} "
       f"(99 or 100 detectors), grid for reference; angular scores (all showers), energy score, trigger and accuracy "
       f"utilities (Sec.~\\ref{{sec:utilities}}). Bold and colour over the sweep layouts.", "tab:r19_sweeps",
-      desc="l", landscape=True)
+      desc=r">{\raggedright\arraybackslash}p{1.2cm}", sep="0.5pt", full=True)
 
 # appendix: complete scores of every layout, one block per background window (bold and colour per block)
 MODES = ((NONE, ""), (B1, "bg1_"), (B10, "bg10_"))
