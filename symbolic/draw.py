@@ -148,15 +148,16 @@ def plane_particles(rng, k, x, e_k, law, s, log_lam=None, x_stored=None, total=F
     lead = np.maximum(10.0 ** lead_y - 1, 0.0)
     tau = np.maximum(10.0 ** delay_y - 1 - lead, 0.0)
     p = ring_particles(rng, k, e_tot * shares, np.exp(ring_means(law, x, k)), law["spread"],
-                       particles.E_MIN[s], lead, tau)
+                       particles.E_MIN[s], lead, tau, beta=law.get("time_beta"))
     if shift is not None and len(p):
         p[:, 1:3] += np.asarray(shift, np.float64) * half_radius(shares)
     return p
 
 
-def ring_particles(rng, k, e_ring, mean, spread, e_min, lead, tau):
+def ring_particles(rng, k, e_ring, mean, spread, e_min, lead, tau, beta=None):
     """Particles of one plane from its ring energies, mean particle energies, spread (c, k) and delays [ns] (steps
-    3-6 of the module docstring)."""
+    3-6 of the module docstring). beta (per ring): a particle's excess delay over the lead scales as
+    (E / ring mean particle energy)^-beta, the ring's scale set so the expected energy-weighted mean excess stays tau."""
     mean = np.maximum(mean, e_min * 1.001)
     n = np.minimum(rng.poisson(e_ring / mean), np.floor(e_ring / e_min)).astype(int)
     if not n.any():
@@ -168,7 +169,11 @@ def ring_particles(rng, k, e_ring, mean, spread, e_min, lead, tau):
     lo, hi = particles.EDGES[j], particles.EDGES[j + 1]
     hi = np.where(np.isfinite(hi), hi, particles.R_OPEN * lo)
     r, phi = np.sqrt(rng.uniform(lo ** 2, hi ** 2)), rng.uniform(0, 2 * np.pi, len(j))
-    t = (k + 1) * atmosphere.PLANE_SPACING / annuli.C_LIGHT + (lead[j] + tau[j] * rng.exponential(size=len(j))) * 1e-9
+    scale = tau[j]
+    if beta is not None:
+        w = (e / (e_ring / np.maximum(n, 1))[j]) ** -beta[j]
+        scale = scale * (e_ring / np.maximum(np.bincount(j, e * w, particles.N_RING), 1e-300))[j] * w
+    t = (k + 1) * atmosphere.PLANE_SPACING / annuli.C_LIGHT + (lead[j] + scale * rng.exponential(size=len(j))) * 1e-9
     return np.column_stack([np.full(len(j), k), r * np.cos(phi), r * np.sin(phi), e, t])
 
 
@@ -312,9 +317,16 @@ def stage_energies(out, args, log):
             "sampler_rows": args.sampler_rows, "true_fits": args.true_fits}
 
 
-def draw_laws(root, laws_path=LAWS, width_law=None, time_law=None, energy_law=None):
-    """The laws of every (species, class) with the width, time and mean energy laws the draw uses."""
+def draw_laws(root, laws_path=LAWS, width_law=None, time_law=None, energy_law=None, time_energy=None):
+    """The laws of every (species, class) with the width, time and mean energy laws the draw uses; time_energy: the
+    per-species delay exponent per ring (te_fit.py), None for times independent of particle energy."""
     laws = load_laws(root, laws_path)
+    if time_energy:
+        z_b = np.load(os.path.join(root, time_energy))
+        for (s, cn), law in laws.items():
+            law["time_beta"] = np.asarray(z_b[f"{s}.beta"], np.float64)
+            if law["time_beta"].shape != (particles.N_RING,):
+                raise ValueError(f"time_energy {s}: {law['time_beta'].shape[0]} rings, the draw has {particles.N_RING}")
     z_w = np.load(os.path.join(root, width_law_path(laws_path, width_law)))
     on = {"particle laws": next(iter(laws.values()))["plane_energy"], "width law": fitted_on(z_w)}
     for (s, cn), law in laws.items():
@@ -338,7 +350,7 @@ def draw_laws(root, laws_path=LAWS, width_law=None, time_law=None, energy_law=No
 
 def stage_draw(out, args, log):
     z = np.load(os.path.join(out, "energies.npz"))
-    laws = draw_laws(args.out, args.laws, args.width_law, args.time_law, args.energy_law)
+    laws = draw_laws(args.out, args.laws, args.width_law, args.time_law, args.energy_law, args.time_energy)
     mine = np.arange(len(z["rows"]))[args.task::args.tasks]
     if args.only:
         mine = mine[np.isin(mine, np.load(args.only))]
@@ -428,6 +440,8 @@ def main():
                     help="draw stage: render caps, old (h5_files_v3, rescaled to E_k) or new (v2 / 150k, no rescale)")
     ap.add_argument("--width-law", help="draw stage: width_sr.py law, relative to --out; required with a non-default --laws")
     ap.add_argument("--time-law", help="draw stage: times_sr.py law, relative to --out, or none for the ring-by-ring laws; required with a non-default --laws")
+    ap.add_argument("--time-energy", help="draw stage: te_fit.py delay exponents per species and ring, relative to --out; "
+                    "default off (times independent of particle energy)")
     ap.add_argument("--energy-law", help="draw stage: energy_sr.py or tiny_net.py law, relative to --out, or none for the ring-by-ring laws; required with a non-default --laws")
     args = ap.parse_args()
     out, log = logs.start(os.path.join(FOLDER, args.name), args)

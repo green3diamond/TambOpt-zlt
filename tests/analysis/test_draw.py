@@ -23,6 +23,31 @@ def toy_law():
             "delay": ring_law(np.log10(21.0)), "spread": np.tile([3.0, 0.8], (particles.N_RING, 1))}
 
 
+
+def test_time_energy_off_and_zero_match():
+    """beta = 0 draws exactly what the energy-independent times draw (same random numbers, same particles)."""
+    x = np.r_[1.0, np.zeros(N_F - 1)]
+    law = toy_law()
+    a = draw.plane_particles(np.random.default_rng(3), 6, x, 900.0, law, "electron")
+    law["time_beta"] = np.zeros(particles.N_RING)
+    b = draw.plane_particles(np.random.default_rng(3), 6, x, 900.0, law, "electron")
+    assert np.array_equal(a[:, :4], b[:, :4]) and np.allclose(a[:, 4], b[:, 4], rtol=0, atol=1e-15)
+
+
+def test_time_energy_keeps_the_energy_weighted_mean():
+    """beta > 0: dim particles late, the energy-weighted mean delay still the law's (20 ns), the per-particle mean later."""
+    x = np.r_[1.0, np.zeros(N_F - 1)]
+    law = toy_law()
+    law["time_beta"] = np.full(particles.N_RING, 0.8)
+    k = 6
+    p = np.concatenate([draw.plane_particles(np.random.default_rng(s), k, x, 900.0, law, "electron") for s in range(20)])
+    delay = (p[:, 4] - (k + 1) * atmosphere.PLANE_SPACING / annuli.C_LIGHT) * 1e9
+    assert delay.min() >= 5.0 - 1e-3
+    assert abs(np.average(delay, weights=p[:, 3]) - 20.0) < 0.5
+    assert delay.mean() > 22.0                                                # the toy's energies span only ~0.3-4 x mean
+    lo, hi = p[:, 3] < np.percentile(p[:, 3], 25), p[:, 3] > np.percentile(p[:, 3], 75)
+    assert delay[lo].mean() > 1.5 * delay[hi].mean()
+
 def test_plane_particles_carry_the_law():
     rng = np.random.default_rng(1)
     x = np.r_[1.0, np.zeros(N_F - 1)]
