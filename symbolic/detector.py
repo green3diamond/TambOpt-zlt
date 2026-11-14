@@ -121,13 +121,23 @@ def metrics(E, T, ref_E, ref_T, dist, unit):
     both = (E > LAYOUT_THRESHOLD) & (ref_E > LAYOUT_THRESHOLD) & (T > 0) & (ref_T > 0)
     dt = (T - ref_T)[both] * 1e9
     seen = ref_E.sum(1) > LAYOUT_THRESHOLD
+    gen_seen = E.sum(1) > LAYOUT_THRESHOLD
+    both_seen = seen & gen_seen
     j = np.digitize(np.where(np.isfinite(dist), dist, -1), DIST_BINS) - 1
     on = E > LAYOUT_THRESHOLD
     return {"lit per event mean": round(float(lit.mean()), 2),
             "lit rel diff to CORSIKA": round(float(diff.mean() / ref_lit.mean()), 4),
             "lit paired diff mean +- se": [round(float(diff.mean()), 2), round(float(by_unit.std(ddof=1) / np.sqrt(len(by_unit))), 2)],
             **{f"frac lit >= {n}": round(float(np.mean(lit >= n)), 3) for n in (5, 10, 20)},
+            # events CORSIKA sees only: reads low for any model drawn independently of CORSIKA (selection)
             "deposit, median of per-event ratio to CORSIKA": round(float(np.median(E.sum(1)[seen] / ref_E.sum(1)[seen])), 3),
+            # the same over the events the model sees, CORSIKA / model inverted: reads high for an independent model
+            "deposit, per-event ratio, events the model sees": (round(float(1 / np.median(ref_E.sum(1)[gen_seen] / E.sum(1)[gen_seen])), 3)
+                                                                if gen_seen.any() else None),
+            "deposit, per-event ratio, events both see": (round(float(10 ** np.median(np.log10(E.sum(1)[both_seen] / ref_E.sum(1)[both_seen]))), 3)
+                                                          if both_seen.any() else None),
+            "deposit, ratio of means": round(float(E.sum(1).mean() / ref_E.sum(1).mean()), 3),
+            "frac events seen": round(float(gen_seen.mean()), 3),
             "log10 deposit per event 16/50/84": np.percentile(np.log10(np.maximum(E.sum(1), 1e-3)), [16, 50, 84]).round(3).tolist(),
             "leading-edge shift [ns], median and 16/84": ([round(float(np.median(dt)), 2)]
                                                            + np.percentile(dt, [16, 84]).round(2).tolist() if len(dt) else None),
