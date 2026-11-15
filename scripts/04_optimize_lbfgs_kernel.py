@@ -218,7 +218,11 @@ class BatchKernel:
             outs.append(torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1))
             moms.append(mom)
         if UTILITY_MODE == "swgo_trigger" or lead:        # expected detected particles (2 m^2), with gradients
-            r = axis_distance(e_det, n_det, self.surface, self.frames) if self.frames is not None else None
+            if lead and self.frames is not None:          # time models: r with its gradient (mu's per-species scale)
+                from modules.data.dataset_builder import detectors_in_frames
+                r = detectors_in_frames(e_det, n_det, self.surface, self.frames)[0].float()
+            else:
+                r = axis_distance(e_det, n_det, self.surface, self.frames) if self.frames is not None else None
             mus = expected_counts(outs, r)
             self.mu = sum(mus)
         if lead:                                          # TAMBOPT_TIME_MODEL=mean / lead: modules/optimize/timing.py

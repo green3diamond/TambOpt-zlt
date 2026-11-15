@@ -37,20 +37,26 @@ JITTER_NS = float(os.environ.get("TAMBOPT_TIME_JITTER_NS", "2.0"))
 PIX = float(os.environ.get("TAMBOPT_TIME_PIX", "0.0"))         # extra spread in log lag (pixel averaging)
 SEED = int(os.environ.get("TAMBOPT_TIME_SEED", "0"))
 _GENS = {}
+LAST = {}                                                     # last call's internals (gradient checks)
 
 
 def enabled():
     return MODEL in ("mean", "lead", "edge")
 
 
+_SEED = [SEED]                                               # seed for generators created from now on
+
+
 def _gen(device):
     k = str(device)
     if k not in _GENS:
-        _GENS[k] = torch.Generator(device=device).manual_seed(SEED)
+        _GENS[k] = torch.Generator(device=device).manual_seed(_SEED[0])
     return _GENS[k]
 
 
 def reseed(seed=SEED):
+    """reset every generator, including ones created later, to `seed`"""
+    _SEED[0] = seed
     for g in _GENS.values():
         g.manual_seed(seed)
 
@@ -110,6 +116,7 @@ def group_edge(moments, mus, timed):
     k = torch.searchsorted(Ft.detach(), q.detach().unsqueeze(-1)).squeeze(-1).clamp(1, Ft.shape[-1] - 1)
     F1 = Ft.gather(-1, k.unsqueeze(-1)).squeeze(-1); F0 = Ft.gather(-1, (k - 1).unsqueeze(-1)).squeeze(-1)
     frac = ((q - F0) / (F1 - F0).clamp(min=1e-9)).clamp(0.0, 1.0)
+    LAST.update(k=k.detach(), timed=timed.detach())
     lag_ns = torch.exp(le[k - 1] + frac * (le[k] - le[k - 1]))
     jit = JITTER_NS * torch.randn(mu.shape, generator=g, device=mu.device, dtype=mu.dtype)
     t = moments[0]["t_plane"] + (lag_ns + jit) * 1e-9
