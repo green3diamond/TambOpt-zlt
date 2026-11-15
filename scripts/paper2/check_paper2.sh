@@ -20,6 +20,7 @@ cat > "$B/check.tex" <<'TEX'
 \input{chapters_2/02_methodology}
 \input{chapters_2/03_results}
 \input{chapters_2/03b_comparisons}
+\input{chapters_2/03c_timing}
 \appendix
 \input{chapters_2/appendix}
 \end{document}

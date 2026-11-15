@@ -15,3 +15,4 @@ RES=()
 python "$HERE/make_tables.py" --out "$OUT" "${RES[@]}"
 python "$HERE/plot_exp.py" --out "$OUT" "${RES[@]}"
 python "$HERE/plot_c8ana.py" --out "$OUT"
+python "$HERE/plot_timing.py" --out "$OUT"
