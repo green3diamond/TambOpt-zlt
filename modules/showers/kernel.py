@@ -143,142 +143,75 @@ def adaptive_bandwidths(samples: torch.Tensor, k: int, sigma_min: float,
 
 
 def GetCounts_planeaware(
-    samples: torch.Tensor,
-    x_det:   torch.Tensor,
-    y_det:   torch.Tensor,
-    z_cont:  torch.Tensor,
-    SmearN_fn,
-    fluxB_e:  torch.Tensor,
-    TimeAverage_vectorized_fn,
-    sigma:   float = 200.0,
+    samples:   torch.Tensor,
+    rho_det:   torch.Tensor,
+    z_cont:    torch.Tensor,
+    bandwidth: torch.Tensor,
+    sigma:     float,
     hit_deposit_min: float = HIT_DEPOSIT_MIN,
-    bandwidth: torch.Tensor = None,
-    t_mode: str = "leading",
-    t_interp: bool = False,
-    layer_dx: float = 500.0,
-    ring: bool = False,
+    layer_dx:  float = 500.0,
 ) -> tuple:
-    """Plane-aware count extraction + leading-edge arrival time.
+    """Ring kernel in the shower frame: deposit E and leading-edge arrival time T per detector.
 
-    E is differentiable w.r.t. x_det, y_det and z_cont (and hence w.r.t. the
-    learnable North/Up positions via the surface map). T is a min over the
-    points that clear `hit_deposit_min` and is not.
+    E is differentiable w.r.t. rho_det and z_cont (and hence the detector positions); T is a min over
+    the points that clear `hit_deposit_min` and is not.
+
+    Each point is a RING of radius r = samples[..., 0] around the shower axis (circularly symmetric
+    showers; place_clouds_shower), its energy spread evenly around it, and a detector is read by its
+    distance rho from the axis. The spatial factor is the width-h Gaussian averaged around the ring,
+    in closed form:
+        (sigma/h)^2 exp(-(rho - r)^2 / 2h^2) i0e(rho r / h^2)        (i0e = exp(-x) I0(x))
+    r = 0 gives the point kernel. (sigma/h)^2 keeps every point's deposit over the plane at
+    2 pi sigma^2 per unit energy, whatever its width.
 
     Args:
-        samples  : (B, max_points, 5) point-cloud tensor with columns
-                   [x, y, layer_index, energy, time].  Padding rows have energy=0.
-        x_det    : (n_det,) or (B, n_det) first transverse coordinate [m]: North in
-                   the global frame, t1 in the shower frame. (B, n_det) gives every
-                   shower its own detector coordinates (the shower frame, where the
-                   same layout sits differently relative to each shower's axis).
-                   requires_grad may be True.
-        y_det    : same shape, second transverse coordinate [m] (Up / t2).
-        z_cont   : same shape, continuous plane coordinate in units of the plane
-                   spacing (global: (East_entry - East) / dx; shower frame:
-                   depth along the axis / 500 m).  requires_grad may be True.
-        SmearN_fn, fluxB_e, TimeAverage_vectorized_fn :
-                   accepted for interface compatibility; never called.
-        sigma    : Gaussian spatial kernel width [m].
-        hit_deposit_min : a point is DETECTED at a detector when its deposit
-                   there (energy * kernel acceptance) exceeds this.
-        bandwidth : optional (B, max_points) per-point width h >= sigma, from
-                   `adaptive_bandwidths`. When given, the spatial factor is
-                   (sigma/h)^2 * exp(-d^2 / 2h^2): area-normalised so every point
-                   deposits the same total as with the fixed kernel, identical to
-                   it wherever h == sigma. None (default) is the fixed kernel.
-        t_mode   : "leading" (default) = earliest detected point, as a
-                   photodetector triggers. "mean" = deposit-weighted mean time,
-                   sum(e*w*t) / sum(e*w), where the detector's TOTAL deposit
-                   clears `hit_deposit_min` (else 0). The mean averages over every
-                   point the detector sees instead of taking an extreme value, so
-                   it scatters less and varies smoothly with detector position.
-                   Normalised by the detector's own deposit, unlike the retired
-                   count-weighted mean (see module docstring), so it does not
-                   scale with the corpus's point budget.
-        t_interp : leading edge only. False (default): a detected point arrives at
-                   its own plane's time. True: the point's time is carried along
-                   the axis at c to the detector's depth,
-                   t = t_p + (z_det - z_p) * layer_dx / c, so a detector between two
-                   planes no longer reads one plane's time (the times are no longer
-                   quantized in steps of layer_dx / c). Clamped >= 1e-12 s, since 0
-                   is the "no hit" sentinel.
-        layer_dx : plane spacing [m] for t_interp (C8: 500 m along the axis).
-        ring     : circularly symmetric showers. Each point is a RING of radius
-                   r = samples[..., 0] around the shower axis, its energy spread
-                   evenly around it, and x_det is the detector's distance rho from
-                   the axis (y_det, samples[..., 1] unused). The spatial factor is
-                   the point kernel averaged around the ring, in closed form:
-                       (sigma/h)^2 exp(-(rho - r)^2 / 2h^2) i0e(rho r / h^2)
-                   (i0e = exp(-x) I0(x)). r = 0 gives the point kernel; the
-                   deposit over the detector plane is conserved (2 pi sigma^2 per
-                   unit energy), as for points.
+        samples   : (B, max_points, 5) placed clouds, columns [r, 0, layer (depth / layer_dx), energy,
+                    time]. Padding rows have energy 0.
+        rho_det   : (n_det,) or (B, n_det) detector distance from the shower axis [m].
+        z_cont    : same shape, detector depth along the axis / layer_dx.
+        bandwidth : (B, max_points) per-point width h >= sigma (`adaptive_bandwidths`).
+        sigma     : base Gaussian width [m].
+        hit_deposit_min : a point is DETECTED at a detector when its deposit there (energy x kernel
+                    weight) exceeds this.
+        layer_dx  : plane spacing [m] (C8: 500 m along the axis).
+
+    Plane weight relu(1 - |layer_p - z_cont|): linear between the two planes around the detector.
+    T: each detected point's time is carried along the axis at c to the detector's depth,
+    t = t_p + (z_det - z_p) * layer_dx / c (clamped >= 1e-12 s; 0 is "no hit"), and T is the
+    earliest of them.
 
     Returns:
-        (local_intensity, arrival_time) : each (B, n_det), raw (no
-        post-processing). `arrival_time` is the earliest detected point's time
-        in seconds, 0 at detectors with no detected point.
+        (local_intensity, arrival_time) : each (B, n_det). `arrival_time` in seconds, 0 at detectors
+        with no detected point.
     """
-    point_x = samples[..., 0]    # (B, P)
-    point_y = samples[..., 1]    # (B, P)
+    point_r = samples[..., 0]    # (B, P)  ring radius
     point_l = samples[..., 2]    # (B, P)  layer index (integer, but stored as float)
     point_e = samples[..., 3]    # (B, P)  energy
     point_t = samples[..., 4]    # (B, P)  time
 
     # Detector coordinates: (n_det,) shared by every shower, or (B, n_det) per shower.
-    x_det, y_det, z_cont = (_det_view(v) for v in (x_det, y_det, z_cont))
+    rho_det, z_cont = (_det_view(v) for v in (rho_det, z_cont))
 
-    # dx, dy : (B, P, n_det)
-    dx = point_x.unsqueeze(2) - x_det
-    dy = point_y.unsqueeze(2) - y_det
-    if ring:
-        # point_x = ring radius r, x_det = detector distance from the axis rho.
-        h2 = (bandwidth.unsqueeze(2) ** 2 if bandwidth is not None
-              else torch.full_like(dx[..., :1], float(sigma) ** 2))
-        rr = point_x.unsqueeze(2) * x_det
-        spatial = (sigma ** 2 / h2) * torch.exp(-dx ** 2 / (2.0 * h2)) * torch.special.i0e(rr / h2)
-    elif bandwidth is None:
-        spatial = torch.exp(-(dx ** 2 + dy ** 2) / (2.0 * sigma ** 2))
-    else:
-        h2 = bandwidth.unsqueeze(2) ** 2                          # (B, P, 1)
-        spatial = (sigma ** 2 / h2) * torch.exp(-(dx ** 2 + dy ** 2) / (2.0 * h2))
+    h2 = bandwidth.unsqueeze(2) ** 2                                 # (B, P, 1)
+    dr = point_r.unsqueeze(2) - rho_det                              # (B, P, n_det)
+    rr = point_r.unsqueeze(2) * rho_det
+    spatial = (sigma ** 2 / h2) * torch.exp(-dr ** 2 / (2.0 * h2)) * torch.special.i0e(rr / h2)
 
-    # delta_l : (B, P, n_det)
-    delta_l = point_l.unsqueeze(2) - z_cont
+    delta_l = point_l.unsqueeze(2) - z_cont                          # (B, P, n_det)
     plane_w = torch.relu(1.0 - delta_l.abs())
 
     # Peak weight 1, total 2 pi sigma^2 (~628 m^2) per point: E is GeV over an
     # effective ~628 m^2, not a density and not a particle count (module docstring).
-    kernel        = spatial * plane_w                              # (B, P, n_det)
-    energy_kernel = point_e.unsqueeze(2) * kernel                 # (B, P, n_det)
+    energy_kernel = point_e.unsqueeze(2) * spatial * plane_w        # (B, P, n_det)
+    local_intensity = energy_kernel.sum(dim=1)                      # (B, n_det)
 
-    local_intensity = energy_kernel.sum(dim=1)                    # (B, n_det)
-
-    if t_mode == "mean":
-        # Deposit-weighted mean over every point the detector sees. Padding rows
-        # carry energy 0, so they add nothing to either sum.
-        lit = local_intensity > hit_deposit_min
-        t_sum = (energy_kernel * point_t.unsqueeze(2)).sum(dim=1)
-        mean_t = t_sum / local_intensity.clamp(min=torch.finfo(local_intensity.dtype).tiny)
-        return local_intensity, torch.where(lit, mean_t, torch.zeros_like(mean_t))
-    if t_mode != "leading":
-        raise ValueError(f"t_mode must be 'leading' or 'mean', got {t_mode!r}")
-
-    # Leading edge: the earliest point whose deposit clears the threshold.
-    # Padding rows carry energy 0 (showerdata zero-fills), so they never clear
-    # it and drop out on their own — no separate mask, and no dependence on the
-    # corpus's padded width.
-    detected     = energy_kernel > hit_deposit_min                 # (B, P, n_det)
-    if t_interp:
-        # Carry each point's time along the axis to the detector's depth at c.
-        # Selection only (no gradient is wanted through T), so detach delta_l.
-        t_pt = (point_t.unsqueeze(2) - delta_l.detach() * (layer_dx / C_LIGHT)).clamp(min=1e-12)
-    else:
-        t_pt = point_t.unsqueeze(2)
-    t_masked     = torch.where(detected, t_pt,
-                               torch.full_like(energy_kernel, float("inf")))
-    arrival_time = t_masked.amin(dim=1)                            # (B, n_det)
+    # Leading edge: the earliest point whose deposit clears the threshold. Padding rows carry
+    # energy 0, so they never clear it. Times are carried along the axis at c to the detector's
+    # depth; selection only (no gradient is wanted through T), so delta_l is detached.
+    detected = energy_kernel > hit_deposit_min
+    t_pt = (point_t.unsqueeze(2) - delta_l.detach() * (layer_dx / C_LIGHT)).clamp(min=1e-12)
+    t_masked = torch.where(detected, t_pt, torch.full_like(energy_kernel, float("inf")))
+    arrival_time = t_masked.amin(dim=1)                             # (B, n_det)
     # No detected point -> 0, the same "no signal" sentinel the E channel uses.
-    arrival_time = torch.where(torch.isinf(arrival_time),
-                               torch.zeros_like(arrival_time), arrival_time)
-
+    arrival_time = torch.where(torch.isinf(arrival_time), torch.zeros_like(arrival_time), arrival_time)
     return local_intensity, arrival_time

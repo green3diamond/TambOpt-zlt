@@ -81,8 +81,6 @@ def main():
         seed=SEED,
         device=DEVICE,
         verbose=True,
-        east_entry=EAST_ENTRY,                       # placement at the real decay vertices (<corpus>_positions.pt)
-        layer_east_dx=LAYER_EAST_DX,
         resume_path=os.path.join(TRAINING_DATASET_FOLDER, "build_resume.pt"),
         strategies=args.strategies,
     )

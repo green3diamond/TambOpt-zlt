@@ -1,6 +1,6 @@
 """How well do the kernel's rings reproduce the true lateral energy density? CORSIKA 8 per-particle check.
 
-The ring kernel (place_clouds_shower, transverse="ring") puts each super-particle on a ring of radius |t1| (horizontal
+The ring kernel (place_clouds_shower) puts each super-particle on a ring of radius |t1| (horizontal
 transverse offset only); the true distance from the axis is r = sqrt(t1^2 + t2^2). For annular bins a ring of radius u
 deposits all its energy in the annulus holding u, so the rings' energy density per bin is sum(E over u in bin) / area.
 Compared per bin, all species and per species, pooled over planes and the 16 pi- showers:

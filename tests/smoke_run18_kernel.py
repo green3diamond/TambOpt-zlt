@@ -34,8 +34,7 @@ CORPUS = f"{R17}/v6_run_00/cashed_showers_tau_dual.pt"
 HELDOUT = f"{R17}/v6_run_00/cashed_showers_tau_dual_heldout.pt"
 RECON = f"{R17}/test_v6_run_03_recentered_deepsets_kernel100"
 dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"KERNEL_FRAME={C.KERNEL_FRAME} T_INTERP={C.KERNEL_T_INTERP} TRANSVERSE={C.KERNEL_TRANSVERSE} "
-      f"BW_MAX={C.KERNEL_INTERP_MAX} device={dev}")
+print(f"BW_MAX={C.KERNEL_INTERP_MAX} device={dev}")
 
 mountain = load_tr_mountain(f"{R17}/inputs/plane45.h5", "plane45", "detector1", east_entry=C.EAST_ENTRY,
                             layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)

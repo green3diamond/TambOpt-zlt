@@ -74,7 +74,7 @@ else
     else TAG="twotier_l${LAM/./p}_${CALIB#kernel_}"; fi
 fi
 N_DET=${N_DET:-100}
-SUFFIX="${TAG}_lr${LR}_${INIT}${RECON_TAG:+_$RECON_TAG}"
+SUFFIX="${TAG}_lr${LR}_${INIT_TAG:-$INIT}${RECON_TAG:+_$RECON_TAG}"   # INIT_TAG: name for a layout-file start
 [ "$N_DET" != 100 ] && SUFFIX="${SUFFIX}_n${N_DET}"
 # Env BATCH (showers per step, default 512) and LR_FINAL (log-linear lr decay to this) add _b<B> / _lrd<F> to the suffix.
 [ -n "$BATCH" ] && [ "$BATCH" != 512 ] && SUFFIX="${SUFFIX}_b${BATCH}"
