@@ -2,7 +2,7 @@
 
 Adam at lr 1 (scripts/04_optimize_lbfgs_kernel.py --pool c8 --recon-type analytic, SWGO trigger utility at 1 deg,
 512 showers per epoch) from the uniform grid and from the centre; both stopped by the 3 h limit after the epoch-800
-checkpoint. Panels per start: the start layout and the layout at the last checkpoint, with each detector's move.
+checkpoint. Panels per start: the start layout and the layout at the last checkpoint.
 Titles: utility on the scoring set (1,024 showers) and the move distances.
 -> <out>/figures/results_2/c8ana_lr.pdf
 """
@@ -39,10 +39,7 @@ if runs:
             a.scatter(cE, cN, s=3, c="0.85", lw=0, rasterized=True)
         a0.scatter(gx, gy, s=6, c="0.15", lw=0)
         a0.set_title(f"start: {t}\nU = {u0:.2f}", fontsize=7)
-        a1.scatter(gx, gy, s=6, facecolors="none", edgecolors="0.45", lw=0.4)
-        for j in range(len(gx)):
-            a1.plot([gx[j], fx[j]], [gy[j], fy[j]], c="tab:red", lw=0.4)
-        a1.scatter(fx, fy, s=6, c="tab:blue", lw=0)
+        a1.scatter(fx, fy, s=6, c="0.15", lw=0)
         a1.set_title(f"{t}, epoch {st['epoch']}: U = {u1:.2f} (best {st['best_u']:.2f})\n"
                      f"moved: median {np.median(d):.0f} m, max {d.max():.0f} m", fontsize=7)
     for a in ax:
