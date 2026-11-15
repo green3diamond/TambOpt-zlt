@@ -36,6 +36,7 @@ MODEL = os.environ.get("TAMBOPT_TIME_MODEL", "min")          # "min" = the kerne
 JITTER_NS = float(os.environ.get("TAMBOPT_TIME_JITTER_NS", "2.0"))
 PIX = float(os.environ.get("TAMBOPT_TIME_PIX", "0.0"))         # extra spread in log lag (pixel averaging)
 SEED = int(os.environ.get("TAMBOPT_TIME_SEED", "0"))
+NOISE = float(os.environ.get("TAMBOPT_TIME_NOISE", "1.0"))   # mean model: scale of the Gaussian draw (0 = expected time)
 _GENS = {}
 LAST = {}                                                     # last call's internals (gradient checks)
 
@@ -98,7 +99,7 @@ def group_mean(t_plane, mean, var, mu, timed):
     g = _gen(mean.device)
     z = torch.randn(mean.shape, generator=g, device=mean.device, dtype=mean.dtype)
     sd = torch.sqrt(var / mu.clamp(min=1.0) + JITTER_NS ** 2)
-    t = t_plane + (mean + sd * z) * 1e-9
+    t = t_plane + (mean + NOISE * sd * z) * 1e-9
     return torch.where(timed, t.clamp(min=1e-12), torch.zeros_like(t))
 
 
