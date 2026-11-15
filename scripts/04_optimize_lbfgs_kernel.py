@@ -49,6 +49,7 @@ from modules.optimize.background import add_background, window_centres, knn_pair
 from modules.optimize.counting import expected_counts, CountingTransform
 from modules.optimize.objective import UTILITY_MODE, TWO_TIER_SCALE
 from modules.optimize.cable import cable_length
+import modules.optimize.timing as TIMING
 from modules.optimize.construction import ConstructionCost, parse as parse_construct
 from modules.surrogates import load_dual_surrogate
 from modules.surrogates import build_recon_from_ckpt
@@ -207,15 +208,25 @@ class BatchKernel:
 
     def __call__(self, primary_batch, xy_batch):
         e_det, n_det = xy_batch[0, :, 0], xy_batch[0, :, 1]
-        outs = []
+        outs, moms = [], []
+        lead = TIMING.enabled()
         for c, w in zip(self.clouds, self.bws):
+            mom = {} if lead else None
             E, T = compute_labels_batch(c, e_det, n_det, self.surface,
                                         differentiable=self.differentiable, bandwidth=w,
-                                        frames=self.frames)
+                                        frames=self.frames, moments=mom)
             outs.append(torch.stack([torch.log1p(E), torch.log1p(T * T_LOG_SCALE)], dim=-1))
-        if UTILITY_MODE == "swgo_trigger":                # expected detected particles (2 m^2), with gradients
+            moms.append(mom)
+        if UTILITY_MODE == "swgo_trigger" or lead:        # expected detected particles (2 m^2), with gradients
             r = axis_distance(e_det, n_det, self.surface, self.frames) if self.frames is not None else None
-            self.mu = sum(expected_counts(outs, r))
+            mus = expected_counts(outs, r)
+            self.mu = sum(mus)
+        if lead:                                          # TAMBOPT_TIME_MODEL=mean / lead: modules/optimize/timing.py
+            timed = torch.stack([o[..., 1] > 0 for o in outs]).any(0)
+            T = TIMING.arrival(moms, mus, timed)
+            enc = torch.log1p(T * T_LOG_SCALE)
+            outs = [torch.stack([o[..., 0], torch.where(o[..., 1] > 0, enc, torch.zeros_like(enc))], -1)
+                    for o in outs]
         if self.species_transform is not None:
             outs = self.species_transform(outs, e_det, n_det, self.frames)
         return combine_species_outputs(*outs)

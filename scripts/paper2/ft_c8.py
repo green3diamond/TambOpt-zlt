@@ -12,7 +12,7 @@ Run under the run's guard (run 19: slurm/run19_guard.sh, run 20: slurm/run20_gua
 """
 import importlib.util, json, os, sys, time
 import numpy as np, torch, h5py
-R = "/n/home05/zdimitrov/tambo/TambOpt"; sys.path.insert(0, R); sys.path.insert(0, R + "/scripts")
+R = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))); sys.path.insert(0, R); sys.path.insert(0, R + "/scripts")
 spec = importlib.util.spec_from_file_location("s4", f"{R}/scripts/04_optimize_lbfgs_kernel.py")
 S4 = importlib.util.module_from_spec(spec); spec.loader.exec_module(S4)
 spec3 = importlib.util.spec_from_file_location("s3", f"{R}/scripts/03_train_recon_deepsets.py")

@@ -185,7 +185,8 @@ def compute_labels_batch(clouds:   torch.Tensor,
                          frames:   torch.Tensor,
                          sigma_spatial: float = SIGMA_SPATIAL,
                          differentiable: bool = False,
-                         bandwidth: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+                         bandwidth: Optional[torch.Tensor] = None,
+                         moments: Optional[dict] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run the ring kernel on a batch of showers sharing one layout.
 
     Clouds come from `place_clouds_shower`; the layout is mapped into every shower's frame
@@ -212,7 +213,7 @@ def compute_labels_batch(clouds:   torch.Tensor,
             bandwidth = adaptive_bandwidths(clouds, KERNEL_INTERP_K, sigma_spatial)
         rho, z = detectors_in_frames(e_det, n_det, surface, frames.to(clouds.device))
         return GetCounts_planeaware(clouds, rho.to(clouds.dtype), z.to(clouds.dtype), bandwidth,
-                                    sigma=sigma_spatial, layer_dx=C8_PLANE_DX)
+                                    sigma=sigma_spatial, layer_dx=C8_PLANE_DX, moments=moments)
 
 
 # ── Dataset builder stages ───────────────────────────────────────────────────
