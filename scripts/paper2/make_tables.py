@@ -729,7 +729,7 @@ write("r20_disk_ana", "float", 7, H_DISK,
       f"{S20}, no background: disk-size sweep (Sec.~\\ref{{sec:r20_sweeps}}) and the uniform grid with DeepSets (DS) and "
       f"the analytical reconstruction v1 (AN): trigger rate, share within $1^\\circ$ [\\%] and median angular "
       f"error of the triggered showers, and share within $1^\\circ$ of all showers [\\%] (a shower without "
-      f"an analytical fit counts as $180^\\circ$).", "tab:r20_disk_ana", full=True)
+      f"an analytical fit counts as $180^\\circ$).", "tab:r20_disk_ana")
 
 
 def ana_v1_row(n):
