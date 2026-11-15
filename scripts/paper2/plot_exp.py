@@ -144,7 +144,26 @@ if d20["fm"] or d20["c8"]:
     col = lambda j: (ax[0, j], None, ax[1, j])
     disk = [("disk, 99 detectors", "tab:blue", r"disk_r(\d+)", lambda m: int(m[1]))]
     draw(col(0), d20, disk, "disk radius [m]", False, legend=False)
-    series_legend(ax[1, 0], [], 1, extra=src_handles())       # single series: only the line-style key
+    # the same disks with the analytical reconstruction (v1; scoresana / scoresc8ana, same triggered showers, so the
+    # trigger panel is unchanged): accuracy panel only, red, with its uniform grid
+    from matplotlib.lines import Line2D
+    ana = {}
+    for src, pre in (("fm", "scoresana_20_"), ("c8", "scoresc8ana_20_")):
+        a_ = {}
+        for p in sorted(glob.glob(f"{D}/{pre}*.json")):
+            a_.update({n: v for n, v in json.load(open(p)).items() if "smoke" not in n})
+        ana[src] = trig_view(a_, acc=True)
+    for src, (_, ls, _) in SRC.items():
+        pts = series(ana[src], r"disk_r(\d+)", lambda m: int(m[1]))
+        if pts:
+            x = np.array([p[0] for p in pts])
+            for k, al in (("w1", 1.0), ("w5", 0.45)):
+                ax[0, 0].plot(x, [100 * p[1][k] for p in pts], ls=ls, marker="o", ms=2.5, color="tab:red", alpha=al)
+        if "ugrid" in ana[src]:
+            ax[0, 0].axhline(100 * ana[src]["ugrid"]["w1"], color="lightcoral", ls=ls, lw=0.8)
+    series_legend(ax[1, 0], [], 2, extra=[Line2D([], [], color="tab:blue", marker="o", ms=3.5, lw=1, label="DeepSets"),
+                                          Line2D([], [], color="tab:red", marker="o", ms=3.5, lw=1,
+                                                 label="analytical v1 (grid: light red)")] + src_handles())
     ax[0, 0].set_title("(a) disk size")
     clus = [("33 triplets, uniform", "tab:green", r"tri33_r(\d+)", lambda m: int(m[1])),
             ("33 triplets in 150 m disk", "tab:cyan", r"tri33disk_R150_r(\d+)", lambda m: int(m[1]))]
