@@ -53,12 +53,16 @@ weight, divided by the PADDED point count), so it scaled with the corpus's
 max_points and correlated 0.43 with the E channel.
 """
 
+import math
+import os
+
 import torch
 
 from ..constants import HIT_DEPOSIT_MIN, KERNEL_INTERP_MAX
 
 C_LIGHT = 299_792_458.0      # m/s, for carrying point times between planes (t_interp)
 LAG_MIN_NS = 0.1             # floor of a point's lag behind the plane front (log-lag moments)
+LAG_EDGES_NS = torch.logspace(math.log10(LAG_MIN_NS), math.log10(3000.0), 65)   # lag CDF grid (TAMBOPT_TIME_MODEL=edge)
 
 
 def _det_view(v):
@@ -241,4 +245,13 @@ def GetCounts_planeaware(
         var = (gw * (lg - mean.unsqueeze(1)) ** 2).sum(1) / gsum
         moments.update(t_plane=(z_cont * (layer_dx / C_LIGHT)).squeeze(1).expand_as(local_intensity),
                        m=m, s=torch.sqrt(s2 + 1e-12), w=local_intensity, mean=mean, var=var, gw=gsum)
+        if os.environ.get("TAMBOPT_TIME_MODEL") == "edge":
+            # the group's lag CDF on a fixed log grid, kernel weight only: points binned by lag (detector-independent,
+            # one-hot), weights summed per bin and detector -> cdf (B, K + 1, n_det) at LAG_EDGES_NS, cdf[:, 0] = 0
+            edges = LAG_EDGES_NS.to(lag_ns.device, lag_ns.dtype)
+            b = torch.bucketize(lag_ns.detach(), edges[1:-1])                                   # (B, P) in 0..K-1
+            onehot = torch.nn.functional.one_hot(b, len(edges) - 1).to(gw.dtype)                # (B, P, K)
+            hist = torch.einsum("bpk,bpn->bkn", onehot, gw)                                     # (B, K, n_det)
+            cdf = torch.cumsum(hist, 1) / gsum.unsqueeze(1)
+            moments.update(cdf=torch.cat([torch.zeros_like(cdf[:, :1]), cdf], 1), edges=edges)
     return local_intensity, arrival_time

@@ -4,6 +4,10 @@ mean: T = t_plane + <lag> + N(0, sqrt(var / mu + jitter^2)), <lag> and var the m
 points the kernel reads at the detector (its ~8-nearest-neighbour group, kernel weight only, not energy): the group's
 mean arrival, with the error of a mean of mu particles. Species mixed by mu_s.
 
+edge: T = t_plane + F^-1(q) + jitter, F the group's own lag CDF (kernel weight only, on a log grid of lags, species
+mixed by mu_s), q = 1 - (1 - u)^(1 / mu): the leading edge of mu particles drawn from the group, no shape assumed;
+F^-1 interpolated in log lag between grid points (differentiable in the weights, mu and t_plane).
+
 lead (below): leading edge of mu log-normal lags.
 
 The kernel's default T (modules/showers/kernel.py) is the earliest detected point carried to the detector's depth:
@@ -28,7 +32,7 @@ import os
 
 import torch
 
-MODEL = os.environ.get("TAMBOPT_TIME_MODEL", "min")          # "min" = the kernel's default T; "mean" or "lead"
+MODEL = os.environ.get("TAMBOPT_TIME_MODEL", "min")          # "min" = the kernel's default T; "mean", "edge" or "lead"
 JITTER_NS = float(os.environ.get("TAMBOPT_TIME_JITTER_NS", "2.0"))
 PIX = float(os.environ.get("TAMBOPT_TIME_PIX", "0.0"))         # extra spread in log lag (pixel averaging)
 SEED = int(os.environ.get("TAMBOPT_TIME_SEED", "0"))
@@ -36,7 +40,7 @@ _GENS = {}
 
 
 def enabled():
-    return MODEL in ("mean", "lead")
+    return MODEL in ("mean", "lead", "edge")
 
 
 def _gen(device):
@@ -92,8 +96,30 @@ def group_mean(t_plane, mean, var, mu, timed):
     return torch.where(timed, t.clamp(min=1e-12), torch.zeros_like(t))
 
 
+def group_edge(moments, mus, timed):
+    """(B, nd) arrival times [s]: leading edge of mu particles from the mu_s-mixed group lag CDF + jitter"""
+    mu = sum(mus)
+    wt = [q / mu.clamp(min=1e-9) for q in mus]
+    F = sum(w.unsqueeze(1) * d["cdf"] for w, d in zip(wt, moments))                  # (B, K + 1, nd)
+    F = F / F[:, -1:].clamp(min=1e-12)
+    le = torch.log(moments[0]["edges"])                                              # (K + 1,)
+    g = _gen(mu.device)
+    u = torch.rand(mu.shape, generator=g, device=mu.device, dtype=mu.dtype).clamp(1e-6, 1 - 1e-6)
+    q = (1.0 - torch.exp(torch.log1p(-u) / mu.clamp(min=1.0))).clamp(1e-6, 1 - 1e-6)
+    Ft = F.transpose(1, 2).contiguous()                                               # (B, nd, K + 1)
+    k = torch.searchsorted(Ft.detach(), q.detach().unsqueeze(-1)).squeeze(-1).clamp(1, Ft.shape[-1] - 1)
+    F1 = Ft.gather(-1, k.unsqueeze(-1)).squeeze(-1); F0 = Ft.gather(-1, (k - 1).unsqueeze(-1)).squeeze(-1)
+    frac = ((q - F0) / (F1 - F0).clamp(min=1e-9)).clamp(0.0, 1.0)
+    lag_ns = torch.exp(le[k - 1] + frac * (le[k] - le[k - 1]))
+    jit = JITTER_NS * torch.randn(mu.shape, generator=g, device=mu.device, dtype=mu.dtype)
+    t = moments[0]["t_plane"] + (lag_ns + jit) * 1e-9
+    return torch.where(timed, t.clamp(min=1e-12), torch.zeros_like(t))
+
+
 def arrival(moments, mus, timed):
     """the selected model's (B, nd) arrival times [s] from the per-species kernel moments"""
+    if MODEL == "edge":
+        return group_edge(moments, mus, timed)
     if MODEL == "mean":
         mean, var, mu = mix_mean(moments, mus)
         return group_mean(moments[0]["t_plane"], mean, var, mu, timed)
