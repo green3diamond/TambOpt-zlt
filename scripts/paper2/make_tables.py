@@ -715,20 +715,20 @@ ALLS = {"ds": (raw("scoresd_20_*.json"), raw("scoresc8ft_20_*.json")),
 DISKS = [n for n in ("disk_r100", "disk_r150", "disk_r200", "disk_r300", "disk_r400", "ugrid") if n in SRC["v1"][1]]
 sub = lambda src: tuple({n: d[n] for n in DISKS if n in d} for d in src)     # colour scale over these layouts only
 TRG = {m: sub(SRC[m]) for m in SRC}; ALL = {m: sub(ALLS[m]) for m in ALLS}
-H_DISK = (r" & & \multicolumn{6}{c}{triggered showers} & \multicolumn{4}{c}{all showers} \\" + "\n"
-          + r" & & \multicolumn{2}{c}{$<1^\circ$} & \multicolumn{2}{c}{$<5^\circ$} & \multicolumn{2}{c}{Median [$^\circ$]}"
-          r" & \multicolumn{2}{c}{$<1^\circ$} & \multicolumn{2}{c}{$<5^\circ$} \\" + "\n"
-          + r"Layout & Trigger & DS & AN & DS & AN & DS & AN & DS & AN & DS & AN \\")
-write("r20_disk_ana", "float", 11, H_DISK,
+H_DISK = (r" & & \multicolumn{4}{c}{triggered showers} & \multicolumn{2}{c}{all showers} \\" + "\n"
+          + r" & & \multicolumn{2}{c}{$<1^\circ$} & \multicolumn{2}{c}{Median [$^\circ$]}"
+          r" & \multicolumn{2}{c}{$<1^\circ$} \\" + "\n"
+          + r"Layout & Trigger & DS & AN & DS & AN & DS & AN \\")
+write("r20_disk_ana", "float", 7, H_DISK,
       "\n".join(label(n, W[20][""][0][n], 20) + " & " + " & ".join(
           [pair(*TRG["ds"], n, "trig", 100, "{:.1f}")]
-          + [pair(*S[m], n, k, sc, f) for k, sc, f in (("w1", 100, "{:.1f}"), ("w5", 100, "{:.1f}"), ("med", 1, "{:.2f}"))
+          + [pair(*S[m], n, k, sc, f) for k, sc, f in (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}"))
              for m in ("ds", "v1") for S in [TRG]]
-          + [pair(*S[m], n, k, 100, "{:.1f}") for k in ("w1", "w5") for m in ("ds", "v1") for S in [ALL]]) + r" \\"
+          + [pair(*S[m], n, k, 100, "{:.1f}") for k in ("w1",) for m in ("ds", "v1") for S in [ALL]]) + r" \\"
                 for n in DISKS),
       f"{S20}, no background: disk-size sweep (Sec.~\\ref{{sec:r20_sweeps}}) and the uniform grid with DeepSets (DS) and "
-      f"the analytical reconstruction v1 (AN): trigger rate, share within $1^\\circ$ and $5^\\circ$ [\\%] and median angular "
-      f"error of the triggered showers, and share within $1^\\circ$ and $5^\\circ$ of all showers [\\%] (a shower without "
+      f"the analytical reconstruction v1 (AN): trigger rate, share within $1^\\circ$ [\\%] and median angular "
+      f"error of the triggered showers, and share within $1^\\circ$ of all showers [\\%] (a shower without "
       f"an analytical fit counts as $180^\\circ$).", "tab:r20_disk_ana", full=True)
 
 
