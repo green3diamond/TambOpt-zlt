@@ -330,7 +330,8 @@ H_ANAV = (r" & \multicolumn{2}{c}{DeepSets} & \multicolumn{2}{c}{Analytical v1} 
           + DESC_HEAD + r" & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] \\")
 H_ANAV1 = (r" & \multicolumn{7}{c}{triggered showers} & \multicolumn{2}{c}{all showers, $<1^\circ$} \\" + "\n"
            + r" & \multicolumn{3}{c}{DeepSets} & \multicolumn{3}{c}{Analytical v1} & & DeepSets & Analytical v1 \\" + "\n"
-           + DESC_HEAD + r" & $<1^\circ$ & $<5^\circ$ & Median [$^\circ$] & $<1^\circ$ & $<5^\circ$ & Median [$^\circ$]"
+           + r"Layout: optimizer $|$ utility $|$ test case $|$ start"            # one row (the table is full width)
+           r" & $<1^\circ$ & $<5^\circ$ & Median [$^\circ$] & $<1^\circ$ & $<5^\circ$ & Median [$^\circ$]"
            r" & Trigger & & \\")
 H_ANA = (r" & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \\" + "\n"
          + DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] \\")
@@ -712,7 +713,7 @@ write("r20_anav", "float", 9, H_ANAV1,
       f"Fig.~\\ref{{fig:r20_layouts}} and the disk-size sweep (Sec.~\\ref{{sec:r20_sweeps}}); on the triggered showers "
       f"share within $1^\\circ$ and $5^\\circ$ [\\%], median angular error and trigger rate [\\%] (the same for both "
       f"reconstructions); on all showers share within $1^\\circ$ [\\%] (a shower without an analytical fit counts "
-      f"as $180^\\circ$).", "tab:r20_anav")
+      f"as $180^\\circ$).", "tab:r20_anav", full=True)
 write("r20_anav_all", "float", 8, H_ANAV,                      # appendix: all three versions
       body(figs20, lambda n: ana_row(n, short("ds") + short("v1") + short("v2") + short("v3"), False)),
       f"{S20}, no background: DeepSets vs the analytical reconstruction v1, v2 and v3 (App.~\\ref{{app:ana}}) on the "
