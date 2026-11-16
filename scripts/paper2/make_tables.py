@@ -562,7 +562,7 @@ def scores_table(site, names, uts, sep, wdesc, landscape=False, split=False, fon
           f"{sname}, no background: angular scores ({sh}), energy score{'' if 'trig' in APPX[site] else ', trigger'} and "
           f"utilities (Sec.~\\ref{{sec:utilities}}; per-shower means in $[0,1]$ except the original utility) of every "
           f"layout; fixed layouts above the line, optimized below. The {moved}: App.~\\ref{{app:all}}.",
-          f"tab:r{site}_scores", sep=sep, desc=desc, landscape=landscape, full=not landscape, font=font)
+          f"tab:r{site}_scores", sep=sep, desc=desc, landscape=landscape, full=True, font=font)
 
 
 scores_table(19, main19, U4, "1pt", "2.9cm", font=r"\fontsize{4.6pt}{5.6pt}\selectfont")
@@ -718,7 +718,7 @@ write("r20_anav_all", "float", 8, H_ANAV,                      # appendix: all t
       body(figs20, lambda n: ana_row(n, short("ds") + short("v1") + short("v2") + short("v3"), False)),
       f"{S20}, no background: DeepSets vs the analytical reconstruction v1, v2 and v3 (App.~\\ref{{app:ana}}) on the "
       f"triggered showers, layouts of Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular "
-      f"error. v2 and v3 were run on these layouts only.", "tab:r20_anav_all")
+      f"error. v2 and v3 were run on these layouts only.", "tab:r20_anav_all", full=True)
 def ana_v1_row(n):
     cs = [pair(*SRC["v1"], n, k, sc, f) for _, k, sc, f in full("v1")]
     return label(n, W[20][""][0][n], 20) + " & " + " & ".join(cs) + r" \\"
@@ -727,7 +727,7 @@ def ana_v1_row(n):
 write("r20_ana", "long", 4, DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] \\",
       body(NAMES[20], ana_v1_row),
       f"{S20}, no background: analytical v1 (Sec.~\\ref{{sec:analytic}}) on the triggered showers, every layout. DeepSets: "
-      f"Table~\\ref{{tab:r20_scores}}.", "tab:r20_ana")
+      f"Table~\\ref{{tab:r20_scores}}.", "tab:r20_ana", full=True)
 
 # layout sweeps of the fixed-layout experiments (Sec. 4.1 plots): every layout, one block per sweep
 def sweep_label(n):
@@ -809,7 +809,7 @@ for site, sname, sh in ((19, S19, "all showers"), (20, S20, "triggered showers")
         what = (f"angular scores ({sh}), energy score and trigger" if kind == "ang" else
                 "utilities (Sec.~\\ref{sec:utilities}; per-shower means in $[0,1]$ except the original utility)")
         write(f"r{site}_all_{kind}", "long", nd, head, stacked([b for b in blocks if b[1]], 1 + nd),
-              f"{sname}: {what} of every layout, {win}.", f"tab:r{site}_all_{kind}", sep=sep)
+              f"{sname}: {what} of every layout, {win}.", f"tab:r{site}_all_{kind}", sep=sep, full=True)
 
 # figures
 figure(19, W[19][""][0], main19)
