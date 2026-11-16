@@ -8,7 +8,7 @@ clustering is not reproduced, so the output matches the repaired data (unwrap).
 """
 import numpy as np
 
-from symbolic import atmosphere, lateral, sources
+from symbolic import atmosphere, lateral
 
 CELL = 10.0                  # m
 RADIUS_PCT = 90.0            # per plane, by particle count
@@ -63,7 +63,3 @@ def render(particles, d, n_max):
     xy = to_ground(k, particles[:, 1], particles[:, 2], d)
     keep = radius_cut(k, xy)
     return cap(cluster(k[keep], xy[keep], e[keep], particles[keep, 4]), n_max)
-
-
-def render_species(particles, d, species):
-    return render(particles, d, sources.CAP[species])

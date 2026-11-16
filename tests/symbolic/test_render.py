@@ -48,14 +48,13 @@ def brute_force(k, xy, e, cell=render.CELL):
     return acc
 
 
-def test_ground_frame_round_trips_through_lateral_to_plane():
+def test_ground_frame_round_trips_to_the_plane():
     rng = np.random.default_rng(1)
     p = toy_particles(rng, 500)
     k = p[:, 0].astype(int)
-    xy = render.to_ground(k, p[:, 1], p[:, 2], D)
+    g = render.to_ground(k, p[:, 1], p[:, 2], D) - (k + 1)[:, None] * render.atmosphere.PLANE_SPACING * D[None, :2]
     h, perp, c = lateral.frame(D)
-    axis = (k + 1)[:, None] * render.atmosphere.PLANE_SPACING * D[None, :2]
-    assert np.allclose(lateral.to_plane(xy - axis, h, perp, c), p[:, 1:3], atol=1e-6)
+    assert np.allclose(np.column_stack([g @ perp, g @ h / c]), p[:, 1:3], atol=1e-6)
 
 
 def test_cluster_matches_the_preprocessing_script_without_overflow():

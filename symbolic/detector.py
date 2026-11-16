@@ -1,12 +1,13 @@
-"""Detector-level check: generated showers, repaired CORSIKA and optionally the neural chain, through the pipeline's
-kernel and shower-frame placement on the grid layout, at the same test primaries placed at held-out decay vertices.
-Reports lit detectors, deposited energy and arrival time, also by distance from the shower axis, for all events and
-for those at least FIELD_CUT deg from the East-West axis (the run 20 corpus cut). One GPU. With --primaries and --target
-(judge.py) the primaries, and the reference clouds in place of the CORSIKA test file, come from those files; several
-draws per primary are allowed there and standard errors are per primary.
+"""Detector-level check: the model's draws and CORSIKA's stored cells at the judge's primaries, placed at the run's
+held-out decay vertices nearest in direction, through the pipeline's kernel on the grid layout (one GPU).
+
+Per class and draw: lit detectors per event (all, by distance from the axis, outside the planes, share of events with
+at least 5 / 10 / 20 lit), deposited energy against CORSIKA (median per-event ratio over the events both see, ratio
+of means), share of events seen, median leading-edge shift. Then the noise floor over the draws: a row is a GAP when
+|mean - CORSIKA| > 2 sd sqrt(1 + 1/n), sd the draw-to-draw spread.
 
 The run (geometry, held-out corpus, kernel settings) comes from modules/constants.py and its TAMBOPT_* environment:
-source slurm/run20_guard.sh (or run18_guard.sh) first.
+source slurm/run20_guard.sh first.
 """
 import argparse
 import json
@@ -14,41 +15,24 @@ import os
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _p in (REPO, os.path.join(REPO, "plots", "layouts")):
-    sys.path.insert(0, _p)
+sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(REPO, "plots", "layouts"))
 
-import h5py
 import numpy as np
+import showerdata
 import torch
+from true_utility import KernelDualLabels, PlacedClouds, grid_layout
 
-import showerdata  # noqa: E402
-from true_utility import KernelDualLabels, PlacedClouds, grid_layout  # noqa: E402
-from modules import constants as C  # noqa: E402
-from modules.data import detectors_in_frames, place_clouds, shower_frames  # noqa: E402
-from modules.geometry import SurfaceUpMap, load_tr_mountain  # noqa: E402
-from modules.optimize import LAYOUT_THRESHOLD  # noqa: E402
-from symbolic import fit_profiles, planes, sources, unwrap  # noqa: E402
+from modules import constants as C
+from modules.data import detectors_in_frames, place_clouds_shower, shower_frames
+from modules.geometry import SurfaceUpMap, load_tr_mountain
+from modules.optimize import LAYOUT_THRESHOLD
+from symbolic import data, judge
 
 KERNEL_POINTS = 3e6       # events x points per kernel chunk
 BLOCK = 25                # events per kernel block
-FIELD_CUT = 30.0          # deg from the +-East axis, along which the C8 training showers' magnetic field points
 DIST_BINS = np.array([0, 50, 100, 200, 400, 800, 1600, np.inf])
 DIST_LABELS = ["0-50", "50-100", "100-200", "200-400", "400-800", "800-1600", ">1600"]
-
-
-def run_settings():
-    return {k: getattr(C, k) for k in ("RUN_LOCATION", "GEOMETRY_PATH_RESOLVED", "GEOMETRY_GROUP", "KERNEL_FRAME",
-                                       "KERNEL_TRANSVERSE", "SIGMA_SPATIAL", "KERNEL_INTERP_K", "KERNEL_INTERP_MAX")}
-
-
-def corsika_clouds(rows, dirs):
-    """Repaired CORSIKA clouds per species at the test rows."""
-    out = {}
-    for s in C.SPECIES_NAMES:
-        with h5py.File(sources.corsika_path(s, "test"), "r") as f:
-            raw = [np.asarray(f["showers"][r], np.float64).reshape(-1, 5) for r in rows]
-        out[s] = [unwrap.unwrap_shower(c[c[:, 3] > 0], d, C.N_PLANES)[0] for c, d in zip(raw, dirs)]
-    return out
 
 
 def padded(clouds):
@@ -66,32 +50,23 @@ def vertices(dirs):
     hdir = np.asarray(inc.directions, np.float64)
     hdir /= np.linalg.norm(hdir, axis=1, keepdims=True)
     match = np.argmax(dirs @ hdir.T, 1)
-    ang = np.degrees(np.arccos(np.clip(np.sum(dirs * hdir[match], 1), -1, 1)))
-    print(f"vertex match: angle median {np.median(ang):.2f} deg, 90% {np.percentile(ang, 90):.2f}", flush=True)
     return pos_all[:n_pairs][torch.as_tensor(match)].float()
 
 
-def place(per_species, pos, dirs, event_ids):
-    """Native clouds of a block of events -> PlacedClouds in the run's kernel frame."""
-    placed, frames = [], None
-    for k, s in enumerate(C.SPECIES_NAMES):
-        v = per_species[s]
-        c = torch.as_tensor(padded(v) if isinstance(v, (list, tuple)) else np.asarray(v, np.float32))
-        fr = place_clouds(c, pos, torch.as_tensor(dirs, dtype=torch.float32), event_ids=event_ids, species=k,
-                          east_entry=C.EAST_ENTRY, layer_east_dx=C.LAYER_EAST_DX)
-        frames = fr if frames is None else frames
-        placed.append(c)
-    return PlacedClouds(placed, frames)
-
-
-def response(per_species, pos, dirs, surface, xy, device, event_ids=None):
+def response(per_species, pos, dirs, surface, xy, device):
     """Deposited energy and leading-edge time [s] per event and detector (0 where nothing arrived)."""
     n = len(per_species[C.SPECIES_NAMES[0]])
-    ids = torch.arange(n) if event_ids is None else torch.as_tensor(event_ids)
     E, T = [], []
     for lo in range(0, n, BLOCK):
         sl = slice(lo, min(n, lo + BLOCK))
-        placed = place({s: per_species[s][sl] for s in C.SPECIES_NAMES}, pos[sl], dirs[sl], ids[sl])
+        placed, frames = [], None
+        for k, s in enumerate(C.SPECIES_NAMES):
+            c = torch.as_tensor(padded(per_species[s][sl]))
+            fr = place_clouds_shower(c, pos[sl], torch.as_tensor(dirs[sl], dtype=torch.float32),
+                                     event_ids=torch.arange(sl.start, sl.stop), species=k)
+            frames = fr if frames is None else frames
+            placed.append(c)
+        placed = PlacedClouds(placed, frames)
         chunk = max(1, int(KERNEL_POINTS // max(c.shape[1] for c in placed)))
         lab = KernelDualLabels(placed, surface, device, chunk=chunk)(None, xy)
         E.append(torch.expm1(lab[..., 0]).clamp(min=0).cpu().numpy())
@@ -102,124 +77,92 @@ def response(per_species, pos, dirs, surface, xy, device, event_ids=None):
 
 
 def axis_distance(dirs, pos, e_det, n_det, surface):
-    """Distance of each detector from the shower axis, in the kernel's shower frame (NaN outside the planes)."""
+    """Distance of each detector from the shower axis in the kernel's shower frame (NaN outside the planes)."""
     frames = shower_frames(pos, torch.as_tensor(dirs, dtype=torch.float32))
     with torch.no_grad():
-        rho, _, z = detectors_in_frames(e_det.float(), n_det.float(), surface, frames, ring=True)
-    rho, z = rho.numpy(), z.numpy()
-    return np.where((z >= 1) & (z <= C.N_PLANES), rho, np.nan)
+        rho, z = detectors_in_frames(e_det.float(), n_det.float(), surface, frames)
+    return np.where((z.numpy() >= 1) & (z.numpy() <= C.N_PLANES), rho.numpy(), np.nan)
 
 
-def outside_field_cut(dirs):
-    return np.degrees(np.arccos(np.clip(np.abs(dirs[:, 0]), 0, 1))) >= FIELD_CUT
-
-
-def metrics(E, T, ref_E, ref_T, dist, unit):
-    lit, ref_lit = (E > LAYOUT_THRESHOLD).sum(1), (ref_E > LAYOUT_THRESHOLD).sum(1)
-    diff = lit - ref_lit
-    by_unit = np.array([diff[unit == u].mean() for u in np.unique(unit)])
-    both = (E > LAYOUT_THRESHOLD) & (ref_E > LAYOUT_THRESHOLD) & (T > 0) & (ref_T > 0)
-    dt = (T - ref_T)[both] * 1e9
-    seen = ref_E.sum(1) > LAYOUT_THRESHOLD
-    gen_seen = E.sum(1) > LAYOUT_THRESHOLD
-    both_seen = seen & gen_seen
-    j = np.digitize(np.where(np.isfinite(dist), dist, -1), DIST_BINS) - 1
+def metrics(E, T, ref_E, ref_T, dist):
     on = E > LAYOUT_THRESHOLD
-    return {"lit per event mean": round(float(lit.mean()), 2),
-            "lit rel diff to CORSIKA": round(float(diff.mean() / ref_lit.mean()), 4),
-            "lit paired diff mean +- se": [round(float(diff.mean()), 2), round(float(by_unit.std(ddof=1) / np.sqrt(len(by_unit))), 2)],
-            **{f"frac lit >= {n}": round(float(np.mean(lit >= n)), 3) for n in (5, 10, 20)},
-            # events CORSIKA sees only: reads low for any model drawn independently of CORSIKA (selection)
-            "deposit, median of per-event ratio to CORSIKA": round(float(np.median(E.sum(1)[seen] / ref_E.sum(1)[seen])), 3),
-            # the same over the events the model sees, CORSIKA / model inverted: reads high for an independent model
-            "deposit, per-event ratio, events the model sees": (round(float(1 / np.median(ref_E.sum(1)[gen_seen] / E.sum(1)[gen_seen])), 3)
-                                                                if gen_seen.any() else None),
-            "deposit, per-event ratio, events both see": (round(float(10 ** np.median(np.log10(E.sum(1)[both_seen] / ref_E.sum(1)[both_seen]))), 3)
-                                                          if both_seen.any() else None),
-            "deposit, ratio of means": round(float(E.sum(1).mean() / ref_E.sum(1).mean()), 3),
-            "frac events seen": round(float(gen_seen.mean()), 3),
-            "log10 deposit per event 16/50/84": np.percentile(np.log10(np.maximum(E.sum(1), 1e-3)), [16, 50, 84]).round(3).tolist(),
-            "leading-edge shift [ns], median and 16/84": ([round(float(np.median(dt)), 2)]
-                                                           + np.percentile(dt, [16, 84]).round(2).tolist() if len(dt) else None),
-            "lit per event by distance from the axis [m]": dict(zip(DIST_LABELS, [round(float((on & (j == b)).sum() / len(E)), 3)
-                                                                                  for b in range(len(DIST_LABELS))])),
-            "lit per event outside the planes": round(float((on & (j < 0)).sum() / len(E)), 3),
-            "P(lit) by distance from the axis [m]": dict(zip(DIST_LABELS, [round(float(on[j == b].mean()), 4)
-                                                                           if np.any(j == b) else None
-                                                                           for b in range(len(DIST_LABELS))]))}
+    lit = on.sum(1)
+    both = on & (ref_E > LAYOUT_THRESHOLD) & (T > 0) & (ref_T > 0)
+    dt = (T - ref_T)[both] * 1e9
+    seen, ref_seen = E.sum(1) > LAYOUT_THRESHOLD, ref_E.sum(1) > LAYOUT_THRESHOLD
+    j = np.digitize(np.where(np.isfinite(dist), dist, -1), DIST_BINS) - 1
+    out = {"lit per event": float(lit.mean()),
+           **{f"lit {b} m": float((on & (j == i)).sum() / len(E)) for i, b in enumerate(DIST_LABELS[:5])},
+           "lit outside the planes": float((on & (j < 0)).sum() / len(E)),
+           **{f"frac lit >= {n}": float(np.mean(lit >= n)) for n in (5, 10, 20)},
+           "deposit, per-event ratio, events both see": float(10 ** np.median(np.log10(E.sum(1)[seen & ref_seen]
+                                                                                     / ref_E.sum(1)[seen & ref_seen]))),
+           "deposit, ratio of means": float(E.sum(1).mean() / ref_E.sum(1).mean()),
+           "frac events seen": float(seen.mean()),
+           "leading edge median [ns]": float(np.median(dt)) if len(dt) else float("nan")}
+    return out
 
 
-def setup(device):
-    """Mountain surface, grid layout (E, N on the device) and the layout's Up, for the run's geometry."""
-    mountain = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
-                                layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
-    surface = SurfaceUpMap.from_mountain(mountain)
-    e_det, n_det = grid_layout(mountain)
-    return surface, e_det, n_det, torch.stack([e_det, n_det], -1)[None].to(device)
+def noise_floor(per_draw, corsika):
+    """Per row: CORSIKA, the mean and sd over draws, z = (mean - CORSIKA) / (sd sqrt(1 + 1/n)), GAP if |z| > 2."""
+    n = len(per_draw)
+    out = {}
+    for k, ref in corsika.items():
+        v = np.array([d[k] for d in per_draw])
+        m, s = v.mean(), v.std(ddof=1)
+        z = (m - ref) / (s * np.sqrt(1 + 1 / n)) if s > 0 else (0.0 if m == ref else np.inf * np.sign(m - ref))
+        out[k] = {"CORSIKA": ref, "mean": float(m), "sd": float(s), "z": float(z), "gap": bool(abs(z) > 2), "draws": v.tolist()}
+    return out
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--root", required=True, help="output folder of fit_profiles.py and draw.py (--out there)")
-    ap.add_argument("--clouds", required=True, help="generator clouds (.npz with rows and <species>.points)")
-    ap.add_argument("--chain", default="", help="the neural chain's clouds at the same or more primaries (optional)")
+    ap.add_argument("--primaries", required=True, help="judge.py primaries file")
+    ap.add_argument("--clouds", required=True, help="the model's clouds, --draws entries per primary")
+    ap.add_argument("--draws", type=int, default=8)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--primaries", default="", help="primaries file of judge.py (needs --target)")
-    ap.add_argument("--target", default="", help="reference clouds at the same entries as --clouds and --chain")
     args = ap.parse_args()
-    if bool(args.primaries) != bool(args.target):
-        raise ValueError("--primaries and --target go together")
-    for k in ("clouds", "chain", "out", "primaries", "target"):
-        if getattr(args, k):
-            setattr(args, k, os.path.join(args.root, getattr(args, k)))
     os.makedirs(args.out, exist_ok=True)
+    z = np.load(args.primaries)
+    g = np.load(args.clouds)
+    draw = judge.draw_index(g["rows"])
+    prim = np.unique(g["rows"])
+    if draw.max() + 1 != args.draws or (np.bincount(g["rows"])[prim] != args.draws).any():
+        raise ValueError(f"expected {args.draws} draws at every primary of the clouds")
+    dirs = z["dirs"][prim] / np.linalg.norm(z["dirs"][prim], axis=1, keepdims=True)
+    labels = z["labels"][prim]
+    truth = [data.stored_cells(str(z["sims"][i]), z["dirs"][i]) for i in prim]
+    corsika = {s: [t[s].astype(np.float32) for t in truth] for s in C.SPECIES_NAMES}
     device = torch.device("cuda")
-    gen = np.load(args.clouds)
-    rows = gen["rows"]
-    if args.primaries:
-        z, ref = np.load(args.primaries), np.load(args.target)
-        if not np.array_equal(ref["rows"], rows):
-            raise ValueError("reference clouds are on other entries than the generator's")
-        lab, dirs = z["labels"][rows], z["dirs"][rows]
-        reference = {s: ref[f"{s}.points"] for s in C.SPECIES_NAMES}
-    else:
-        lab = np.load(os.path.join(args.root, fit_profiles.TEST))["meta.labels"][rows]
-        with h5py.File(sources.corsika_path(C.SPECIES_NAMES[0], "test"), "r") as f:
-            dirs = f["directions"][...][rows].astype(np.float64)
-    dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    mountain = load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
+                                layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
+    surface = SurfaceUpMap.from_mountain(mountain)
+    e_det, n_det = grid_layout(mountain)
+    xy = torch.stack([e_det, n_det], -1)[None].to(device)
     pos = vertices(dirs)
-    clouds = {"CORSIKA": reference if args.primaries else corsika_clouds(rows, dirs),
-              "generator": {s: gen[f"{s}.points"] for s in C.SPECIES_NAMES}}
-    if args.chain:
-        ch = np.load(args.chain)
-        if args.primaries:
-            if not np.array_equal(ch["rows"], rows):
-                raise ValueError("the chain's clouds are on other entries than the generator's")
-            sel = np.arange(len(rows))
-        else:
-            sel = np.searchsorted(ch["rows"], rows)
-            if not np.array_equal(ch["rows"][np.minimum(sel, len(ch["rows"]) - 1)], rows):
-                raise ValueError("generator clouds are on primaries the chain does not have")
-        clouds["neural chain"] = {s: ch[f"{s}.points"][sel].astype(np.float32) for s in C.SPECIES_NAMES}
-    surface, e_det, n_det, xy = setup(device)
     dist = axis_distance(dirs, pos, e_det, n_det, surface)
     surface = surface.to(device)
-    resp = {k: response(per, pos, dirs, surface, xy, device) for k, per in clouds.items()}
-    keep = outside_field_cut(dirs)
-    res = {"run": run_settings(), "threshold": float(LAYOUT_THRESHOLD), "clouds": args.clouds, "chain": args.chain,
-           "reference": args.target or "CORSIKA test file, repaired"}
-    for c, cn in planes.CLASS.items():
-        for tag, m in (("all", lab == c), (f">= {FIELD_CUT:.0f} deg from the field axis", (lab == c) & keep)):
-            ref_E, ref_T = resp["CORSIKA"][0][m], resp["CORSIKA"][1][m]
-            res.setdefault(cn, {})[tag] = {"n_events": int(m.sum()), "n_primaries": int(len(np.unique(rows[m]))),
-                                           **{k: metrics(v[0][m], v[1][m], ref_E, ref_T, dist[m], rows[m])
-                                              for k, v in resp.items()}}
-        print(cn, json.dumps(res[cn], indent=1), flush=True)
-    np.savez_compressed(os.path.join(args.out, "response.npz"), rows=rows, labels=lab, distance=dist,
-                        **{f"{k}.E": v[0] for k, v in resp.items()}, **{f"{k}.T": v[1] for k, v in resp.items()})
-    with open(os.path.join(args.out, "results.json"), "w") as fh:
-        json.dump(res, fh, indent=1)
-    print("wrote", args.out)
+    ref = response(corsika, pos, dirs, surface, xy, device)
+    res = {"run": C.RUN_LOCATION, "threshold": float(LAYOUT_THRESHOLD), "clouds": args.clouds, "primaries": len(prim)}
+    per_draw = {cn: [] for cn in data.CLASS.values()}
+    for k in range(args.draws):
+        idx = np.nonzero(draw == k)[0]
+        idx = idx[np.argsort(g["rows"][idx])]
+        mine = {s: [p[p[:, 3] > 0] for p in g[f"{s}.points"][idx]] for s in C.SPECIES_NAMES}
+        E, T = response(mine, pos, dirs, surface, xy, device)
+        for c, cn in data.CLASS.items():
+            m = labels == c
+            per_draw[cn].append(metrics(E[m], T[m], ref[0][m], ref[1][m], dist[m]))
+        print(f"draw {k} done", flush=True)
+    for c, cn in data.CLASS.items():
+        m = labels == c
+        corsika_rows = metrics(ref[0][m], ref[1][m], ref[0][m], ref[1][m], dist[m])
+        res[cn] = {"events": int(m.sum()), "noise floor": noise_floor(per_draw[cn], corsika_rows)}
+        print(f"\n{cn} ({m.sum()} events): row | CORSIKA | mean | sd | z | gap", flush=True)
+        for row, q in res[cn]["noise floor"].items():
+            print(f"  {row:44s} {q['CORSIKA']:8.3f} {q['mean']:8.3f} {q['sd']:7.3f} {q['z']:6.2f} {'GAP' if q['gap'] else 'ok'}")
+    with open(os.path.join(args.out, "results.json"), "w") as h:
+        json.dump(res, h, indent=1)
 
 
 if __name__ == "__main__":

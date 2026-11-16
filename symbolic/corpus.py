@@ -7,10 +7,10 @@ in <name>_zenith_clamped.npy.
 
 Stages (tambo env):
   primaries  the source corpus' events (species blocks checked to agree; --limit keeps the first N) -> <name>_primaries.npz
-  draw       task i of --tasks: a contiguous slice of the events, plane energies from the Part-1 sampler and cells from
-             draw.shower with the default laws, one seed per task -> parts/<name>_part<i>.npz
-  merge      every part into <name>.pt (padded to the source's point cap), the sidecars copied, then the written file read
-             back and its primaries checked against the source row by row.
+  draw       task i of --tasks: a contiguous slice of the events, drawn from the model folder (--model, default MODEL)
+             by draw.py, one seed per task -> parts/<name>_part<i>.npz
+  merge      every part into <name>.pt (padded to the source's point cap, or more if a shower stores more cells),
+             the sidecars copied, then the written file read back and checked against the source row by row.
 """
 import argparse
 import glob
@@ -25,9 +25,9 @@ sys.path.insert(0, REPO)
 import numpy as np
 
 from modules.constants import N_PLANES, SPECIES_NAMES, ZENITH_MAX, ZENITH_MIN
-from symbolic import atmosphere, draw, planes
+from symbolic import atmosphere, data, draw, model
 
-ROOT = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic_trim"
+MODEL = "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic_model"
 
 
 def source_rows(per, n):
@@ -62,9 +62,9 @@ def stage_draw(args):
     z = np.load(os.path.join(args.dst, f"{args.name}_primaries.npz"))
     a, b = task_slice(len(z["l"]), args.task, args.tasks)
     l, u, X, lab, dirs = (z[k][a:b] for k in ("l", "u", "X", "labels", "dirs"))
-    E, xmax = draw.sample_energies(ROOT, l, u, X, lab, np.random.default_rng([args.seed, args.task]))
-    laws = draw.draw_laws(ROOT)
-    jobs = [(i, args.seed * 1_000_003 + a, float(l[i]), float(u[i]), planes.CLASS[int(lab[i])], X[i], dirs[i],
+    part1, laws = model.load(args.model)
+    E, xmax = draw.sample_energies(part1, l, u, X, lab, np.random.default_rng([args.seed, args.task]))
+    jobs = [(i, args.seed * 1_000_003 + a, float(l[i]), float(u[i]), data.CLASS[int(lab[i])], X[i], dirs[i],
              {s: E[s][i] for s in SPECIES_NAMES}, {s: float(xmax[s][i]) for s in SPECIES_NAMES}, laws)
             for i in range(b - a)]
     cells = {s: [None] * (b - a) for s in SPECIES_NAMES}
@@ -96,7 +96,8 @@ def stage_merge(args):
     rows = source_rows(per, n)
     with h5py.File(args.src, "r") as f:
         ids = f["shower_ids"][:][rows]
-    cap = showerdata.get_file_shape(args.src)[1]
+    most = max(int(np.diff(np.load(p)[f"{s}.offsets"]).max()) for p in parts for s in SPECIES_NAMES)
+    cap = max(showerdata.get_file_shape(args.src)[1], most)          # the model's caps can exceed the source's
     out = os.path.join(args.dst, f"{args.name}.pt")
     showerdata.create_empty_file(out, shape=(len(rows), cap, 5), overwrite=True)
     for k, s in enumerate(SPECIES_NAMES):
@@ -146,6 +147,7 @@ def main():
     ap.add_argument("--name", required=True, help="output corpus name, e.g. cashed_showers_tau_dual")
     ap.add_argument("--limit", type=int, default=0, help="primaries stage: the first N events only")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--model", default=MODEL, help="model folder")
     ap.add_argument("--task", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_ID", 0)))
     ap.add_argument("--tasks", type=int, default=int(os.environ.get("SLURM_ARRAY_TASK_COUNT", 1)))
     ap.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 1)))
