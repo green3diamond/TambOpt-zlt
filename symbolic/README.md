@@ -6,27 +6,45 @@ muon, photon) in the same file format, so the detector pipeline reads its output
 
 ## The model
 
-Part 1, energy along the shower (`sampler.py`, `longitudinal.py`, `copula.py`). Per species a Gaisser-Hillas curve in
-width and asymmetry plus a start depth: 15 numbers per shower, each with a Johnson SU margin linear in log10 E,
-cos zenith and their product, joined by one Gaussian copula per class. On the curve, plane-to-plane noise read from
-quantile tables of the real leftovers, per position relative to the peak, with AR(1) memory. Output: the total
-energy per plane of each species.
+Inputs per shower: class (EM or hadronic tau decay), log10 E and direction. Output: per species the stored cells
+(x, y, plane, energy, time) on the 24 observation planes.
 
-Part 2, inside each plane (`draw.py`):
+Part 1, energy along the shower (`sampler.py`, `longitudinal.py`, `copula.py`). Per species a Gaisser-Hillas curve in
+width L and asymmetry R, set by four numbers (log10 Emax/E, Xmax, ln L, R), plus a start depth: 15 numbers per
+shower for the three species. Each number has a Johnson SU margin whose parameters are linear in log10 E, cos zenith
+and their product; one Gaussian copula per class joins all 15. On top of the curve, plane-to-plane noise drawn from
+quantile tables of the real leftovers, per position relative to the peak (X - Xmax) / L, with AR(1) memory. Output:
+the total energy per plane of each species.
+
+Part 2, inside each plane (`draw.py`), for every plane with energy:
 
 | Step | Law | File |
 |---|---|---|
-| ring energies | multinomial logit of the shares of 23 rings about the axis (a coefficient table) | `rings.py` |
-| plane-to-plane width | the ring profile stretched by A tanh(B (ln k - C)) + D + E l + F age, AR(1) | `width.py` |
-| particles per ring | ring energy / mean particle energy, a 3-term tanh sum | `energy.py` |
-| particle energies | Burr XII above the tracking threshold, the ring total exact | `spread.py` |
-| times | lead and mean delay per ring, t = exp(A) r^p k^-q | `times.py` |
-| stored cells | the per-simulation preprocessing (10 m cells, radius cut, caps) | `render.py` |
+| ring energies | the plane energy split over 23 rings about the axis by a multinomial logit (a coefficient table) | `rings.py` |
+| width | the ring profile stretched by A tanh(B (ln k - C)) + D + E l + F age, AR(1) from plane to plane | `width.py` |
+| particles per ring | Poisson(ring energy / mean particle energy), the mean a 3-term tanh sum | `energy.py` |
+| particle energies | tracking threshold plus a Burr XII share of the ring's excess, the ring total exact | `spread.py` |
+| positions | uniform in area within the ring, any angle | `draw.py` |
+| times | light along the axis + ring lead + Exp(mean delay - lead); lead and mean delay = exp(A) r^p k^-q | `times.py` |
+| stored cells | the per-simulation preprocessing: 10 m ground cells, 90% radius cut, caps 2000 / 28000 / 6000 (e / mu / gamma) | `render.py` |
 
-Every law has one form for every species and class (EM, hadronic). The fitted model is a folder
-(`model.py`): `part1.npz`, `rings.npz`, `width.npz`, `times.npz`, `energy.npz`, `spread.npz`, each with a `.json`
-of what it was fitted on. The frozen model is
-`/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic_model`.
+Every law has one form for every species and class. The fitted model is a folder (`model.py`): `part1.npz`,
+`rings.npz`, `width.npz`, `times.npz`, `energy.npz`, `spread.npz`, each with a `.json` of what it was fitted on. The
+frozen model is `/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic_model`; its `part1.npz`
+is the reference (a refit of part 1 on another node differs in the last digits of the EM margins, because that fit
+has flat directions).
+
+## Files
+
+One file per law, so each formula can be read and tested on its own; the rest is the pipeline around them.
+
+| Group | Files |
+|---|---|
+| laws, part 1 | `longitudinal.py` (profile curve and its fit), `copula.py` (margins and copula), `sampler.py` (draws the 15 numbers and the plane noise) |
+| laws, part 2 | `rings.py`, `width.py`, `energy.py`, `spread.py`, `times.py` |
+| physics helpers | `atmosphere.py` (slant depth of the planes), `lateral.py` (in-plane frame, Moliere radius), `render.py` (the preprocessing) |
+| data and model | `data.py` (reads CORSIKA folders into tables), `rows.py` (one fitting row per plane), `model.py` (the model folder) |
+| commands | `fit.py`, `draw.py`, `judge.py`, `detector.py`, `corpus.py` |
 
 ## Fitting (`fit.py`)
 
