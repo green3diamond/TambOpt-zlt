@@ -71,3 +71,33 @@ if runs:
         x.tick_params(labelsize=6)
     fig.savefig(f"{FIG}/timing_opt.pdf")
     print("timing_opt.pdf")
+
+# arrival-time delay and noise of the mean time model (dump: timing-model branch, scripts/paper2/time_noise_dump.py)
+NZ = f"{TR}/timing/time_noise.npz"
+if os.path.exists(NZ):
+    z = np.load(NZ)
+    r, lag, sd, noisy, sh = z["r"], z["lag"], z["sd"], z["noisy"], z["shower"]
+    fig, (a, b) = plt.subplots(1, 2, figsize=(7, 2.7), constrained_layout=True)
+    ids, cnt = np.unique(sh, return_counts=True)
+    s0 = ids[np.argmax(cnt)]                                   # the shower with the most timed detectors
+    k = sh == s0
+    a.axhline(0, c="0.5", lw=0.8, ls="--", label="plane front (kernel time)")
+    a.errorbar(r[k], noisy[k], yerr=sd[k], fmt="o", ms=2.5, c="tab:red", elinewidth=0.6, label=r"noisy draw $\pm$ sd")
+    a.plot(r[k], lag[k], "o", ms=2.5, c="k", label="noise-free (mean delay)")
+    a.set_xlabel("distance from the axis [m]", fontsize=7); a.set_ylabel("delay behind the plane front [ns]", fontsize=7)
+    a.set_title(f"(a) one shower, {int(k.sum())} timed detectors", fontsize=7); a.legend(fontsize=6, frameon=False)
+    edges = np.geomspace(max(r.min(), 1.0), r.max(), 13)
+    c = np.sqrt(edges[1:] * edges[:-1])                        # geometric bin centres
+    q = lambda x, p: np.array([np.percentile(x[(r >= lo) & (r < hi)], p) if ((r >= lo) & (r < hi)).sum() >= 20 else np.nan
+                               for lo, hi in zip(edges[:-1], edges[1:])])
+    b.fill_between(c, q(lag, 16), q(lag, 84), color="0.8", lw=0, label="noise-free delay, 16–84 %")
+    b.plot(c, q(lag, 50), "o-", c="k", ms=2.5, label="noise-free delay, median")
+    b.plot(c, q(sd, 50), "s-", c="tab:red", ms=2.5, label="noise sd, median")
+    b.axhline(float(z["jitter_ns"]), c="tab:red", lw=0.6, ls=":", label=f"jitter {float(z['jitter_ns']):g} ns")
+    b.set_xscale("log"); b.set_yscale("log")
+    b.set_xlabel("distance from the axis [m]", fontsize=7); b.set_ylabel("[ns]", fontsize=7)
+    b.set_title(f"(b) {len(ids)} showers, {len(r)} timed detectors", fontsize=7); b.legend(fontsize=6, frameon=False)
+    for x in (a, b):
+        x.tick_params(labelsize=6)
+    fig.savefig(f"{FIG}/timing_noise.pdf")
+    print("timing_noise.pdf")
