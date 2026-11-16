@@ -328,9 +328,10 @@ H_BG = (r" & \multicolumn{3}{c}{$<1^\circ$ [\%]} & \multicolumn{3}{c}{Median [$^
         + DESC_HEAD + r" & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s & none & 1\,$\mu$s & 10\,$\mu$s \\")
 H_ANAV = (r" & \multicolumn{2}{c}{DeepSets} & \multicolumn{2}{c}{Analytical v1} & \multicolumn{2}{c}{Analytical v2} & \multicolumn{2}{c}{Analytical v3} \\" + "\n"
           + DESC_HEAD + r" & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] & $<1^\circ$ & Median [$^\circ$] \\")
-H_ANAV1 = (r" & \multicolumn{3}{c}{DeepSets} & \multicolumn{3}{c}{Analytical v1} & \\" + "\n"
+H_ANAV1 = (r" & \multicolumn{7}{c}{triggered showers} & \multicolumn{2}{c}{all showers, $<1^\circ$} \\" + "\n"
+           + r" & \multicolumn{3}{c}{DeepSets} & \multicolumn{3}{c}{Analytical v1} & & DeepSets & Analytical v1 \\" + "\n"
            + DESC_HEAD + r" & $<1^\circ$ & $<5^\circ$ & Median [$^\circ$] & $<1^\circ$ & $<5^\circ$ & Median [$^\circ$]"
-           r" & Trigger \\")
+           r" & Trigger & & \\")
 H_ANA = (r" & \multicolumn{4}{c}{DeepSets} & \multicolumn{4}{c}{Analytical v1} \\" + "\n"
          + DESC_HEAD + r" & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] & $<1^\circ$ & $<2.5^\circ$ & $<5^\circ$ & Median [$^\circ$] \\")
 WRITTEN = []
@@ -689,49 +690,34 @@ short = lambda m: [(m, "w1", 100, "{:.1f}"), (m, "med", 1, "{:.2f}")]
 full = lambda m: [(m, "w1", 100, "{:.1f}"), (m, "w2.5", 100, "{:.1f}"), (m, "w5", 100, "{:.1f}"), (m, "med", 1, "{:.2f}")]
 figs20 = [n for n in NAMES[20] if n in SEL[20]]
 mid = lambda m: [(m, "w1", 100, "{:.1f}"), (m, "w5", 100, "{:.1f}"), (m, "med", 1, "{:.2f}")]
-write("r20_anav", "float", 7, H_ANAV1,
-      body(figs20, lambda n: ana_row(n, mid("ds") + mid("v1") + [("ds", "trig", 100, "{:.1f}")], False)),
-      f"{S20}, no background: DeepSets vs the analytical reconstruction (v1) on the triggered showers, layouts of "
-      f"Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ and $5^\\circ$ [\\%], median "
-      f"angular error and trigger rate [\\%] (the same for both reconstructions).", "tab:r20_anav")
-write("r20_anav_all", "float", 8, H_ANAV,                      # appendix: all three versions
-      body(figs20, lambda n: ana_row(n, short("ds") + short("v1") + short("v2") + short("v3"), False)),
-      f"{S20}, no background: DeepSets vs the analytical reconstruction v1, v2 and v3 (App.~\\ref{{app:ana}}) on the "
-      f"triggered showers, layouts of Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular "
-      f"error. v2 and v3 were run on these layouts only.", "tab:r20_anav_all")
-# disk-size sweep (Sec. r20_sweeps) with both reconstructions, triggered and all showers (a failed or missing
-# analytical fit counts as 180 deg, so its all-shower median is 180 when fewer than half the showers trigger)
 def raw(pat):
-    """records without the triggered view (all-shower accuracies), later files override earlier ones"""
+    """records without the triggered view (all-shower accuracies; a shower without an analytical fit counts as
+    180 deg), later files override earlier ones"""
     o = {}
     for p in sorted(q for q in glob.glob(f"{D}/{pat}") if not q.endswith("_e02.json")):
         for n, v in json.load(open(p)).items():
-            o.setdefault(n, {}).update(v)
+            if "smoke" not in n:
+                o.setdefault(n, {}).update(v)
     return o
 
 
 ALLS = {"ds": (raw("scoresd_20_*.json"), raw("scoresc8ft_20_*.json")),
         "v1": (raw("scoresana_20_*.json"), raw("scoresc8ana_20_*.json"))}
-DISKS = [n for n in ("disk_r100", "disk_r150", "disk_r200", "disk_r300", "disk_r400", "ugrid") if n in SRC["v1"][1]]
-sub = lambda src: tuple({n: d[n] for n in DISKS if n in d} for d in src)     # colour scale over these layouts only
-TRG = {m: sub(SRC[m]) for m in SRC}; ALL = {m: sub(ALLS[m]) for m in ALLS}
-H_DISK = (r" & & \multicolumn{4}{c}{triggered showers} & \multicolumn{2}{c}{all showers} \\" + "\n"
-          + r" & & \multicolumn{2}{c}{$<1^\circ$} & \multicolumn{2}{c}{Median [$^\circ$]}"
-          r" & \multicolumn{2}{c}{$<1^\circ$} \\" + "\n"
-          + r"Layout & Trigger & DS & AN & DS & AN & DS & AN \\")
-write("r20_disk_ana", "float", 7, H_DISK,
-      "\n".join(label(n, W[20][""][0][n], 20) + " & " + " & ".join(
-          [pair(*TRG["ds"], n, "trig", 100, "{:.1f}")]
-          + [pair(*S[m], n, k, sc, f) for k, sc, f in (("w1", 100, "{:.1f}"), ("med", 1, "{:.2f}"))
-             for m in ("ds", "v1") for S in [TRG]]
-          + [pair(*S[m], n, k, 100, "{:.1f}") for k in ("w1",) for m in ("ds", "v1") for S in [ALL]]) + r" \\"
-                for n in DISKS),
-      f"{S20}, no background: disk-size sweep (Sec.~\\ref{{sec:r20_sweeps}}) and the uniform grid with DeepSets (DS) and "
-      f"the analytical reconstruction v1 (AN): trigger rate, share within $1^\\circ$ [\\%] and median angular "
-      f"error of the triggered showers, and share within $1^\\circ$ of all showers [\\%] (a shower without "
-      f"an analytical fit counts as $180^\\circ$).", "tab:r20_disk_ana")
-
-
+DISKS = ("disk_r100", "disk_r150", "disk_r200", "disk_r300", "disk_r400")
+rows20 = [n for n in NAMES[20] if n in SEL[20] or n in DISKS]          # Fig. r20_layouts plus the disk-size sweep
+write("r20_anav", "float", 9, H_ANAV1,
+      body(rows20, lambda n: ana_row(n, mid("ds") + mid("v1") + [("ds", "trig", 100, "{:.1f}")], False)[:-3]
+           + " & " + " & ".join(pair(*ALLS[m], n, "w1", 100, "{:.1f}") for m in ("ds", "v1")) + r" \\"),
+      f"{S20}, no background: DeepSets vs the analytical reconstruction (v1), layouts of "
+      f"Fig.~\\ref{{fig:r20_layouts}} and the disk-size sweep (Sec.~\\ref{{sec:r20_sweeps}}); on the triggered showers "
+      f"share within $1^\\circ$ and $5^\\circ$ [\\%], median angular error and trigger rate [\\%] (the same for both "
+      f"reconstructions); on all showers share within $1^\\circ$ [\\%] (a shower without an analytical fit counts "
+      f"as $180^\\circ$).", "tab:r20_anav")
+write("r20_anav_all", "float", 8, H_ANAV,                      # appendix: all three versions
+      body(figs20, lambda n: ana_row(n, short("ds") + short("v1") + short("v2") + short("v3"), False)),
+      f"{S20}, no background: DeepSets vs the analytical reconstruction v1, v2 and v3 (App.~\\ref{{app:ana}}) on the "
+      f"triggered showers, layouts of Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular "
+      f"error. v2 and v3 were run on these layouts only.", "tab:r20_anav_all")
 def ana_v1_row(n):
     cs = [pair(*SRC["v1"], n, k, sc, f) for _, k, sc, f in full("v1")]
     return label(n, W[20][""][0][n], 20) + " & " + " & ".join(cs) + r" \\"
