@@ -5,7 +5,7 @@ per size B; cosine of the 200-vectors, sign agreement, per-detector 2D cosine (a
   --pool fm : the run-20 flow-matching pool (MainPool, the runs' showers), recon = the run's DeepSets
   --pool c8 : CORSIKA 8 training showers (C8Pool seed 4200), recon = the C8 fine-tuned DeepSets (tmp_rings/c8ft/ft20)
 
-    python grad_cos_ds.py <out.json> --pool fm|c8 [--bs 512,5120] [--chunk 64] [--recon DIR]
+    python grad_cos_ds.py <out.json> --pool fm|c8 [--bs 512,5120] [--pairs 1 | --batches K] [--chunk 64] [--recon DIR]
 """
 import argparse, importlib.util, json, os, sys, time
 import numpy as np, torch
@@ -16,6 +16,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("out"); ap.add_argument("--pool", choices=("fm", "c8"), required=True)
 ap.add_argument("--bs", default="512,5120"); ap.add_argument("--chunk", type=int, default=64)
 ap.add_argument("--recon", default=None)
+ap.add_argument("--pairs", type=int, default=1, help="independent batch pairs per B (disjoint showers)")
+ap.add_argument("--batches", type=int, default=0, help="K disjoint batches per B, every pair compared (overrides --pairs)")
 args = ap.parse_args()
 spec = importlib.util.spec_from_file_location("s4", f"{R}/scripts/04_optimize_lbfgs_kernel.py")
 S4 = importlib.util.module_from_spec(spec); spec.loader.exec_module(S4)
@@ -28,7 +30,7 @@ log = lambda m: print(f"[{time.time() - t0:6.0f}s] {m}", flush=True)
 m = S4.load_tr_mountain(C.GEOMETRY_PATH_RESOLVED, C.GEOMETRY_GROUP, C.DET_KEY, east_entry=C.EAST_ENTRY,
                         layer_east_dx=C.LAYER_EAST_DX, n_planes=C.N_PLANES)
 surface = S4.SurfaceUpMap.from_mountain(m, grid_h=256, grid_w=256).to(dev)
-N = 2 * max(BS)
+N = max(BS) * (args.batches if args.batches else 2 * args.pairs)
 pool = S4.C8Pool(m, N, 4200) if args.pool == "c8" else S4.MainPool(m)
 rdir = args.recon or ("/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tmp_rings/c8ft/ft20" if args.pool == "c8"
                       else C.RECON_FOLDER + "_deepsets")
@@ -61,8 +63,24 @@ res = dict(pool=args.pool, recon=rdir, chunk=args.chunk,
                                                                                         or "TWO_TIER" in k or "TIME" in k)},
            by_B={})
 for B in BS:
-    gA, uA = grad(0, B); gB, uB = grad(B, 2 * B)
-    res["by_B"][str(B)] = dict(U=[uA, uB], g_norm=[float(gA.norm()), float(gB.norm())], **compare(gA, gB))
-    log(f"B {B}: {res['by_B'][str(B)]}")
+    pr = []
+    if args.batches:                                   # K disjoint batches, every pair
+        gs = [grad(i * B, (i + 1) * B) for i in range(args.batches)]
+        for i in range(args.batches):
+            for j in range(i + 1, args.batches):
+                (gA, uA), (gB, uB) = gs[i], gs[j]
+                pr.append(dict(batches=[i, j], U=[uA, uB], g_norm=[float(gA.norm()), float(gB.norm())], **compare(gA, gB)))
+        res.setdefault("cos_to_mean_of_others", {})[str(B)] = [
+            float(torch.nn.functional.cosine_similarity(gs[i][0], torch.stack([gs[j][0] for j in range(args.batches)
+                                                                               if j != i]).mean(0), dim=0))
+            for i in range(args.batches)]
+    for k in range(0 if args.batches else args.pairs):
+        a = 2 * B * k
+        gA, uA = grad(a, a + B); gB, uB = grad(a + B, a + 2 * B)
+        pr.append(dict(U=[uA, uB], g_norm=[float(gA.norm()), float(gB.norm())], **compare(gA, gB)))
+    cs = np.array([p["cos"] for p in pr])
+    res["by_B"][str(B)] = dict(pairs=pr, cos_mean=float(cs.mean()), cos_sd=float(cs.std(ddof=1)) if len(cs) > 1 else None,
+                               sign_agree_mean=float(np.mean([p["sign_agree"] for p in pr])))
+    log(f"B {B}: cos {cs.round(3).tolist()} mean {cs.mean():.3f}")
     json.dump(res, open(args.out, "w"), indent=1)
 log("done")
