@@ -27,7 +27,7 @@ declare -A RUN=([plane]=$V/19_plane45S_12km_showerframe_400k [malata]=$V/20_mala
 declare -A GUARD=([plane]=run19 [malata]=run20)
 PLAT="--plateau-every 25 --plateau-patience 4 --plateau-factor 0.5 --plateau-tol 0.05 --plateau-min-frac 0.0333333 --n-score 10240"
 COMMON="TAMBOPT_TIME_MODEL=mean TAMBOPT_TIME_NOISE=0 BATCH=5120 ACCUM=1 CHUNK=0 SCORE_CHUNK=0 CKPT_EVERY=25 CHAIN=1"
-SB="sbatch --parsable --chdir=$W -p gpu_requeue -t $TLIM --exclude=holygpu8a19102 --mail-type=END,FAIL"   # one mail per sub-job
+SB="sbatch --parsable --chdir=$W -p gpu_requeue -t $TLIM --exclude=holygpu8a19102 --mail-type=END"   # one mail per sub-job (Slurm cannot filter by end state)
 QSB="$SB --gres=gpu:1 -c 8 --mem=96g --constraint=a100|h100|h200 --requeue --open-mode=append"
 
 chain () {   # <job name> <env> <script and args...>: first job + NCONT continuations
