@@ -63,10 +63,18 @@ for s in range(len(C.SPECIES_NAMES)):
     for k, i in enumerate(pick):
         c = showerdata.load(SA.pool.path, start=s * meta.per_sp + i, stop=s * meta.per_sp + i + 1).points[0]
         c = c[c[:, 3] > 0]
-        p, d, e1 = fr[k, 0:3], fr[k, 3:6], fr[k, 6:9]
-        t1 = c[:, 0] * e1[0] + c[:, 1] * e1[1]
-        P = p + ((c[:, 2] + 1) * C.C8_PLANE_DX)[:, None] * d + t1[:, None] * e1
-        pts.setdefault(k, []).append(P)
+        t1 = c[:, 0] * fr[k, 6] + c[:, 1] * fr[k, 7]
+        pts.setdefault(k, []).append(np.column_stack([np.abs(t1), (c[:, 2] + 1) * C.C8_PLANE_DX, c[:, 3]]))
+
+# as the kernel sees them: each point is a ring of radius |t1| around the axis, in the plane perpendicular to it at
+# its depth; the N_RING brightest points of each shower (all species), each drawn at N_PHI angles
+N_RING, N_PHI = 250, 120
+phi = np.linspace(0, 2 * np.pi, N_PHI, endpoint=False)
+for k in list(pts):
+    q = np.concatenate(pts[k]); q = q[np.argsort(-q[:, 2])[:N_RING]]
+    p, d, e1, e2 = fr[k, 0:3], fr[k, 3:6], fr[k, 6:9], fr[k, 9:12]
+    off = q[:, 0, None, None] * (np.cos(phi)[None, :, None] * e1 + np.sin(phi)[None, :, None] * e2)
+    pts[k] = [(p + q[:, 1, None, None] * d + off).reshape(-1, 3)]
 
 # drawing: the earlier figure's panel (05_paper_figures.make_detector_panel before e8b7487), with its helpers
 # opt_plotting.mountain_enu / draw_detectors_enu_3d and geometry_plots.tidy_3d_axes; detectors coloured by the
@@ -91,10 +99,10 @@ legend_ax = None
 for k, (ax, i) in enumerate(zip(axes.flat, pick)):
     ax.scatter(mtn_enu[:, 0], mtn_enu[:, 1], mtn_enu[:, 2], s=3, c="#DDD6C9", alpha=0.6, depthshade=False,
                label="mountain")
-    P = np.concatenate(pts[k]); P = P[in_view(P)][::2]
+    P = np.concatenate(pts[k]); P = P[in_view(P)]
     if len(P):
-        ax.scatter(P[:, 0], P[:, 1], P[:, 2], s=8, c="tab:green", alpha=0.85, linewidths=0, depthshade=False,
-                   label="shower cloud")
+        ax.scatter(P[:, 0], P[:, 1], P[:, 2], s=1.0, c="tab:green", alpha=0.35, linewidths=0, depthshade=False,
+                   label="shower cloud (rings)")
     pdec = np.asarray(meta.positions[i], dtype=float)
     if in_view(pdec[None])[0]:
         ax.scatter(*pdec, c="red", s=110, marker="*", depthshade=False, label="decay vertex")
@@ -112,6 +120,9 @@ for k, (ax, i) in enumerate(zip(axes.flat, pick)):
         legend_ax = ax
 if legend_ax is not None:
     handles, labels = legend_ax.get_legend_handles_labels()
+    from matplotlib.lines import Line2D
+    handles = [Line2D([], [], marker="o", ls="", ms=4, mfc="none", mec="tab:green") if l.startswith("shower") else h
+               for h, l in zip(handles, labels)]
     fig.legend(handles, labels, loc="lower center", fontsize=7, ncol=len(labels), bbox_to_anchor=(0.5, -0.02))
 fig.tight_layout(pad=1.2)
 os.makedirs(f"{args.out}/figures/results", exist_ok=True)
