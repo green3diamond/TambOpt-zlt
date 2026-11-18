@@ -14,7 +14,7 @@ os.environ["TAMBOPT_UTILITY"] = "swgo_trigger"            # BatchKernel then als
 os.environ.setdefault("TAMBOPT_TWO_TIER_CALIB", "/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/"
                       "detector_optimization_v6/19_plane45S_12km_showerframe_400k/two_tier_calibration_kernel_5deg.json")
 import numpy as np, torch
-R = "/n/home05/zdimitrov/tambo/TambOpt"; sys.path.insert(0, R); sys.path.insert(0, R + "/scripts")
+R = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))); sys.path.insert(0, R); sys.path.insert(0, R + "/scripts")
 spec = importlib.util.spec_from_file_location("s4", f"{R}/scripts/04_optimize_lbfgs_kernel.py")
 S4 = importlib.util.module_from_spec(spec); spec.loader.exec_module(S4)
 import modules.optimize.objective as O
