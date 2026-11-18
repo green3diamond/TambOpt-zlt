@@ -26,7 +26,7 @@ Part 2, inside each plane (`draw.py`), for every plane with energy:
 | particle energies | tracking threshold plus a Burr XII share of the ring's excess, the ring total exact | `spread.py` |
 | positions | uniform in area within the ring, any angle | `draw.py` |
 | times | light along the axis + ring lead + Exp(mean delay - lead); lead and mean delay = exp(A) r^p k^-q | `times.py` |
-| stored cells | the per-simulation preprocessing: 10 m ground cells, 90% radius cut, caps 2000 / 28000 / 6000 (e / mu / gamma) | `render.py` |
+| stored cells | the per-simulation preprocessing: 10 m ground cells, 90% radius cut, caps 4096 / 25088 / 8064 (e / mu / gamma, the neural corpus' caps; `data.CAP`) | `render.py` |
 
 Every law has one form for every species and class. The fitted model is a folder (`model.py`): `part1.npz`,
 `rings.npz`, `width.npz`, `times.npz`, `energy.npz`, `spread.npz`, each with a `.json` of what it was fitted on. The

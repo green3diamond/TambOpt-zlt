@@ -14,7 +14,7 @@ from symbolic import lateral, render
 
 H5_NAME = {"electron": "electrons", "muon": "muons", "photon": "photons"}
 PDG = {"electron": (11, -11), "muon": (13, -13), "photon": (22,)}
-CAP = {"electron": 2000, "muon": 28000, "photon": 6000}       # cells the per-simulation preprocessing stores
+CAP = {"electron": 4096, "muon": 25088, "photon": 8064}       # cells kept per shower (the neural corpus' caps); CORSIKA files must match
 CAP_V3 = {"electron": 4096, "muon": 25088, "photon": 8064}    # the older preprocessing's caps (raw tables' E_stored)
 CLASS = {0: "EM", 1: "hadronic"}
 LABEL = {"EM": 0, "hadronic": 1}
