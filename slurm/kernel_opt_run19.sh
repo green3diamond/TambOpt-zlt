@@ -26,6 +26,9 @@
 #      FREEZE_UNSEEN=1 detectors with no signal in a batch keep their position; LBFGS_CHUNKS=<n> chunked L-BFGS after
 #      Adam (LBFGS_EVENTS showers per chunk, default 4096; LBFGS_MAXITER, default 40). Neither changes the suffix:
 #      they continue the same run (resume from opt_state.pt / lbfgs_state.pt).
+#      SUFFIX_OVERRIDE=<suffix> use this out-suffix as is (reruns keep the original name + a tag); XARGS=<args> extra
+#      arguments for 04 (argparse: the last occurrence wins); SCORE_CHUNK=<n> scoring sub-batch (0 = auto). The GPU's
+#      utilization and memory are logged every 60 s to slurm_logs/gpu-<job>.csv.
 #      PREV_JOB=<id> for a continuation job (sbatch -d afternotok:<id>): runs only if <id> ended at its time limit
 #      (or on a node failure); after a real error it exits at once rather than hit the same error again.
 if [ -n "$PREV_JOB" ]; then
@@ -99,6 +102,11 @@ if [ -n "$CABLE" ] && [ "$CABLE" != 0 ]; then
     SUFFIX="${SUFFIX}_cab${CABLE/./p}"
 fi
 
+[ -n "$SUFFIX_OVERRIDE" ] && SUFFIX="$SUFFIX_OVERRIDE"
+mkdir -p slurm_logs
+nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used,memory.total --format=csv -l ${GPU_LOG_EVERY:-60} \
+    >> slurm_logs/gpu-${SLURM_JOB_ID:-local}.csv 2>/dev/null &
+GPU_MON=$!
 python -u scripts/04_optimize_lbfgs_kernel.py --init "$INIT" \
     --lr "$LR" --epochs "$EPOCHS" --log-every 100 \
     --batch-events ${BATCH:-512} ${LR_FINAL:+--lr-final $LR_FINAL} --chunk ${CHUNK:-32} --n-score 1024 --score-every 250 \
@@ -107,8 +115,9 @@ python -u scripts/04_optimize_lbfgs_kernel.py --init "$INIT" \
     ${FREEZE_UNSEEN:+--freeze-unseen} --lbfgs-chunks "${LBFGS_CHUNKS:-0}" --lbfgs-chunk-events "${LBFGS_EVENTS:-4096}" \
     --lbfgs-max-iter "${LBFGS_MAXITER:-40}" --counting "${COUNTING:-none}" --accum "${ACCUM:-1}" \
     ${PLATEAU:+--plateau-every ${PLATEAU_EVERY:-25} --plateau-min-frac ${PLATEAU_MIN_FRAC:-0.0333333}} \
-    --ckpt-every "${CKPT_EVERY:-250}" --optim "${OPTIM:-adam}"
+    --ckpt-every "${CKPT_EVERY:-250}" --optim "${OPTIM:-adam}" --score-chunk "${SCORE_CHUNK:-32}" $XARGS
 rc=$?
+kill $GPU_MON 2>/dev/null
 # CHAIN=1 (run20b_submit.sh): the continuation jobs share this job's name; once the run has finished they are not needed
 [ "$rc" = 0 ] && [ -n "$CHAIN" ] && scancel --state=PENDING -u "$USER" -n "$SLURM_JOB_NAME"
 notify_end $rc

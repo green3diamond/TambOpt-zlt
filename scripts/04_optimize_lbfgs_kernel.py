@@ -440,6 +440,31 @@ def make_penalties(mountain, surface):
     return Penalties(terms) if terms else None
 
 
+AUTO_CHUNK_START = 256        # --chunk 0 / --score-chunk 0: start here, halve on CUDA out-of-memory
+
+
+def pool_utility_auto(args, attr, xy_module, batch, surface, recon, backward, resp=None, genf=None):
+    """pool_utility with the sub-batch size args.<attr> ('chunk' or 'score_chunk') chosen from the GPU's memory: on a
+    CUDA out-of-memory error the gradients accumulated so far by this call are restored, the size is halved (kept for
+    the rest of the run) and the call is repeated with a fresh generator from genf, so the result is the same as a
+    run started at the smaller size. The sub-batch size only sets memory; the utility and its gradient are exact."""
+    saved = [None if p.grad is None else p.grad.detach().clone() for p in xy_module.parameters()] if backward else None
+    while True:
+        try:
+            return pool_utility(xy_module, batch, surface, recon, getattr(args, attr), backward, resp=resp,
+                                gen=genf() if genf is not None else None)
+        except torch.OutOfMemoryError:
+            n = getattr(args, attr)
+            if n <= 1:
+                raise
+            if backward:
+                for p, g in zip(xy_module.parameters(), saved):
+                    p.grad = None if g is None else g.clone()
+            torch.cuda.empty_cache()
+            setattr(args, attr, max(1, n // 2))
+            print(f"  [auto chunk] out of GPU memory at {attr}={n}: -> {getattr(args, attr)}", flush=True)
+
+
 def add_cable(cable, xy_module, tot, backward):
     """Subtract the layout penalties from tot["U"] (backward: add their gradient); tot keeps U_util, penalty and the
     penalties' info (cable_km, construction metrics)."""
@@ -497,8 +522,8 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
 
     def score():
         # the same background draws every time, so scores are comparable across steps
-        tot = pool_utility(xy_module, score_set, surface, recon, args.score_chunk,
-                           backward=False, resp=resp, gen=gen_for(args.seed * 1000003 + 999_999_937))
+        tot = pool_utility_auto(args, "score_chunk", xy_module, score_set, surface, recon, backward=False, resp=resp,
+                                genf=lambda: gen_for(args.seed * 1000003 + 999_999_937))
         return (add_cable(cable, xy_module, tot, False) if cable else tot)["U"]
 
     log, score_log = [], []
@@ -553,8 +578,8 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
             ne, ns = (epoch, sub + 1) if sub + 1 < K else (epoch + 1, 0)
             if ne < args.epochs:
                 nxt = ex.submit(lambda a: load(a, a + B), offset(ne, ns))
-            parts.append(pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True,
-                                      resp=resp, gen=gen_for(bg_seed(epoch, sub))))   # per-step draws, resume-safe
+            parts.append(pool_utility_auto(args, "chunk", xy_module, batch, surface, recon, backward=True, resp=resp,
+                                           genf=lambda: gen_for(bg_seed(epoch, sub))))   # per-step draws, resume-safe
             del batch
         if K == 1:
             tot = parts[0]
@@ -713,7 +738,8 @@ def run_lbfgs(args, mountain, surface, recon, out_dir, resp, load, n_sweep, xy_m
 
         def closure():
             opt.zero_grad(set_to_none=False)
-            tot = pool_utility(xy_module, batch, surface, recon, args.chunk, backward=True, resp=resp, gen=gen_for(seed_c))
+            tot = pool_utility_auto(args, "chunk", xy_module, batch, surface, recon, backward=True, resp=resp,
+                                    genf=lambda: gen_for(seed_c))
             if cable:
                 add_cable(cable, xy_module, tot, True)
             calls["n"] += 1; calls["U"] = tot["U"]
@@ -826,10 +852,11 @@ def main():
                     help="decay the step size log-linearly from --lr to this over the run; unset = constant")
     ap.add_argument("--grad-clip", type=float, default=100.0)
     ap.add_argument("--batch-events", type=int, default=512, help="fresh pool showers per step")
-    ap.add_argument("--chunk", type=int, default=8, help="showers per backward (memory only; the gradient is exact)")
+    ap.add_argument("--chunk", type=int, default=8, help="showers per backward (memory only; the gradient is exact); "
+                    "0 = auto: the largest that fits the GPU (from AUTO_CHUNK_START, halved on out-of-memory)")
     ap.add_argument("--n-score", type=int, default=1024, help="scoring-set showers (end of the pool)")
     ap.add_argument("--score-every", type=int, default=250)
-    ap.add_argument("--score-chunk", type=int, default=32)
+    ap.add_argument("--score-chunk", type=int, default=32, help="as --chunk for the scoring pass; 0 = auto")
     ap.add_argument("--log-every", type=int, default=5)
     ap.add_argument("--snap-every", type=int, default=0,
                     help="> 0: keep the layout every N steps (and at step 0) in opt_state.pt['snaps'] {step: (x, y)}")
@@ -891,6 +918,10 @@ def main():
     args = ap.parse_args()
     if args.plateau_every > 0:
         args.score_every = args.plateau_every
+    args.chunk = args.chunk or AUTO_CHUNK_START
+    args.score_chunk = args.score_chunk or AUTO_CHUNK_START
+    # the environment that sets the utility, trigger, penalties, time model (not in the arguments): kept in the config
+    args.env = {k: v for k, v in sorted(os.environ.items()) if k.startswith("TAMBOPT_")}
     torch.manual_seed(args.seed)
 
     out_dir = OPT_FOLDER + "_lbfgs_kernel" + (f"_{args.out_suffix}" if args.out_suffix else "")
