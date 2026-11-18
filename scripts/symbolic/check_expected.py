@@ -29,9 +29,9 @@ prim = SA.prim
 dirs = prim[:, :3].numpy().astype(np.float64)
 log10_e = (prim[:, 3] * (C.LOG_E_MAX - C.LOG_E_MIN) + C.LOG_E_MIN).numpy().astype(np.float64)
 pdg = prim[:, 4].round().long().numpy()
-cls = np.where(np.isin(np.abs(pdg), [11, 111]), 0, 1)
+cls = pdg.clip(0, 1)                       # the C8 files' pdg field is the class: 0 EM, 1 hadronic
 part1, laws = XR.load_model()
-logd, tconst = XR.tables(part1, laws, log10_e, dirs, cls, seed=1)
+logd, tconst, loge = XR.tables(part1, laws, log10_e, dirs, cls, seed=1, energy_density=True)
 print(f"tables {logd.shape}, {time.time() - t0:.0f}s; classes {np.bincount(cls)}", flush=True)
 
 L = torch.load(f"{C.RUN_LOCATION}/diagnostics/paper1/ugrid.pt", map_location="cpu", weights_only=False)
@@ -40,6 +40,7 @@ xy = torch.stack([x, y], -1)
 n_plane = AR.plane_normal(torch.as_tensor(mountain.centroids_ENU, dtype=torch.float32)).to(dev)
 X3 = torch.stack([x, y, surface(y, x)], -1)
 acc = {k: {w: [] for w in ("mu", "t_us", "rho", "depth", "ang")} for k in ("kernel", "expected")}
+Esp = {k: [] for k in ("kernel", "expected")}       # per-species detector energy [kernel units: GeV / 628 m^2]
 with torch.no_grad():
     for lo in range(0, SA.N, SA.CH):
         hi = min(lo + SA.CH, SA.N)
@@ -49,6 +50,13 @@ with torch.no_grad():
         exp_ = XR.ExpectedResponse(torch.as_tensor(logd[lo:hi]).to(dev), torch.as_tensor(tconst[lo:hi]).to(dev), fr,
                                    surface)
         rho, z = detectors_in_frames(x, y, surface, fr)
+        # per-species detector energy: kernel E_s, and the model's energy density x 2 pi sigma0^2 (= 628 m^2) read as mu
+        ks_ = [S4.compute_labels_batch(c[lo:hi].to(dev), x, y, surface, differentiable=False, frames=fr)[0] for c in SA.clouds]
+        Esp["kernel"].append(torch.stack(ks_, 1).float().cpu())
+        ee = XR.ExpectedResponse(torch.as_tensor(loge[lo:hi]).to(dev) + float(np.log(2 * np.pi * 100.0 / XR.AREA)),
+                                 torch.as_tensor(tconst[lo:hi]).to(dev), fr, surface)
+        ee(p, xy[None].expand(hi - lo, -1, -1))
+        Esp["expected"].append(torch.stack([mm / float(XR.EFF[a]) for a, mm in enumerate(ee._mu_s)], 1).float().cpu())
         for name, resp in (("kernel", kern), ("expected", exp_)):
             out = resp(p, xy[None].expand(hi - lo, -1, -1))
             t_us = torch.expm1(out[..., 1].clamp(min=0)); mu = resp.mu
@@ -61,7 +69,15 @@ with torch.no_grad():
                 acc[name][w].append(v.float().cpu())
 A = {k: {w: torch.cat(v).numpy() for w, v in d.items()} for k, d in acc.items()}
 
-res = dict(n_showers=int(SA.N), classes=np.bincount(cls).tolist())
+res = dict(n_showers=int(SA.N), classes=np.bincount(cls).tolist(), smooth_h=XR.SMOOTH_H)
+EK, EX = torch.cat(Esp["kernel"]).numpy(), torch.cat(Esp["expected"]).numpy()        # (N, 3, nd)
+rho_all = A["kernel"]["rho"]
+res["energy_vs_rho"] = {s: {f"{rb_[i]:g}-{rb_[i + 1]:g}": [float(EK[:, a][(rho_all >= rb_[i]) & (rho_all < rb_[i + 1])].mean()),
+                                                         float(EX[:, a][(rho_all >= rb_[i]) & (rho_all < rb_[i + 1])].mean())]
+                            for i in range(len(rb_) - 1) if ((rho_all >= rb_[i]) & (rho_all < rb_[i + 1])).any()}
+                        for a, s in enumerate(C.SPECIES_NAMES)
+                        for rb_ in [np.array([0, 20, 50, 100, 200, 400, 800, 1600, 1e5])]}
+res["energy_vs_rho_note"] = "mean detector energy [GeV per 628 m^2]: [kernel, model energy density x 628 m^2]"
 rb = np.array([0, 20, 50, 100, 200, 400, 800, 1600, 1e5])
 for k, d in A.items():
     hit = (d["mu"] >= 1) & (d["t_us"] > 0); nh = hit.sum(1); trig = nh >= 3

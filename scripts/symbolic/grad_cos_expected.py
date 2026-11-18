@@ -57,7 +57,7 @@ def _tables(a):
     return a, XR.tables(PART1, LAWS, log10_e[a:b], dirs[a:b].numpy(), cls[a:b], seed=a)
 
 
-logd = np.empty((N, len(C.SPECIES_NAMES), C.N_PLANES, len(XR.ring_geometry()[0])), np.float32)
+logd = np.empty((N, len(C.SPECIES_NAMES), C.N_PLANES, len(XR.radial_axis())), np.float32)
 tconst = np.empty((N, len(C.SPECIES_NAMES), 3), np.float32)
 with Pool(WORKERS) as pool:
     for a, (ld, tc) in pool.imap_unordered(_tables, range(0, N, TABLE_CHUNK)):
@@ -102,7 +102,7 @@ def compare(x, y):
                 det_cos_median=float(pd.median()), det_cos_mean=float(pd.mean()), n_det=int(ok.sum()))
 
 
-res = dict(response="expected (symbolic model)", model=XR.MODEL, chunk=CH, n_events=N,
+res = dict(response="expected (symbolic model)", model=XR.MODEL, smooth_h=XR.SMOOTH_H, chunk=CH, n_events=N,
            utility={k: os.environ.get(k) for k in ("TAMBOPT_UTILITY", "TAMBOPT_TRIG_THETA", "TAMBOPT_TRIG_WIDTH",
                                                     "TAMBOPT_TRIG_QREF")}, by_B={})
 for B in BS:
