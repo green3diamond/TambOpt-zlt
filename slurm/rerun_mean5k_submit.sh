@@ -53,7 +53,7 @@ qchain () {  # <job name> <env> <set>: run20_quick_tests.sh, one config (ONLY) o
 if [ -n "$SMOKE" ]; then
     # one gpu_test job, 10 steps each, folders *_m5ksmoke: kernel Adam + 1 L-BFGS chunk (Malata), kernel trigger
     # (12 km), surrogate, quick-test kernel and surrogate with 1 us background; GPU utilization every 5 s
-    sbatch --chdir=$W -p gpu_test --gres=gpu:1 -c 8 --mem=96g -t 01:00:00 -J m5k_smoke -o slurm_logs/slurm-%j-%x.out --wrap "
+    sbatch --chdir=$W -p gpu_test --gres=gpu:1 -c 8 --mem=64g -t 01:00:00 -J m5k_smoke -o slurm_logs/slurm-%j-%x.out --wrap "
         set -x; export $COMMON GPU_LOG_EVERY=5 XARGS='$PLAT'; unset CHAIN
         RUN_GUARD=run20 INIT_TAG=center RECON_TAG=p1 LBFGS_CHUNKS=1 LBFGS_EVENTS=1024 SUFFIX_OVERRIDE=current_lr10_center_p1_m5ksmoke \
             bash slurm/kernel_opt_run19.sh center current 0.3 10 10

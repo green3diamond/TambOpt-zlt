@@ -440,12 +440,14 @@ def make_penalties(mountain, surface):
     return Penalties(terms) if terms else None
 
 
-AUTO_CHUNK_START = 256        # --chunk 0 / --score-chunk 0: start here, halve on CUDA out-of-memory
+AUTO_CHUNK_START = 256        # --chunk 0 / --score-chunk 0: start here, x AUTO_CHUNK_BACKOFF on CUDA out-of-memory
+AUTO_CHUNK_BACKOFF = 0.8      # steps of 20 %: ends within ~20 % of the largest sub-batch that fits (halving: up to 2x)
 
 
 def pool_utility_auto(args, attr, xy_module, batch, surface, recon, backward, resp=None, genf=None):
     """pool_utility with the sub-batch size args.<attr> ('chunk' or 'score_chunk') chosen from the GPU's memory: on a
-    CUDA out-of-memory error the gradients accumulated so far by this call are restored, the size is halved (kept for
+    CUDA out-of-memory error the gradients accumulated so far by this call are restored, the size is cut by
+    AUTO_CHUNK_BACKOFF (kept for
     the rest of the run) and the call is repeated with a fresh generator from genf, so the result is the same as a
     run started at the smaller size. The sub-batch size only sets memory; the utility and its gradient are exact."""
     saved = [None if p.grad is None else p.grad.detach().clone() for p in xy_module.parameters()] if backward else None
@@ -461,7 +463,7 @@ def pool_utility_auto(args, attr, xy_module, batch, surface, recon, backward, re
                 for p, g in zip(xy_module.parameters(), saved):
                     p.grad = None if g is None else g.clone()
             torch.cuda.empty_cache()
-            setattr(args, attr, max(1, n // 2))
+            setattr(args, attr, max(1, min(n - 1, int(n * AUTO_CHUNK_BACKOFF))))
             print(f"  [auto chunk] out of GPU memory at {attr}={n}: -> {getattr(args, attr)}", flush=True)
 
 
@@ -853,7 +855,7 @@ def main():
     ap.add_argument("--grad-clip", type=float, default=100.0)
     ap.add_argument("--batch-events", type=int, default=512, help="fresh pool showers per step")
     ap.add_argument("--chunk", type=int, default=8, help="showers per backward (memory only; the gradient is exact); "
-                    "0 = auto: the largest that fits the GPU (from AUTO_CHUNK_START, halved on out-of-memory)")
+                    "0 = auto: the largest that fits the GPU (from AUTO_CHUNK_START, x0.8 on out-of-memory)")
     ap.add_argument("--n-score", type=int, default=1024, help="scoring-set showers (end of the pool)")
     ap.add_argument("--score-every", type=int, default=250)
     ap.add_argument("--score-chunk", type=int, default=32, help="as --chunk for the scoring pass; 0 = auto")
