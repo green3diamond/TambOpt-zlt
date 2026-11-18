@@ -4,6 +4,7 @@
 notify_end() {
     local rc=${1:-0} what
     [ "${NOTIFY:-1}" = 0 ] && return 0               # e.g. smoke runs
+    [ -n "$SUFFIX_OVERRIDE" ] && return 0             # reruns (rerun_mean5k_submit.sh): Slurm mails each sub-job (MailType END,FAIL)
     [ "$rc" = 0 ] && what=done || what="FAILED_rc$rc"
     sbatch -p serial_requeue -t 1 --mem=100m -c 1 --mail-type=END -o /dev/null \
         -J "${SLURM_JOB_NAME:-job}_${SLURM_JOB_ID:-}_${what}" --wrap true >/dev/null 2>&1 || true
