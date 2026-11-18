@@ -66,42 +66,43 @@ for s in range(len(C.SPECIES_NAMES)):
         P = p + ((c[:, 2] + 1) * C.C8_PLANE_DX)[:, None] * d + t1[:, None] * e1
         pts.setdefault(k, []).append(P)
 
+# drawing as the earlier figure (explore_trigger_counts.ipynb `panel`): mountain vertices, shower cloud, decay
+# vertex, detectors coloured by counts; 1,500 m view around the mesh centre, Up = mesh range +- 300 m
 tris = np.load("/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tmp_rings/sites/malata.npz")["tris"]
+mtn = np.unique(tris.reshape(-1, 3), axis=0)
+ctr, view_r = mtn.mean(0), 1500.0
+up_lo, up_hi = mtn[:, 2].min() - 300.0, mtn[:, 2].max() + 300.0
+in_view = lambda P: ((np.abs(P[:, 0] - ctr[0]) <= view_r) & (np.abs(P[:, 1] - ctr[1]) <= view_r)
+                     & (P[:, 2] >= up_lo) & (P[:, 2] <= up_hi))
 gx, gy = x.cpu().numpy(), y.cpu().numpy(); gz = surface(y, x).cpu().numpy()
-lo, hi = tris.reshape(-1, 3).min(0), tris.reshape(-1, 3).max(0)
-pad = 500.0
-vmax = max(float(mu[i][hit[i]].max()) for i in pick)
-norm = LogNorm(1.0, vmax)
+tags = ("Elow", "Emid", "Ehigh")
 
-plt.rcParams.update({"font.size": 9})
-fig = plt.figure(figsize=(15, 4.6), constrained_layout=True)
-for k, i in enumerate(pick):
-    a = fig.add_subplot(1, 3, k + 1, projection="3d", computed_zorder=False)
-    up = tris[:, :, 2].mean(1)
-    a.add_collection3d(Poly3DCollection(tris, facecolors=matplotlib.cm.terrain(matplotlib.colors.Normalize(
-        up.min() - 300, up.max())(up)), edgecolors="0.4", linewidths=0.15, alpha=0.55, zorder=1))
-    P = np.concatenate(pts[k])
-    inb = np.all((P >= lo - pad) & (P <= hi + pad), 1)
-    P = P[inb]
-    if len(P) > 8000:
-        P = P[np.random.default_rng(0).choice(len(P), 8000, replace=False)]
-    a.scatter(P[:, 0], P[:, 1], P[:, 2], s=1.5, c="tab:green", alpha=0.6, lw=0, depthshade=False, zorder=2,
-              label="shower points")
+fig, axes = plt.subplots(1, 3, figsize=(21, 6.2), subplot_kw=dict(projection="3d"), gridspec_kw={"wspace": 0.35})
+for k, (a, i) in enumerate(zip(axes, pick)):
+    a.scatter(mtn[:, 0], mtn[:, 1], mtn[:, 2], s=3, c="#DDD6C9", alpha=0.6, depthshade=False, label="mountain")
+    P = np.concatenate(pts[k]); P = P[in_view(P)][::2]
+    if len(P):
+        a.scatter(P[:, 0], P[:, 1], P[:, 2], s=8, c="tab:green", alpha=0.85, linewidths=0, depthshade=False,
+                  label="shower cloud")
+    pdec = np.asarray(meta.positions[i], dtype=float)
+    if in_view(pdec[None])[0]:
+        a.scatter(*pdec, c="red", s=110, marker="*", depthshade=False, label="decay vertex")
     h = hit[i]
-    a.scatter(gx[~h], gy[~h], gz[~h] + 5, s=10, marker="^", c="0.45", depthshade=False, zorder=3, label="no signal")
-    sc = a.scatter(gx[h], gy[h], gz[h] + 5, s=18, marker="^", c=mu[i][h], cmap="plasma", norm=norm,
-                   depthshade=False, zorder=4, label="signal")
-    a.set_xlim(lo[0] - pad, hi[0] + pad); a.set_ylim(lo[1] - pad, hi[1] + pad); a.set_zlim(lo[2] - pad, hi[2] + pad)
-    a.set_box_aspect((hi[0] - lo[0] + 2 * pad, hi[1] - lo[1] + 2 * pad, hi[2] - lo[2] + 2 * pad))
+    a.scatter(gx[~h], gy[~h], gz[~h], s=40, marker="^", c="0.45", depthshade=False, label="no signal")
+    sc = a.scatter(gx[h], gy[h], gz[h], s=40, marker="^", c=mu[i][h], cmap="plasma",
+                   norm=LogNorm(1.0, max(float(mu[i][h].max()), 1.01)), depthshade=False, label="signal")
+    plt.colorbar(sc, ax=a, label="counts", shrink=0.55, pad=0.04)
+    a.set_xlim(ctr[0] - view_r, ctr[0] + view_r); a.set_ylim(ctr[1] - view_r, ctr[1] + view_r); a.set_zlim(up_lo, up_hi)
     a.set_xlabel("East [m]"); a.set_ylabel("North [m]"); a.set_zlabel("Up [m]")
-    a.set_title(f"$E$ = {E[i]:.1e} GeV, $\\theta$ = {np.degrees(th[i]):.0f}$^\\circ$, "
-                f"$\\phi$ = {np.degrees(ph[i]) % 360:.0f}$^\\circ$\n{int(nh[i])}/100 detectors with a signal")
-    a.view_init(elev=28, azim=-60)
-    a.tick_params(labelsize=7)
-axs = list(fig.axes)
-hd, lb = axs[0].get_legend_handles_labels()
-fig.colorbar(sc, ax=axs, location="bottom", shrink=0.25, aspect=30, pad=0.01, label=r"expected particles $\mu$")
-fig.legend(hd, lb, loc="outside lower left", ncol=3, frameon=False, markerscale=2)
+    a.set_title(f"#{i} ({tags[k]})\nE={E[i]:.1e}, \u03b8={np.degrees(th[i]):.0f}\u00b0, "
+                f"\u03c6={np.degrees(ph[i]) % 360:.0f}\u00b0, {int(nh[i])}/100", fontsize=11)
+hd, lb = {}, {}
+for a in axes:
+    for hh, ll in zip(*a.get_legend_handles_labels()):
+        hd.setdefault(ll, hh)
+fig.legend(list(hd.values()), list(hd.keys()), loc="lower center", ncol=len(hd), fontsize=10,
+           bbox_to_anchor=(0.5, -0.02))
+fig.tight_layout(pad=1.2)
 os.makedirs(f"{args.out}/figures/results", exist_ok=True)
-fig.savefig(f"{args.out}/figures/results/detector_patterns_representative.pdf", dpi=200)
+fig.savefig(f"{args.out}/figures/results/detector_patterns_representative.pdf", dpi=200, bbox_inches="tight")
 print("wrote detector_patterns_representative.pdf", flush=True)
