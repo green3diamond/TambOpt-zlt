@@ -7,6 +7,7 @@
 #   - plateau schedule: score every 25 steps, step halved after 4 scores without a gain > 0.05, stop at 1/30 of the
 #     starting step (replaces --score-every and the two-tier runs' lr_final)
 #   - sub-batch sizes from the GPU's memory (--chunk 0, --score-chunk 0), checkpoints every 25 steps
+#   - scoring set (best layout, plateau) 10,240 held-out pool showers instead of 1,024
 #   - folder names: the original out-suffix + _m5k (old runs untouched)
 #   - gpu_requeue, each run a chain of 3 jobs of 10 h (2 afternotok continuations resume from the checkpoints)
 # Jobs run in this worktree (branch rerun-mean5k). 44 runs:
@@ -24,7 +25,7 @@ WHAT=${1:-all}; STEPS=${STEPS:-2000}; NCONT=${NCONT:-2}; TLIM=${TLIM:-10:00:00};
 V=/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/detector_optimization_v6
 declare -A RUN=([plane]=$V/19_plane45S_12km_showerframe_400k [malata]=$V/20_malata_showerframe)
 declare -A GUARD=([plane]=run19 [malata]=run20)
-PLAT="--plateau-every 25 --plateau-patience 4 --plateau-factor 0.5 --plateau-tol 0.05 --plateau-min-frac 0.0333333"
+PLAT="--plateau-every 25 --plateau-patience 4 --plateau-factor 0.5 --plateau-tol 0.05 --plateau-min-frac 0.0333333 --n-score 10240"
 COMMON="TAMBOPT_TIME_MODEL=mean TAMBOPT_TIME_NOISE=0 BATCH=5120 ACCUM=1 CHUNK=0 SCORE_CHUNK=0 CKPT_EVERY=25 CHAIN=1"
 SB="sbatch --parsable --chdir=$W -p gpu_requeue -t $TLIM --exclude=holygpu8a19102"
 QSB="$SB --gres=gpu:1 -c 8 --mem=96g --constraint=a100|h100|h200 --requeue --open-mode=append"
