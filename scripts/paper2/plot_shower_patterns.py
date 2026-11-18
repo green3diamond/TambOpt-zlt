@@ -66,43 +66,59 @@ for s in range(len(C.SPECIES_NAMES)):
         P = p + ((c[:, 2] + 1) * C.C8_PLANE_DX)[:, None] * d + t1[:, None] * e1
         pts.setdefault(k, []).append(P)
 
-# drawing as the earlier figure (explore_trigger_counts.ipynb `panel`): mountain vertices, shower cloud, decay
-# vertex, detectors coloured by counts; 1,500 m view around the mesh centre, Up = mesh range +- 300 m
+# slope as a shaded mesh, shower cloud (points within the view), shower axis from the decay vertex, detectors
+# coloured by expected counts (shared log scale); view = mesh bounding box + PAD, true aspect, seen from the South
 tris = np.load("/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/zdimitrov/tmp_rings/sites/malata.npz")["tris"]
-mtn = np.unique(tris.reshape(-1, 3), axis=0)
-ctr, view_r = mtn.mean(0), 1500.0
-up_lo, up_hi = mtn[:, 2].min() - 300.0, mtn[:, 2].max() + 300.0
-in_view = lambda P: ((np.abs(P[:, 0] - ctr[0]) <= view_r) & (np.abs(P[:, 1] - ctr[1]) <= view_r)
-                     & (P[:, 2] >= up_lo) & (P[:, 2] <= up_hi))
+PAD = 400.0
+lo, hi = tris.reshape(-1, 3).min(0) - PAD, tris.reshape(-1, 3).max(0) + PAD
+in_view = lambda P: np.all((P >= lo) & (P <= hi), 1)
 gx, gy = x.cpu().numpy(), y.cpu().numpy(); gz = surface(y, x).cpu().numpy()
-tags = ("Elow", "Emid", "Ehigh")
+norm = LogNorm(1.0, max(float(mu[i][hit[i]].max()) for i in pick))
+up = tris[:, :, 2].mean(1)
+shade = matplotlib.cm.Greys(0.12 + 0.3 * (up - up.min()) / np.ptp(up))
+from matplotlib.ticker import MaxNLocator
 
-fig, axes = plt.subplots(1, 3, figsize=(21, 6.2), subplot_kw=dict(projection="3d"), gridspec_kw={"wspace": 0.35})
+fig = plt.figure(figsize=(15, 5.6))
+axes = [fig.add_subplot(1, 3, k + 1, projection="3d", computed_zorder=False) for k in range(3)]
 for k, (a, i) in enumerate(zip(axes, pick)):
-    a.scatter(mtn[:, 0], mtn[:, 1], mtn[:, 2], s=3, c="#DDD6C9", alpha=0.6, depthshade=False, label="mountain")
-    P = np.concatenate(pts[k]); P = P[in_view(P)][::2]
-    if len(P):
-        a.scatter(P[:, 0], P[:, 1], P[:, 2], s=8, c="tab:green", alpha=0.85, linewidths=0, depthshade=False,
-                  label="shower cloud")
-    pdec = np.asarray(meta.positions[i], dtype=float)
-    if in_view(pdec[None])[0]:
-        a.scatter(*pdec, c="red", s=110, marker="*", depthshade=False, label="decay vertex")
+    a.add_collection3d(Poly3DCollection(tris, facecolors=shade, edgecolors=(0, 0, 0, 0.12), linewidths=0.3,
+                                        alpha=0.9, zorder=1))
+    P = np.concatenate(pts[k]); P = P[in_view(P)]
+    if len(P) > 6000:
+        P = P[np.random.default_rng(0).choice(len(P), 6000, replace=False)]
+    a.scatter(P[:, 0], P[:, 1], P[:, 2], s=3, c="tab:green", alpha=0.5, lw=0, depthshade=False, zorder=2,
+              label="shower cloud")
+    p0, d0 = fr[k, 0:3].astype(float), fr[k, 3:6].astype(float)
+    tt = np.linspace(0, 15000, 3000); A = p0 + tt[:, None] * d0; A = A[in_view(A)]
+    if len(A):
+        a.plot(A[:, 0], A[:, 1], A[:, 2], c="tab:green", lw=1.2, ls="--", zorder=3, label="shower axis")
+    if in_view(p0[None])[0]:
+        a.scatter(*p0, c="red", s=90, marker="*", depthshade=False, zorder=6, label="decay vertex")
     h = hit[i]
-    a.scatter(gx[~h], gy[~h], gz[~h], s=40, marker="^", c="0.45", depthshade=False, label="no signal")
-    sc = a.scatter(gx[h], gy[h], gz[h], s=40, marker="^", c=mu[i][h], cmap="plasma",
-                   norm=LogNorm(1.0, max(float(mu[i][h].max()), 1.01)), depthshade=False, label="signal")
-    plt.colorbar(sc, ax=a, label="counts", shrink=0.55, pad=0.04)
-    a.set_xlim(ctr[0] - view_r, ctr[0] + view_r); a.set_ylim(ctr[1] - view_r, ctr[1] + view_r); a.set_zlim(up_lo, up_hi)
-    a.set_xlabel("East [m]"); a.set_ylabel("North [m]"); a.set_zlabel("Up [m]")
-    a.set_title(f"#{i} ({tags[k]})\nE={E[i]:.1e}, \u03b8={np.degrees(th[i]):.0f}\u00b0, "
-                f"\u03c6={np.degrees(ph[i]) % 360:.0f}\u00b0, {int(nh[i])}/100", fontsize=11)
-hd, lb = {}, {}
+    a.scatter(gx[~h], gy[~h], gz[~h], s=22, marker="^", c="white", edgecolors="0.25", linewidths=0.5,
+              depthshade=False, zorder=4, label="no signal")
+    sc = a.scatter(gx[h], gy[h], gz[h], s=34, marker="^", c=mu[i][h], cmap="plasma", norm=norm, edgecolors="k",
+                   linewidths=0.4, depthshade=False, zorder=5, label="signal")
+    a.set_xlim(lo[0], hi[0]); a.set_ylim(lo[1], hi[1]); a.set_zlim(lo[2], hi[2])
+    a.set_box_aspect(tuple(hi - lo), zoom=0.95)
+    a.view_init(elev=22, azim=-70)
+    for ax_ in (a.xaxis, a.yaxis, a.zaxis):
+        ax_.set_major_locator(MaxNLocator(4)); ax_.pane.set_alpha(0.15)
+    a.tick_params(labelsize=7, pad=1)
+    a.set_xlabel("East [m]", fontsize=8, labelpad=2); a.set_ylabel("North [m]", fontsize=8, labelpad=2)
+    a.set_zlabel("Up [m]", fontsize=8, labelpad=2)
+    a.set_title(f"$E$ = {E[i]:.1e} GeV, $\\theta$ = {np.degrees(th[i]):.0f}$^\\circ$, "
+                f"$\\phi$ = {np.degrees(ph[i]) % 360:.0f}$^\\circ$\n{int(nh[i])}/100 detectors with a signal",
+                fontsize=10, pad=0)
+fig.subplots_adjust(left=0.0, right=0.9, bottom=0.08, top=0.9, wspace=0.08)
+cax = fig.add_axes([0.92, 0.25, 0.012, 0.55])
+fig.colorbar(sc, cax=cax, label=r"expected particles $\mu$")
+hd = {}
 for a in axes:
     for hh, ll in zip(*a.get_legend_handles_labels()):
         hd.setdefault(ll, hh)
-fig.legend(list(hd.values()), list(hd.keys()), loc="lower center", ncol=len(hd), fontsize=10,
-           bbox_to_anchor=(0.5, -0.02))
-fig.tight_layout(pad=1.2)
+fig.legend(list(hd.values()), list(hd.keys()), loc="lower center", ncol=len(hd), fontsize=9, frameon=False,
+           bbox_to_anchor=(0.45, 0.02), markerscale=1.5)
 os.makedirs(f"{args.out}/figures/results", exist_ok=True)
-fig.savefig(f"{args.out}/figures/results/detector_patterns_representative.pdf", dpi=200, bbox_inches="tight")
+fig.savefig(f"{args.out}/figures/results/detector_patterns_representative.pdf", dpi=200)
 print("wrote detector_patterns_representative.pdf", flush=True)
