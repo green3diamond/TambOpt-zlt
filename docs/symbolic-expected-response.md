@@ -1,6 +1,9 @@
 # Expected-response test with Jay's symbolic shower model
 
-Status: proposed, not started (2026-11-16).
+Status: code written on branch `symbolic-expected` (2026-11-18), not run yet. Model: Jay's frozen folder
+`/n/holylfs05/LABS/arguelles_delgado_lab/Everyone/jagarwal/v6_runs/symbolic_model` (branch `symbolic-run20`, commit
+3f4d390; the `symbolic/` package is copied from that commit). Job scripts, not submitted:
+`tmp_rings/symbolic/check_expected.sh` (step 3, `N=64` first) and `tmp_rings/symbolic/grad_cos_expected.sh` (step 5).
 
 ## Why
 
@@ -58,3 +61,26 @@ Cost: a few hours of code and one gpu_test job for steps 1-3.
 - If the grid is near the optimum, the result is still the grid; consistent gradients would confirm it.
 - It optimizes for an average shower without fluctuations, so the reconstruction looks cleaner than in reality.
 - Hadronic showers light about 20 % too many detectors in the symbolic model.
+
+## As built (2026-11-18)
+
+`modules/optimize/expected_response.py`:
+- `tables()` (numpy, per shower and species): energy per plane from ONE part-1 draw of the sampler (seeded), ring
+  shares from the rings law stretched by the MEAN width law, particles per ring = ring energy / mean particle energy
+  (energy law), divided by the ring area -> log density [1/m^2] on (24 planes, 23 rings); delay constants (A, p, q).
+- `ExpectedResponse(logd, tconst, frames, surface)`: the kernel's call signature and `.mu`. Per detector: distance
+  from the axis and depth from `detectors_in_frames`; log density linear in ln r between ring centres, density
+  linear between the two planes around the depth (zero past the last plane); mu_s = density x 2 m^2 x efficiency
+  (photons 0.02); T = depth / c + mu-weighted mean delay exp(A) r^p (k+1)^-q. The E channel carries mu (not a kernel
+  energy). No noise anywhere.
+
+`scripts/symbolic/check_expected.py` (step 3): CORSIKA 8 test showers placed as `score_all.py SRC=c8`, kernel vs
+expected at the uniform grid: hits per shower, trigger share, mean mu vs distance from the axis, delay behind the
+plane front of detectors hit in both, analytical recon v1 within 1 deg and median.
+
+`scripts/symbolic/grad_cos_expected.py` (step 5): primaries from the run-20 training corpus (2 x max B events, seed
+4200), tables in parallel on CPU, gradients of U (SWGO trigger 1 deg, analytical recon) at the uniform grid on
+[0, B) and [B, 2B) for each B (default 5,120 and 51,200), cosine / sign agreement / per-detector cosine.
+
+`scripts/paper2/score_all.py` on this branch derives the repository path from its own location (it was the main
+checkout's), so the worktree's modules load.
