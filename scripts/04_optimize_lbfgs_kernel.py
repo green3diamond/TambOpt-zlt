@@ -546,6 +546,10 @@ def run_main_pool(args, mountain, surface, recon, out_dir, resp=None):
         plat = st.get("plateau", plat)
         sgd_ref = st.get("sgd_ref")
         snaps = st.get("snaps", {})
+        if args.plateau_reset and plat.get("reset_lr") != args.lr:   # continuation with a new step size: the schedule
+            plat = dict(lr=args.lr, best=best_u, bad=0, stop=False, reset_lr=args.lr)   # restarts at --lr, once (a requeue
+            # of the continuation resumes its own schedule, saved with reset_lr in the checkpoint)
+            print(f"[plateau reset] step size {args.lr:g}, judged against the best U {best_u:+.3f}")
         print(f"[resume] {state_path} at epoch {start}, best scoring-set U={best_u:+.3f}"
               + (f", lr {plat['lr']:.3g}" if args.plateau_every > 0 else ""))
     else:
@@ -902,6 +906,8 @@ def main():
                          "by --plateau-factor after --plateau-patience scores without a gain > --plateau-tol; stop at "
                          "--plateau-min-frac x --lr without a gain. Replaces --lr-final")
     ap.add_argument("--plateau-patience", type=int, default=4)
+    ap.add_argument("--plateau-reset", action="store_true",
+                    help="on resume: restart the plateau schedule at --lr (a continuation with a larger step size)")
     ap.add_argument("--plateau-factor", type=float, default=0.5)
     ap.add_argument("--plateau-tol", type=float, default=0.05)
     ap.add_argument("--plateau-min-frac", type=float, default=1 / 30)
