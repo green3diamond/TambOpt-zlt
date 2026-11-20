@@ -300,6 +300,9 @@ def load(site, pre):
         c8.update(json.load(open(p)))
     add_e02(c8, f"{D}/scoresc8ft{tag}_{site}_e02.json")
     c8 = {n: v for n, v in trig_view(c8, acc=site != 19).items() if "smoke" not in n}
+    if site == 19:      # no surrogate-response optimizations on the 12 km plane (the response model does not
+        # reproduce its sparse showers; paper 1)
+        res, c8 = ({n: r for n, r in d.items() if not (n.startswith("opt_") and "_sur" in n)} for d in (res, c8))
     return current(res), current(c8)
 
 
