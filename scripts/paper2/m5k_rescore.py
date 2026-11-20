@@ -8,6 +8,7 @@ continued in <old run folder>_m5kc). The scorer is unchanged (score_all.py, nois
     python m5k_rescore.py build <res2> <res3>   <res3> = copy of <res2> with those layouts' records replaced by the
                                                 new scores (<res3>/m5k/<fam>.json); *_e02.json files likewise
 
+Layouts listed for a family that its res2 files do not hold are added to its first file.
 A family is the prefix of a score file name (scoresd_20_all.json, scoresd_20_e02.json -> scoresd_20); only the
 families make_tables.py reads are rescored.
 """
@@ -87,8 +88,12 @@ def build(D, O):
             miss = [n for n in want if n not in new]
             if miss:
                 sys.exit(f"{nf}: {len(miss)} of {len(want)} layouts not scored yet ({miss[:3]} ...)")
-            for f in files(D, fam, site):
+            fs = files(D, fam, site)
+            held = set().union(*(json.load(open(f)) for f in fs))
+            for i, f in enumerate(fs):
                 d = json.load(open(f))
+                if i == 0:      # layouts this family had not scored (e.g. a new headline layout): into its first file
+                    d.update({n: None for n in want if n not in held})
                 hit = [n for n in d if n in new]
                 for n in hit:
                     d[n] = new[n]
