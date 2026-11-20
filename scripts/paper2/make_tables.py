@@ -300,7 +300,18 @@ def load(site, pre):
         c8.update(json.load(open(p)))
     add_e02(c8, f"{D}/scoresc8ft{tag}_{site}_e02.json")
     c8 = {n: v for n, v in trig_view(c8, acc=site != 19).items() if "smoke" not in n}
-    return res, c8
+    return current(res), current(c8)
+
+
+RERUN = re.compile(r"_m5kc?/")      # rerun optimizations (mean time, 5,120 showers per step; slurm/rerun_mean5k_submit.sh)
+
+
+def current(d):
+    """when the score folder holds rerun optimizations: drop every optimized layout that was not rerun (the earlier
+    512 / 2,048-shower runs, whose gradients were batch noise); fixed layouts stay"""
+    if not any(RERUN.search(str(r.get("path", ""))) for r in d.values()):
+        return d
+    return {n: r for n, r in d.items() if not n.startswith("opt_") or RERUN.search(str(r.get("path", "")))}
 
 
 def order(res):
@@ -673,8 +684,8 @@ constraints_table()
 
 # analytical reconstruction (Malata, no background): DeepSets vs TamboDirReco port, triggered showers
 def tv(pat):
-    return trig_view({n: v for p in sorted(glob.glob(f"{D}/{pat}")) for n, v in json.load(open(p)).items()
-                      if "smoke" not in n})
+    return current(trig_view({n: v for p in sorted(glob.glob(f"{D}/{pat}")) for n, v in json.load(open(p)).items()
+                              if "smoke" not in n}))
 
 
 SRC = {"ds": W[20][""], "v1": (tv("scoresana_20_*.json"), tv("scoresc8ana_20_*.json")),
@@ -699,7 +710,7 @@ def raw(pat):
         for n, v in json.load(open(p)).items():
             if "smoke" not in n:
                 o.setdefault(n, {}).update(v)
-    return o
+    return current(o)
 
 
 ALLS = {"ds": (raw("scoresd_20_*.json"), raw("scoresc8ft_20_*.json")),
