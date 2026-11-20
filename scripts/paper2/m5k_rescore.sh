@@ -11,8 +11,9 @@ D=$T/res2; O=$T/res3
 cd $W
 mkdir -p $O/m5k
 python3 scripts/paper2/m5k_rescore.py lists $D $O | while IFS='|' read -r fam site e n; do
+    t=01:00:00; [ $fam = scoresc8ana_20 ] && t=02:00:00   # analytical v1 on CORSIKA 8 is the slowest
     sbatch --parsable -p gpu_requeue --gres=gpu:1 --constraint='a100|h100|h200' --exclude=holygpu8a19102 -c 4 \
-        --mem=64g -t 04:00:00 --requeue --open-mode=append -J m5ks_$fam -o $O/m5k/$fam.out --chdir=$W --wrap "
+        --mem=64g -t $t --requeue --open-mode=append -J m5ks_$fam -o $O/m5k/$fam.out --chdir=$W --wrap "
         source slurm/env.sh; source slurm/gpu_gate.sh; gpu_health_gate
         export MPLCONFIGDIR=/tmp/mplcache_\$USER PYTHONDONTWRITEBYTECODE=1; unset TAMBOPT_TIME_MODEL TAMBOPT_TIME_NOISE
         source slurm/run${site}_guard.sh
