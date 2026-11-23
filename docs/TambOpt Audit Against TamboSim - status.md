@@ -79,6 +79,29 @@ slopes), photons counted at 2 % (4.5x fewer at 300 m), energy cuts (1.3-2x in co
 pairs), blob guard (may cut real EM showers near 1e7 GeV; not checked). With the 2x area these lower our counts by a
 factor of a few against TamboSim, while item 1 raises them 2x, so absolute trigger numbers are uncertain at that level.
 
+Item 1 without new experiments: not a pure 2x (brightness moves the low-energy end across the trigger threshold, the
+visible fraction spreads, the muonic 17 % should be undetectable). Layout rankings are likely robust (all layouts see
+the same showers); absolute efficiencies are optimistic, per tau decay at most 0.83x. Paper 2: one paragraph in
+`chapters_2/02_methodology.tex` after the pipeline summary (line 14), optionally one caveat line in `04_conclusion.tex`:
+
+> Each shower is generated with the full tau energy and a shower type (electromagnetic or hadronic) drawn with equal
+> probability. Real tau decays pass on average about half of the energy to neutrinos, are about 65 % hadronic and
+> 18 % electromagnetic, and in 17 % of the cases decay to a muon, which produces no detectable air shower. Our showers
+> are therefore on average about twice as bright as those from the same tau energy, and efficiencies per tau decay are
+> at most 0.83 times those per shower given here. Since every layout is evaluated on the same showers, these
+> simplifications shift all layouts alike; the conclusions concern the relative performance of layouts, not absolute
+> rates. Conditioning the generator on the visible decay products is left for future work.
+
+Items 2 and 3, same place, right after it (field distortion depends on direction, so "alike" holds only because every
+layout sees the same corpus; not tested whether the ranking changes; item 3 partly offsets item 1):
+
+> The CORSIKA 8 training showers use a geomagnetic field that does not match the TAMBO site in direction and strength,
+> and a standard atmosphere with showers starting at 2.5 km instead of at the decay altitude. The field mainly affects
+> the lateral shape and azimuth of showers travelling across it; the denser air makes showers about 10-20 % shorter and
+> narrower than at the site, so footprints and trigger efficiencies are, if anything, underestimated. Both act on all
+> layouts alike and change absolute numbers rather than the comparison between layouts; regenerating the training
+> showers with the site's field and atmosphere is left for future work.
+
 These change absolute numbers; whether they change which layout wins is unknown. As the audit says, they should
 be fixed before further optimizer work, because they invalidate the corpus.
 
