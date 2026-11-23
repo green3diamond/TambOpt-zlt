@@ -45,7 +45,8 @@ import torch
 
 from ..constants import SIGMA_SPATIAL
 
-RATE_PER_M2_NS = 1.826e-6
+# TAMBOPT_BG_RATE [/m^2/ns]: default SWGO's all-particle rate at ~5 km; ~4e-7 is the muon rate at 3-4 km (audit)
+RATE_PER_M2_NS = float(os.environ.get("TAMBOPT_BG_RATE", "1.826e-6"))
 AREA_M2 = 2.0
 KERNEL_AREA_M2 = 2.0 * math.pi * SIGMA_SPATIAL ** 2                            # total kernel weight per point, ~628 m^2
 BG_UNITS = os.environ.get("TAMBOPT_BG_UNITS", "cosmic")                        # "cosmic" (default), "kernel", "count"

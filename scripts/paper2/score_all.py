@@ -21,6 +21,7 @@ import modules.optimize.objective as O
 import modules.constants as C
 from modules.data.dataset_builder import _load_corpus_metadata
 from modules.optimize.counting import trigger_prob
+import modules.optimize.background as B
 
 out_path, n_ev, pairs = sys.argv[1], int(sys.argv[2]), [a.split("=", 1) for a in sys.argv[3:]]
 dev = S4.DEVICE
@@ -137,7 +138,7 @@ if RECO:
     assert BG_NS == 0, "analytical recon: background not supported"
 # BG_GATE=none: background without the kNN gate (every detector read out); default knn23
 BG_GATE = os.environ.get("BG_GATE", "knn23")
-print(f"background {BG_NS:g} ns" + (f", gate {BG_GATE}" if BG_NS > 0 else ""), flush=True)
+print(f"background {BG_NS:g} ns" + (f", gate {BG_GATE}, rate {B.RATE_PER_M2_NS:g} /m^2/ns" if BG_NS > 0 else ""), flush=True)
 # REF_LAYOUT=<layout .pt>: same-shower check; the triggered selection (*_cnt metrics) keeps only showers triggered by
 # both the scored layout and this reference layout (no background)
 REF = os.environ.get("REF_LAYOUT", "")
