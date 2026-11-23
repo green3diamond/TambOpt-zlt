@@ -1,27 +1,14 @@
 # TambOpt audit against TamboSim: what was tried and what could help
 
 Status of the items in `TambOpt Audit Against TamboSim.pdf` (17 Nov 2026), as of 23 Nov 2026. The audit reviewed
-`master` (69c04f6), not `cleanup` or `timing-model`, so parts of it are out of date. "Tried" is from the work done
-so far; the items were not re-checked one by one in the code.
-
-## Big findings after the 23 Nov checks
-
-- **Still open and large**: physics items 1-3 (shower energy and decay class, magnetic field, atmosphere; need a new
-  corpus) and the detector count model (area 2x, photons, energy cuts, incidence angle). Malata numbers are not rate
-  weighted.
-- **New**: on Malata the swgo_trigger gradient is mostly batch noise even at 5,120 showers per step (batch-to-batch
-  cosine 0.17-0.25). Those optimizations move little from their start, consistent with no layout beating the grid.
-- **Background rate**: conservative (~2x high for all charged particles). At the muon rate 1 us results barely change
-  (rank correlation 0.96-1.00); 10 us results change strongly on Malata (~3 % -> 15-19 % within 1 deg, rank
-  correlation 0.46-0.57). `docs/background_rate_muon_rescore.md`.
-- **Checked, no problem**: trigger-gradient distance part (2-3 %), axis reference (< 1 % beyond 10 m), snap,
-  surrogate paths, counting table for hadronic decays.
+`master` (69c04f6), not `cleanup` or `timing-model`, so parts of it are out of date. Items marked "checked 23 Nov"
+were verified in the code or with a test; the other rows describe the work done so far.
 
 ## Already tried or largely covered
 
 | Audit item | What was done | Result |
 |---|---|---|
-| No timing gradient (`delta_l` detached) | `timing-model` branch: carry along the axis attached, mean-delay time model (`TAMBOPT_TIME_MODEL=mean`) | **Done**: all main-text optimizations of papers 1 and 2 rerun with it (`_m5k`: mean time without noise, 5,120 showers per step); batch gradients agree (cosine 0.66-0.76, flow matching). **Open**: the swgo_trigger gradient on Malata is still mostly batch noise at 5,120 showers (batch-to-batch cosine 0.17-0.25, `trig_grad_r_check.py`) |
+| No timing gradient (`delta_l` detached) | `timing-model` branch: carry along the axis attached, mean-delay time model (`TAMBOPT_TIME_MODEL=mean`) | **Done**: all main-text optimizations of papers 1 and 2 rerun with it (`_m5k`: mean time without noise, 5,120 showers per step); batch gradients agree (cosine 0.66-0.76, flow matching); swgo_trigger on Malata: batch-to-batch cosine 0.17-0.25 (per-batch signal-to-noise ~0.5, enough for SGD; `trig_grad_r_check.py`) |
 | Signal unit (kinetic energy, not counts) | Counting model: expected counts mu per species, Poisson draws, mu >= 1 hits, trigger on mu (merged 23 Oct) | **Partly done**: trigger and scoring; the DeepSets reconstruction still reads E |
 | Thresholds far below one particle | Hits and trigger use mu >= 1 | **Partly done**: scoring; the reconstruction inputs and the kNN gate still use the E thresholds |
 | Optimized and scored with the same reconstruction (layouts can exploit quirks of the DeepSets network) | CORSIKA 8 columns scored with a separately fine-tuned DeepSets and with the analytical fit (no training) | **Partly done**: the CORSIKA 8 columns are independent checks; the flow-matching columns still use the network the layouts were optimized against |
@@ -34,7 +21,7 @@ so far; the items were not re-checked one by one in the code.
 
 - **Trigger gradient, distance part** (`axis_distance` under `no_grad`, `background.py:137`): **No problem** (checked
   23 Nov, `trig_grad_r_check.py`, Malata, 4 x 5,120 showers, grid and the _m5k swgotrig layout). With r attached the
-  gradient changes by 2-3 % (cosine 0.9996), U is identical; batch-to-batch cosine is 0.17-0.25. Not fixed.
+  gradient changes by 2-3 % (cosine 0.9996), U is identical; for scale, the batch-to-batch cosine is 0.17-0.25. The `no_grad` stays (no fix needed).
 - **Non-differentiable snap to the mesh** (`placement.py:42-65`): **No problem** (checked 23 Nov). The snap moves
   only detectors more than `max_gap` (2x the mean centroid spacing) off the mesh, and runs after each Adam step and
   after each L-BFGS chunk. Every chunk builds a new `LBFGS` (`04_optimize_lbfgs_kernel.py:695`), so **a snapped
@@ -105,7 +92,7 @@ layout sees the same corpus; not tested whether the ranking changes; item 3 part
 These change absolute numbers; whether they change which layout wins is unknown. As the audit says, they should
 be fixed before further optimizer work, because they invalidate the corpus.
 
-## Worth checking for paper 2
+## Background rate (checked 23 Nov)
 
 - **Background rate**: **No change needed** (keep as conservative). The 1,826 /m^2/s is SWGO's all-particle rate at
   ~4.8 km for water Cherenkov tanks (`swgolo148.cpp:329-331`, HAP-2024-004), applied here as muons. The audit's 4-6x
