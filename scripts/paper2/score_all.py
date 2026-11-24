@@ -138,6 +138,10 @@ if RECO:
     assert BG_NS == 0, "analytical recon: background not supported"
 # BG_GATE=none: background without the kNN gate (every detector read out); default knn23
 BG_GATE = os.environ.get("BG_GATE", "knn23")
+# COUNTING=poisson: Poisson-drawn particle counts per species, E and T zeroed where nothing arrived (Stage 4's
+# --counting poisson); use with the count-trained recon (RECON_DIR=<run>/test_v6_run_03_recentered_deepsets_count).
+# mu (trigger, selection) stays the expected count.
+COUNTING = os.environ.get("COUNTING", "none")
 print(f"background {BG_NS:g} ns" + (f", gate {BG_GATE}, rate {B.RATE_PER_M2_NS:g} /m^2/ns" if BG_NS > 0 else ""), flush=True)
 # REF_LAYOUT=<layout .pt>: same-shower check; the triggered selection (*_cnt metrics) keeps only showers triggered by
 # both the scored layout and this reference layout (no background)
@@ -158,7 +162,9 @@ for name, path in pairs:
         for lo in range(0, N, CH):
             hi = min(lo + CH, N)
             kern = S4.BatchKernel([c[lo:hi].to(dev) for c in clouds], [None] * len(clouds), surface,
-                                  differentiable=False, frames=frames[lo:hi].to(dev))
+                                  differentiable=False, frames=frames[lo:hi].to(dev),
+                                  species_transform=(S4.CountingTransform(surface, gen, "poisson")
+                                                     if COUNTING == "poisson" else None))
             p = prim[lo:hi].to(dev)
             xy = torch.stack([x, y], -1)[None].expand(hi - lo, -1, -1)
             ref_ok = None
