@@ -129,8 +129,12 @@ layout sees the same corpus; not tested whether the ranking changes; item 3 part
 > layouts alike and change absolute numbers rather than the comparison between layouts; regenerating the training
 > showers with the site's field and atmosphere is left for future work.
 
-These change absolute numbers; whether they change which layout wins is not tested. Since every layout is scored on
-the same showers, the comparison is expected to hold; fixing them needs a new corpus and is left for future work.
+These change absolute numbers: the particle counts at the detectors (item 1 about 2x too high; area and the smaller
+items a factor of a few too low against TamboSim), and with them trigger rates and accuracies. Whether they change
+which layout wins is not tested. Since every layout is scored on the same showers, the comparison is expected to hold.
+Fixing items 2 and 3 (and the corpus-level parts of item 1) is not feasible here: it needs about 300k new CORSIKA 8
+simulations and retraining every network (AllShowers generators, surrogate, reconstruction), followed by all
+optimizations and scoring; it is left for future work.
 
 ## Background rate (checked 23 Nov)
 
