@@ -53,11 +53,16 @@ weight, divided by the PADDED point count), so it scaled with the corpus's
 max_points and correlated 0.43 with the E channel.
 """
 
+import math
+import os
+
 import torch
 
 from ..constants import HIT_DEPOSIT_MIN, KERNEL_INTERP_MAX
 
 C_LIGHT = 299_792_458.0      # m/s, for carrying point times between planes (t_interp)
+LAG_MIN_NS = 0.1             # floor of a point's lag behind the plane front (log-lag moments)
+LAG_EDGES_NS = torch.logspace(math.log10(LAG_MIN_NS), math.log10(3000.0), 65)   # lag CDF grid (TAMBOPT_TIME_MODEL=edge)
 
 
 def _det_view(v):
@@ -150,6 +155,7 @@ def GetCounts_planeaware(
     sigma:     float,
     hit_deposit_min: float = HIT_DEPOSIT_MIN,
     layer_dx:  float = 500.0,
+    moments:   dict = None,
 ) -> tuple:
     """Ring kernel in the shower frame: deposit E and leading-edge arrival time T per detector.
 
@@ -179,6 +185,16 @@ def GetCounts_planeaware(
     T: each detected point's time is carried along the axis at c to the detector's depth,
     t = t_p + (z_det - z_p) * layer_dx / c (clamped >= 1e-12 s; 0 is "no hit"), and T is the
     earliest of them.
+
+    moments : optional dict, filled with the time model's inputs (modules/optimize/timing.py), all
+        differentiable in the detector position: `t_plane` (B, n_det) the plane-front time at the
+        detector's depth [s] (depth x layer_dx / c, the C8 clock: layer l at (l + 1) layer_dx from the
+        first interaction); `m`, `s` (B, n_det) the deposit-weighted mean and spread of log lag [ns] of
+        the points read there, the lag of a point being its time behind its own plane's front
+        (t_p - l_p layer_dx / c, which the carry along the axis leaves unchanged); `w` (B, n_det) the
+        summed weight (local_intensity); `mean`, `var` (B, n_det) the linear mean and variance of the lag
+        [ns] over the same points weighted by the kernel weight only (spatial x plane, not energy), and
+        `gw` their summed weight.
 
     Returns:
         (local_intensity, arrival_time) : each (B, n_det). `arrival_time` in seconds, 0 at detectors
@@ -214,4 +230,28 @@ def GetCounts_planeaware(
     arrival_time = t_masked.amin(dim=1)                             # (B, n_det)
     # No detected point -> 0, the same "no signal" sentinel the E channel uses.
     arrival_time = torch.where(torch.isinf(arrival_time), torch.zeros_like(arrival_time), arrival_time)
+    if moments is not None:
+        lag_ns = ((point_t - point_l * (layer_dx / C_LIGHT)) * 1e9).clamp(min=LAG_MIN_NS)   # (B, P)
+        ll = torch.log(lag_ns).unsqueeze(2)                                                   # (B, P, 1)
+        wsum = local_intensity.clamp(min=1e-30)
+        m = (energy_kernel * ll).sum(1) / wsum
+        s2 = (energy_kernel * (ll - m.unsqueeze(1)) ** 2).sum(1) / wsum
+        # kernel weight only (each point of the group read here counts by its spatial x plane weight, not its
+        # energy): linear mean and variance of the lag [ns], the group mean of TAMBOPT_TIME_MODEL=mean
+        gw = spatial * plane_w * (point_e > 0).unsqueeze(2).to(spatial.dtype)                 # (B, P, n_det)
+        gsum = gw.sum(1).clamp(min=1e-30)
+        lg = lag_ns.unsqueeze(2)
+        mean = (gw * lg).sum(1) / gsum
+        var = (gw * (lg - mean.unsqueeze(1)) ** 2).sum(1) / gsum
+        moments.update(t_plane=(z_cont * (layer_dx / C_LIGHT)).squeeze(1).expand_as(local_intensity),
+                       m=m, s=torch.sqrt(s2 + 1e-12), w=local_intensity, mean=mean, var=var, gw=gsum)
+        if os.environ.get("TAMBOPT_TIME_MODEL") == "edge":
+            # the group's lag CDF on a fixed log grid, kernel weight only: points binned by lag (detector-independent,
+            # one-hot), weights summed per bin and detector -> cdf (B, K + 1, n_det) at LAG_EDGES_NS, cdf[:, 0] = 0
+            edges = LAG_EDGES_NS.to(lag_ns.device, lag_ns.dtype)
+            b = torch.bucketize(lag_ns.detach(), edges[1:-1])                                   # (B, P) in 0..K-1
+            onehot = torch.nn.functional.one_hot(b, len(edges) - 1).to(gw.dtype)                # (B, P, K)
+            hist = torch.einsum("bpk,bpn->bkn", onehot, gw)                                     # (B, K, n_det)
+            cdf = torch.cumsum(hist, 1) / gsum.unsqueeze(1)
+            moments.update(cdf=torch.cat([torch.zeros_like(cdf[:, :1]), cdf], 1), edges=edges)
     return local_intensity, arrival_time

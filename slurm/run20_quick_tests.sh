@@ -26,6 +26,9 @@
 # SMOKE=1: 3 steps of every config of the set, one after another on one slice. ONLY=<0-3>: only that config, on one GPU
 # (one job per config on gpu_requeue: sbatch -p gpu_requeue --gres=gpu:1 ...; resumes from opt_state.pt after a requeue).
 # With fewer GPUs than configs the 4 share them round-robin (on gpu_requeue: one GPU, 4 processes, as the MIG tests).
+# Reruns: BATCH=<showers per step> (default 2048), ACCUM=<K> (overrides the set's --accum), TAG=<suffix tag> appended to
+# the name, XARGS=<extra 04 arguments> (argparse: the last occurrence wins). GPU utilization every 60 s ->
+# <run>/slurm_logs/gpu-<job>.csv.
 # Out-suffix quick_<name>; logs <run>/slurm_logs/quick_<name>.log.
 #   sbatch -J r20_quick_energy slurm/run20_quick_tests.sh energy
 source slurm/env.sh
@@ -80,11 +83,14 @@ case $SET in
 esac
 IFS=, read -ra DEVS <<< "$CUDA_VISIBLE_DEVICES"
 run () {  # <slice> <i>
-    n=${QTAG}_${NAMES[$2]}$([ -n "$SMOKE" ] && echo _smoke)
+    n=${QTAG}_${NAMES[$2]}${TAG}$([ -n "$SMOKE" ] && echo _smoke)
     env CUDA_VISIBLE_DEVICES=${DEVS[$(($1 % ${#DEVS[@]}))]} ${ENVS[$2]} python -u scripts/04_optimize_lbfgs_kernel.py --init ${INIT:-grid} --n-det 100 \
-        --optim sgd --lr 1 --epochs $STEPS --batch-events 2048 --chunk ${CHUNK:-16} --score-every 25 --log-every 10 \
-        --ckpt-every 10 ${ARGS[$2]} $EXTRA --out-suffix $n > $L/$n.log 2>&1
+        --optim sgd --lr 1 --epochs $STEPS --batch-events ${BATCH:-2048} --chunk ${CHUNK:-16} --score-every 25 --log-every 10 \
+        --ckpt-every 10 ${ARGS[$2]} ${ACCUM:+--accum $ACCUM} $EXTRA $XARGS --out-suffix $n >> $L/$n.log 2>&1
 }
+nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used,memory.total --format=csv -l ${GPU_LOG_EVERY:-60} \
+    >> $L/gpu-${SLURM_JOB_ID:-local}.csv 2>/dev/null &
+GPU_MON=$!
 rc=0
 if [ -n "$ONLY" ]; then
     run 0 $ONLY || rc=1
@@ -97,5 +103,6 @@ else
 fi
 # CHAIN=1: a continuation job of the same name (sbatch -d afternotok:<this>) resumes from the checkpoints if this one
 # hits its time limit; once the runs have finished it is not needed
+kill $GPU_MON 2>/dev/null
 [ "$rc" = 0 ] && [ -n "$CHAIN" ] && [ -z "$SMOKE" ] && scancel --state=PENDING -u "$USER" -n "$SLURM_JOB_NAME"
 exit $rc
