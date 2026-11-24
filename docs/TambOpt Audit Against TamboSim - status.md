@@ -2,7 +2,8 @@
 
 Status of the items in `TambOpt Audit Against TamboSim.pdf` (17 Nov 2026), as of 23 Nov 2026. The audit reviewed
 `master` (69c04f6), not `cleanup` or `timing-model`, so parts of it are out of date. Items marked "checked 23 Nov"
-were verified in the code or with a test; the other rows describe the work done so far.
+were verified in the code or with a test; the other rows describe the work done so far. Since 24 Nov `master`
+(1adfb5f) contains `cleanup` and `rerun-mean5k` (with `timing-model`), so the audited fixes are now on `master`.
 
 ## Already tried or largely covered
 
