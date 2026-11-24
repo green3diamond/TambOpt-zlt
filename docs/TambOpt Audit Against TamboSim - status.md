@@ -161,3 +161,14 @@ optimizations and scoring; it is left for future work.
   clean reconstruction with background on; `t_fallback` fixed at 27.7 us in Stage 4 (`:834`), computed in 03c.
 - **Stale docs**: `kernel.py:35` says nothing backprops through the kernel; `kernel.py:40` and `dual.py:16` cite
   THEORY §3.6; merge-conflict markers in four TAMBO-opt `conf/allshowers` yaml files.
+
+## Summary
+
+Most audit items are addressed or checked. The optimizer gradients, snap, surrogate paths and axis reference show
+no problem, the background rate is a conservative upper bound, and the reconstruction's use of sub-threshold
+detectors is quantified (accuracies about 2x optimistic, layout ranking unchanged). Paper 2 now states the
+limitations: shower energy, magnetic field and atmosphere, the idealized readout and the background rate. The
+physics-realism items (shower energy, field, atmosphere, detector area and count model) and a reconstruction
+trained on realistic counts are left for future work. They change absolute numbers rather than the layout
+comparison, and fixing them needs about 300k new CORSIKA 8 simulations, retraining all networks and rerunning
+all optimizations.
