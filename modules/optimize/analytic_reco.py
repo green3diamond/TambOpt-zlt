@@ -27,9 +27,23 @@ Differences from the Julia code, all in the minimiser, not in the model:
   * Hits come from the kernel (per detector: position, leading-edge time, expected particle count n), not from
     CORSIKA module hits; a detector is "hit" when the caller's mask says so (e.g. n >= 1).
   * "valid" = finite parameters and a small final gradient, instead of mini.is_valid.
+
+TAMBOPT_ANA_MODEL=llhama switches the model to that of LlhamaFit.jl (TAMBO-Observatory, 3d5a5f2, the successor of
+TamboDirReco.jl): plane sigma 15 m for every hit; timing sigma^2 = s0^2 + k^2 (r^2)^p (s0 = 0.00471 us,
+k = 3.3315e-6 us/m^p, p = 1.8, independent of n); the x100 penalty replaced by additive barriers Lambda u3^2 for
+directions behind the plane (u3 = -dir . n_plane < 0; Lambda = 1e8/15^2 plane, 2.5e4 timing); LDF and joint core limits
++-3 km around the seed instead of around the layout centre; JointLLH ends with a timing fit. n_plane may be (B, 3)
+(LlhamaFit's local plane: mean terrain normal of the hit modules). Default "tdr" keeps TamboDirReco.
 """
 import math
+import os
 import torch
+
+MODEL = os.environ.get("TAMBOPT_ANA_MODEL", "tdr")
+LL = MODEL == "llhama"
+PLANE_SIGMA_M = 15.0
+T_SIGMA_0, T_SIGMA_SLOPE, T_SIGMA_RPOW = 0.00471, 3.3315e-6, 1.8
+BARRIER_PLANE, BARRIER_TIMING = 1.0e8 / 15.0 ** 2, 2.5e4
 
 C_LIGHT = 299.792458          # m / us
 KM = 1000.0
@@ -68,10 +82,18 @@ def _penalty(d, n_plane):
     return torch.where((d * n_plane).sum(-1) <= 0, 1.0, 100.0)
 
 
+def _barrier(d, n_plane, lam):
+    """LlhamaFit's quadratic hinge: 0 for u3 = -d . n_plane >= 0, lam u3^2 below."""
+    u3 = -(d * n_plane).sum(-1)
+    return torch.where(u3 >= 0, torch.zeros_like(u3), lam * u3 * u3)
+
+
 # ── per-shower costs (B,), as -2 log L / chi^2 summed over each shower's hits ─────────────────────────────────
 def plane_cost(th, ph, t0, x, t, n, hit, n_plane):
     d = dir_vec(th, ph)
     resid = C_LIGHT * (t - t0[:, None]) - (x * d[:, None]).sum(-1)
+    if LL:
+        return ((resid ** 2 / PLANE_SIGMA_M ** 2) * hit).sum(-1) + _barrier(d, n_plane, BARRIER_PLANE)
     sig2 = (KM ** 2) * n.clamp(min=1e-9)
     return _penalty(d, n_plane) * ((resid ** 2 / sig2) * hit).sum(-1)
 
@@ -83,6 +105,9 @@ def timing_cost(th, ph, t0, a, core, x, t, n, hit, n_plane):
     v = x - core[:, None]
     r2 = (v * e1[:, None]).sum(-1) ** 2 + (v * e2[:, None]).sum(-1) ** 2
     delay = (t - t0[:, None]) - (x * d[:, None]).sum(-1) / C_LIGHT
+    if LL:
+        sig2 = T_SIGMA_0 ** 2 + T_SIGMA_SLOPE ** 2 * r2.clamp(min=0) ** T_SIGMA_RPOW
+        return (((delay - a[:, None] * r2) ** 2 / sig2) * hit).sum(-1) + _barrier(d, n_plane, BARRIER_TIMING)
     chi = (delay - a[:, None] * r2) ** 2 * n                 # sigma_t = 1 us / sqrt(n)
     return _penalty(d, n_plane) * (chi * hit).sum(-1)
 
@@ -142,7 +167,7 @@ def _lsq_seed(x, t, n, hit, n_plane):
     only the in-plane part of the direction, and an in-plane start is a saddle of the constrained fit; so the start
     is s + k n_plane with the k < 0 (into the plane, the physical side) that makes it a unit vector, or s/|s| when
     |s| >= 1."""
-    w = hit / (KM ** 2 * n.clamp(min=1e-9))
+    w = hit / (PLANE_SIGMA_M ** 2) if LL else hit / (KM ** 2 * n.clamp(min=1e-9))
     A = torch.cat([x, torch.full_like(t[..., None], C_LIGHT)], -1)            # (B, nd, 4)
     A, w = A.double(), w.double()
     AtA = torch.einsum("bni,bn,bnj->bij", A, w, A)
@@ -180,8 +205,16 @@ def fit_timing(x, t, n, hit, n_plane, th, ph, t0, core, a=None, iters=200):
 LIM = dict(cx=(-3 * KM, 3 * KM), cy=(-3 * KM, 3 * KM), log_A=(-5.0, 15.0), beta=(0.0, 5.0))
 
 
+def _lim(cx, cy):
+    """core limits: +-3 km around the layout centre (TamboDirReco) or around the seed (LlhamaFit)"""
+    if not LL:
+        return LIM
+    return dict(LIM, cx=(cx.detach() - 3 * KM, cx.detach() + 3 * KM), cy=(cy.detach() - 3 * KM, cy.detach() + 3 * KM))
+
+
 def fit_ldf(x, n, det, th, ph, core, log_A=None, beta=None, iters=200):
     cx, cy = _core_xy(th, ph, core)
+    LIM = _lim(cx, cy)
     log_A = torch.full_like(th, 1.0) if log_A is None else log_A
     beta = torch.full_like(th, 2.5) if beta is None else beta
     q = [_unbounded(v, *LIM[k]) for k, v in (("cx", cx), ("cy", cy), ("log_A", log_A), ("beta", beta))]
@@ -196,6 +229,7 @@ def fit_ldf(x, n, det, th, ph, core, log_A=None, beta=None, iters=200):
 
 def fit_joint(x, t, n, hit, det, n_plane, th, ph, t0, a, core, log_A, beta, iters=300):
     cx, cy = _core_xy(th, ph, core)
+    LIM = _lim(cx, cy)
     q = [th, ph, t0, _unbounded(a / A_UNIT, 0.0, 5.0)] + [_unbounded(v, *LIM[k]) for k, v in
                                                             (("cx", cx), ("cy", cy), ("log_A", log_A), ("beta", beta))]
 
@@ -291,10 +325,21 @@ def run_reco_v3(x, t, n, hit, n_plane, det=None, min_hits=3, gtol=1e-2):
         j, _, g = fit_joint(x, t, n, hit, det, n_plane, p["th"], p["ph"], p["t0"], p["a"], p["core"], l["log_A"],
                             l["beta"])
         j = _keep(j, p)
+        if LL:                                            # JointLLH: a last timing fit from the joint result
+            j2, _, g = fit_timing(x, t, n, hit, n_plane, j["th"], j["ph"], j["t0"], j["core"], a=j["a"])
+            j = _keep(dict(j, **j2), j)
     return _finish(j, g, hit, min_hits, gtol)
 
 
 RUNS = {"v1": run_reco_v1, "v2": run_reco_v2, "v3": run_reco_v3}
+
+
+def local_plane_normal(normals, hit):
+    """LlhamaFit's local_plane_dir: normalised sum of the terrain normals (B, nd, 3) of the hit modules -> (B, 3);
+    falls back to the sum over all modules for a shower without hits."""
+    s = (normals * hit[..., None].float()).sum(1)
+    s = torch.where(s.norm(dim=-1, keepdim=True) > 1e-9, s, normals.sum(1))
+    return torch.nn.functional.normalize(s, dim=-1)
 
 
 def plane_normal(points):

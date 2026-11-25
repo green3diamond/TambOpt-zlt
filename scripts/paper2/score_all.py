@@ -133,7 +133,8 @@ if RECO:
     from modules.optimize import analytic_reco as AR
     _tri = torch.as_tensor(mountain.centroids_ENU, dtype=torch.float32)
     N_PLANE = AR.plane_normal(_tri).to(dev)
-    print(f"analytical recon {RECO}; detector-plane normal {N_PLANE.tolist()}", flush=True)
+    print(f"analytical recon {RECO} (model {AR.MODEL}); detector-plane normal {N_PLANE.tolist()}"
+          + ("; per shower: local plane from the hit detectors' terrain normals" if AR.LL else ""), flush=True)
     assert BG_NS == 0, "analytical recon: background not supported"
 # BG_GATE=none: background without the kNN gate (every detector read out); default knn23
 BG_GATE = os.environ.get("BG_GATE", "knn23")
@@ -181,10 +182,17 @@ for name, path in pairs:
                 if lo == 0 and os.environ.get("DUMP"):
                     torch.save(dict(X=X.cpu(), t=t_us.cpu(), n=cnt.cpu(), hit=hit.cpu(), p=p.cpu(), npl=N_PLANE.cpu()),
                                os.environ["DUMP"])
-                rr = AR.RUNS[RECO](X, t_us, cnt, hit, N_PLANE)
+                npl = N_PLANE
+                if AR.LL:                                 # LlhamaFit: mean terrain normal of the hit detectors
+                    h = 5.0
+                    dE = (surface(y, x + h) - surface(y, x - h)) / (2 * h)
+                    dN = (surface(y + h, x) - surface(y - h, x)) / (2 * h)
+                    nrm = torch.nn.functional.normalize(torch.stack([-dE, -dN, torch.ones_like(dE)], -1), dim=-1)
+                    npl = AR.local_plane_normal(nrm[None].expand(hi - lo, -1, -1), hit)
+                rr = AR.RUNS[RECO](X, t_us, cnt, hit, npl)
                 dtrue = torch.nn.functional.normalize(p[:, :3], dim=-1)
                 if lo == 0:
-                    print(f"  [check] true dir into plane {float(((dtrue * N_PLANE).sum(-1) <= 0).float().mean()):.2f}  "
+                    print(f"  [check] true dir into plane {float(((dtrue * npl).sum(-1) <= 0).float().mean()):.2f}  "
                           f"hits/shower {float(hit.sum(1).float().mean()):.1f}  valid {float(rr['valid'].float().mean()):.2f}  "
                           f">=3 hits {float((hit.sum(1) >= 3).float().mean()):.2f}  finite {float(torch.isfinite(rr['dir']).all(-1).float().mean()):.2f}",
                           flush=True)
