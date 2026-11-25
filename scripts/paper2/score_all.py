@@ -129,6 +129,10 @@ BG_NS = float(os.environ.get("BG_NS", "0"))
 # with < 3 hits or a failed fit counts as 180 deg. Utilities and the energy column are not computed.
 RECO = os.environ.get("RECO", "")
 ANA_HIT = os.environ.get("ANA_HIT", "mu")              # mu: particle counts (as TamboDirReco); E: kernel energy
+# RECO=dump HITS_DIR=<dir>: no fit; save per layout the analytical-fit inputs (positions, times, counts, hit mask,
+# terrain normals, true directions, selections) to <dir>/<name>.pt for scripts/paper2/ana_fit_hits.py (CPU)
+HITS_DIR = os.environ.get("HITS_DIR", "")
+assert RECO != "dump" or HITS_DIR, "RECO=dump needs HITS_DIR"
 if RECO:
     from modules.optimize import analytic_reco as AR
     _tri = torch.as_tensor(mountain.centroids_ENU, dtype=torch.float32)
@@ -153,6 +157,7 @@ for name, path in pairs:
     x = torch.as_tensor(L["x"]).float().to(dev); y = torch.as_tensor(L["y"]).float().to(dev)
     acc = {k: 0.0 for k in MODES}
     a_all, e_all, det_all, trig_all, cnt_all = [], [], [], [], []
+    dump = {k: [] for k in ("t", "n", "hit", "dtrue")}
     gen = torch.Generator(device=dev); gen.manual_seed(20261107)
     with torch.no_grad():
         for lo in range(0, N, CH):
@@ -183,14 +188,20 @@ for name, path in pairs:
                     torch.save(dict(X=X.cpu(), t=t_us.cpu(), n=cnt.cpu(), hit=hit.cpu(), p=p.cpu(), npl=N_PLANE.cpu()),
                                os.environ["DUMP"])
                 npl = N_PLANE
-                if AR.LL:                                 # LlhamaFit: mean terrain normal of the hit detectors
+                if AR.LL or RECO == "dump":                                 # LlhamaFit: mean terrain normal of the hit detectors
                     h = 5.0
                     dE = (surface(y, x + h) - surface(y, x - h)) / (2 * h)
                     dN = (surface(y + h, x) - surface(y - h, x)) / (2 * h)
                     nrm = torch.nn.functional.normalize(torch.stack([-dE, -dN, torch.ones_like(dE)], -1), dim=-1)
                     npl = AR.local_plane_normal(nrm[None].expand(hi - lo, -1, -1), hit)
-                rr = AR.RUNS[RECO](X, t_us, cnt, hit, npl)
                 dtrue = torch.nn.functional.normalize(p[:, :3], dim=-1)
+                if RECO == "dump":
+                    for k, v in (("t", t_us), ("n", cnt), ("hit", hit), ("dtrue", dtrue)):
+                        dump[k].append(v.cpu())
+                    det_all.append(((torch.expm1(out[..., 0]) > 1).sum(1) >= 3).cpu())
+                    trig_all.append(trigger_prob(mu, 3).cpu())
+                    continue
+                rr = AR.RUNS[RECO](X, t_us, cnt, hit, npl)
                 if lo == 0:
                     print(f"  [check] true dir into plane {float(((dtrue * npl).sum(-1) <= 0).float().mean()):.2f}  "
                           f"hits/shower {float(hit.sum(1).float().mean()):.1f}  valid {float(rr['valid'].float().mean()):.2f}  "
@@ -216,6 +227,13 @@ for name, path in pairs:
                 U, _, _ = O.utility_of_xy(x, y, p, cache, recon)
                 scale = 1.0 if k == "orig" else O.TWO_TIER_SCALE
                 acc[k] += float(U) / scale * (hi - lo) / N
+    if RECO == "dump":
+        os.makedirs(HITS_DIR, exist_ok=True)
+        torch.save(dict({k: torch.cat(v) for k, v in dump.items()}, X=X[0].cpu(), normals=nrm.cpu(), n_plane=N_PLANE.cpu(),
+                        cnt=torch.cat(cnt_all), det=torch.cat(det_all), trig=torch.cat(trig_all), path=path, ana_hit=ANA_HIT),
+                   f"{HITS_DIR}/{name}.pt")
+        print(f"[{name}] hits -> {HITS_DIR}/{name}.pt", flush=True)
+        continue
     a = torch.cat(a_all).numpy(); e = torch.cat(e_all).numpy()
     r = dict(path=path, n=int(N), med=float(np.median(a)), e02=float(np.mean(e < 0.2)),
              det=float(torch.cat(det_all).float().mean()), trig=float(torch.cat(trig_all).mean()))
