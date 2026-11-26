@@ -732,7 +732,7 @@ write("r20_anav_all", "float", 8, H_ANAV,                      # appendix: all t
       body(figs20, lambda n: ana_row(n, short("ds") + short("v1") + short("v2") + short("v3"), False)),
       f"{S20}, no background: DeepSets vs the analytical reconstruction v1, v2 and v3 (App.~\\ref{{app:ana}}) on the "
       f"triggered showers, layouts of Fig.~\\ref{{fig:r20_layouts}}; share within $1^\\circ$ [\\%] and median angular "
-      f"error. v2 and v3 were run on these layouts only.", "tab:r20_anav_all", full=True)
+      f"error; \\textcolor{{red}}{{all three with the LlhamaFit model (Sec.~\\ref{{sec:analytic}})}}.", "tab:r20_anav_all", full=True)
 def ana_v1_row(n):
     cs = [pair(*SRC["v1"], n, k, sc, f) for _, k, sc, f in full("v1")]
     return label(n, W[20][""][0][n], 20) + " & " + " & ".join(cs) + r" \\"
