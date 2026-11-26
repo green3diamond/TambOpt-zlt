@@ -13,12 +13,15 @@ algebra that autograd differentiates through:
 Hits are soft for the gradient: w = sigmoid(kappa (mu - 1)) for timed detectors (v1: mu >= 1 and a time), with the
 count clamped to >= 1 inside the weights so that faint detectors cannot dominate the 1 / n plane weights. A shower
 counts as reconstructible with a soft hit sum >= 2.5 (v1: >= 3 hits); the others get no direction (the caller scores
-them as failures). Positions, times and counts are those of score_all.py's RECO=v1 path: x (B, nd, 3) East, North,
+them as failures). TAMBOPT_ANA_MODEL=llhama: LlhamaFit's weights (plane 1 / (15 m)^2 per hit, timing
+1 / sigma_t^2(r) with sigma_t^2 = s0^2 + k^2 (r^2)^p, analytic_reco); the behind-plane barrier is not needed here, the
+seed already starts on the physical side and Gauss-Newton steps are capped. Positions, times and counts are those of score_all.py's RECO=v1 path: x (B, nd, 3) East, North,
 Up [m]; t [us]; mu expected particles (2 m^2).
 """
 import torch
 import torch.nn.functional as F
 
+from . import analytic_reco as AR
 from .analytic_reco import C_LIGHT, KM, A_UNIT, angles
 
 DTYPE = torch.float64           # normal equations (4 x 4 per shower)
@@ -70,7 +73,7 @@ def fit(x, t, mu, n_plane, kappa=10.0, n_plane_steps=5, n_time_steps=5, lam=1e-3
     timed = (t > 0).to(x.dtype)
     w = torch.sigmoid(kappa * (mu - 1.0)) * timed                    # soft hit
     n = mu.clamp(min=1.0)
-    w_plane = w / (KM ** 2 * n)
+    w_plane = w / AR.PLANE_SIGMA_M ** 2 if AR.LL else w / (KM ** 2 * n)
     w_time = w * n
     valid = (w.sum(-1) >= 2.5).detach()
     th, ph, t0 = seed(x, t, w_plane, n_plane)
@@ -94,6 +97,8 @@ def fit(x, t, mu, n_plane, kappa=10.0, n_plane_steps=5, n_time_steps=5, lam=1e-3
         jth = -(x * dth[:, None]).sum(-1) / C_LIGHT + 2 * a[:, None] * A_UNIT * vd * (v * dth[:, None]).sum(-1)
         jph = -(x * dph[:, None]).sum(-1) / C_LIGHT + 2 * a[:, None] * A_UNIT * vd * (v * dph[:, None]).sum(-1)
         J = torch.stack([jth, jph, -torch.ones_like(rho), -A_UNIT * r2], -1)
+        if AR.LL:
+            w_time = w / (AR.T_SIGMA_0 ** 2 + AR.T_SIGMA_SLOPE ** 2 * r2.clamp(min=1e-6) ** AR.T_SIGMA_RPOW)
         step = _gn_update(J, rho, w_time, lam)
         th = th + step[:, 0].clamp(-max_dang, max_dang)
         ph = ph + step[:, 1].clamp(-max_dang, max_dang)

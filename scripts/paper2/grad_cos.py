@@ -58,7 +58,7 @@ def compare(x, y):
 
 gA, uA = grad(0, B, 1); gA2, uA2 = grad(0, B, 2); gB, uB = grad(B, 2 * B, 1)
 gH1, _ = grad(0, B // 2, 1); gH2, _ = grad(B // 2, B, 1)
-res = dict(model=TIMING.MODEL, B=B, U=dict(A=uA, A_seed2=uA2, B=uB),
+res = dict(model=TIMING.MODEL, noise=TIMING.NOISE, ana_model=AR.MODEL, B=B, U=dict(A=uA, A_seed2=uA2, B=uB),
            time_noise=compare(gA, gA2), showers=compare(gA, gB), half_batches=compare(gH1, gH2))
 for k in ("time_noise", "showers", "half_batches"):
     print(k, res[k], flush=True)
