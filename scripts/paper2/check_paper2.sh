@@ -13,6 +13,7 @@ cat > "$B/check.tex" <<'TEX'
 \usepackage[paperwidth=192mm,paperheight=262mm,vmargin={19mm,19mm},hmargin={13.7mm,13.7mm}]{geometry}
 \usepackage[authoryear]{natbib}
 \usepackage{amsmath,amssymb,graphicx,longtable,tikz,float,array,pdflscape,tabularx}
+\usetikzlibrary{arrows.meta,positioning,calc,decorations.pathreplacing,fit,backgrounds}
 
 \newcommand{\hm}[2]{{\setlength{\fboxsep}{0.3pt}\colorbox{#1}{#2}}}
 \begin{document}
