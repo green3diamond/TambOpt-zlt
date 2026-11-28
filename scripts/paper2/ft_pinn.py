@@ -116,8 +116,9 @@ def phys_loss(pred, inp, mu):
 
 
 VAL_LAYOUTS = [layout(np.random.default_rng(1000 + i)) for i in range(8)]   # fixed validation layouts
-_, recon = load_models(dev, recon_dir=C.RECON_FOLDER + "_deepsets", with_fnn=False)
-src = torch.load(os.path.join(C.RECON_FOLDER + "_deepsets", "recon.pt"), map_location="cpu", weights_only=False)
+INIT = os.environ.get("INIT", C.RECON_FOLDER + "_deepsets")          # INIT=<dir>: continue from a saved recon.pt
+_, recon = load_models(dev, recon_dir=INIT, with_fnn=False)
+src = torch.load(os.path.join(INIT, "recon.pt"), map_location="cpu", weights_only=False)
 recon.requires_grad_(True)
 opt = torch.optim.AdamW(recon.parameters(), lr=LR, weight_decay=0.03)
 
