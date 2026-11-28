@@ -103,7 +103,8 @@ def phys_loss(pred, inp, mu):
     """LlhamaFit plane-front NLL of the predicted direction, t0 profiled; mean over showers with >= 2.5 soft hits."""
     d = torch.nn.functional.normalize(pred[:, :3], dim=-1)
     t = torch.expm1(inp[..., 3].clamp(min=0))                                    # us (score_all RECO path)
-    X = torch.stack([inp[..., 0], inp[..., 1], surface(inp[..., 1], inp[..., 0])], -1)
+    up = surface(inp[..., 1].reshape(-1), inp[..., 0].reshape(-1)).view_as(inp[..., 0])
+    X = torch.stack([inp[..., 0], inp[..., 1], up], -1)
     w = torch.sigmoid(10.0 * (mu - 1.0)) * (t > 0)
     sw = w.sum(1)
     s = AR.C_LIGHT * t - (X * d[:, None]).sum(-1)                                 # c t - x.d = c t0 on the front
